@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "compression": "^1.8.2",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "mongoose": "^9.11.4",
+    "pino": "^10.4.0",
+    "socket.io": "^4.8.1"
+  },
+  "description": "Orbit — spatial voice chat for friends. Rooms, not servers; people as floating orbs.",
+  "engines": {
+    "node": "24.x"
+  },
+  "main": "server.js",
+  "name": "orbit",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/*.test.js tests/*.test.mjs"
+  },
+  "version": "1.0.0"
+}
