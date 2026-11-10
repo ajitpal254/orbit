@@ -8,6 +8,9 @@ const Session = require('../models/Session');
 const Room = require('../models/Room');
 const Message = require('../models/Message');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
+const { encrypt, decrypt } = require('../lib/crypto');
+const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
+const logger = require('../lib/logger');
 const { authMiddleware, parseCookies, rateLimitMiddleware, asyncHandler } = require('../middleware/auth');
 const { validateRoomInput, validateMessageInput, accentById } = require('../lib/rooms');
 const presence = require('../lib/presence');
@@ -16,6 +19,16 @@ const router = express.Router();
 
 const SESSION_DAYS = 30;
 const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+
+// --- PUBLIC CONFIG ---
+
+// GET /api/config — public: tells the frontend whether Google sign-in is
+// configured. The client ID is a public identifier (it is embedded in the
+// Google button anyway), so exposing it is safe. No secret is involved in
+// the ID-token flow.
+router.get('/config', (req, res) => {
+  res.json({ googleClientId: getGoogleClientId() });
+});
 
 // --- AUTH ---
 
@@ -90,6 +103,27 @@ router.post('/auth/logout', asyncHandler(async (req, res) => {
   res.json({ message: 'Logged out' });
 }));
 
+// POST /api/auth/google — one-tap sign-in/sign-up with a Google ID token.
+// Body: { credential } (the JWT from Google Identity Services). The global
+// CSRF middleware applies: the frontend sends the x-csrf-token header,
+// exactly like password login. Rate-limited like password login.
+router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  if (!getGoogleClientId()) {
+    return res.status(503).json({ error: 'Google sign-in is not configured on this server' });
+  }
+  const { credential } = req.body || {};
+  let identity;
+  try {
+    identity = await verifyGoogleCredential(credential);
+  } catch (err) {
+    req.log.info({ err: err.message }, 'Google token verification failed');
+    return res.status(401).json({ error: 'Google sign-in failed — please try again' });
+  }
+  const user = await findOrCreateGoogleUser(identity);
+  req.log.info({ userId: String(user._id), google: true }, 'User signed in with Google');
+  await issueSession(req, res, user);
+}));
+
 router.get('/auth/me', authMiddleware, asyncHandler(async (req, res) => {
   const u = req.user;
   res.json({ user: { id: u._id, email: u.email, name: u.name } });
@@ -98,13 +132,24 @@ router.get('/auth/me', authMiddleware, asyncHandler(async (req, res) => {
 // --- ROOMS ---
 
 // Serialize a room with live presence attached.
+// Room topics are stored AES-256-GCM encrypted; decrypt on read. If a
+// stored topic cannot be decrypted (wrong/lost key, corrupt data), show
+// nothing instead of failing the whole room list — and log it loudly.
 const roomJson = (room) => {
   const id = String(room._id);
   const occ = presence.occupants(id);
+  let topic = '';
+  if (room.topic) {
+    try {
+      topic = decrypt(room.topic);
+    } catch (err) {
+      logger.warn({ roomId: id }, 'Stored room topic could not be decrypted — check DATA_ENCRYPTION_KEY');
+    }
+  }
   return {
     id,
     name: room.name,
-    topic: room.topic,
+    topic,
     accent: accentById(room.accent),
     createdBy: String(room.createdBy),
     createdAt: room.createdAt,
@@ -124,7 +169,9 @@ router.get('/rooms', authMiddleware, asyncHandler(async (req, res) => {
 router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
   const { ok, error, room } = validateRoomInput(req.body || {});
   if (!ok) return res.status(400).json({ error });
-  const created = new Room({ ...room, createdBy: req.user._id });
+  // Topic is stored encrypted; validateRoomInput already checked the
+  // plaintext length, so the ciphertext fits the raised model limit.
+  const created = new Room({ ...room, topic: encrypt(room.topic || ''), createdBy: req.user._id });
   await created.save();
   req.log.info({ userId: String(req.user._id), roomId: String(created._id) }, 'Room created');
   res.status(201).json(roomJson(created));
@@ -149,14 +196,26 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
 
 // --- ROOM CHAT ---
 
-const messageJson = (m) => ({
-  id: String(m._id),
-  roomId: String(m.roomId),
-  userId: String(m.userId),
-  name: m.name,
-  text: m.text,
-  createdAt: m.createdAt
-});
+// Message text is stored AES-256-GCM encrypted; decrypt on read. A message
+// that cannot be decrypted (wrong/lost key, corrupt data) shows a
+// placeholder instead of breaking the whole history — and logs loudly.
+const messageJson = (m) => {
+  let text;
+  try {
+    text = decrypt(m.text);
+  } catch (err) {
+    logger.warn({ messageId: String(m._id) }, 'Stored message could not be decrypted — check DATA_ENCRYPTION_KEY');
+    text = '[This message could not be decrypted]';
+  }
+  return {
+    id: String(m._id),
+    roomId: String(m.roomId),
+    userId: String(m.userId),
+    name: m.name,
+    text,
+    createdAt: m.createdAt
+  };
+};
 
 router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id);
@@ -176,7 +235,9 @@ router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res)
     roomId: room._id,
     userId: req.user._id,
     name: req.user.name,
-    text
+    // Stored encrypted; the broadcast below sends the plaintext to room
+    // members over their own TLS/WSS connection — that is correct.
+    text: encrypt(text)
   });
   // Broadcast live to everyone in the room (socket.io attached on the app).
   const io = req.app.get('io');

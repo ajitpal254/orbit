@@ -14,10 +14,10 @@ Same family as Budget-Manager and Calorie-Tracker:
 
 ## Features (v1)
 
-1. Auth: register / login / logout, persistent sessions.
+1. Auth: register / login / logout, persistent sessions — plus Google one-tap sign-in when `GOOGLE_CLIENT_ID` is set (see Security).
 2. Rooms: create (name, topic, accent color), list with live occupancy + who's inside + who's speaking, join / leave.
 3. Voice room: floating orbs, speaking glow, mute / deafen / leave, participant names, listen-only fallback if the mic is denied.
-4. Text chat per room: persisted in Mongo, live via socket.io, bottom-sheet panel with unread badge.
+4. Text chat per room: persisted in Mongo **AES-256-GCM encrypted at rest**, live via socket.io, bottom-sheet panel with unread badge.
 5. PWA: installable, mobile-responsive, offline shell.
 
 ## Project layout
@@ -59,9 +59,42 @@ Ajit creates the service himself — **Web Service** (not Static Site):
 |---|---|
 | Build command | `npm install` |
 | Start command | `node server.js` |
-| Env vars | `MONGODB_URI` (Atlas, db `orbit`) |
+| Env vars | `MONGODB_URI` (Atlas, db `orbit`), `DATA_ENCRYPTION_KEY` (see Security — required in production), `GOOGLE_CLIENT_ID` (optional — enables the Google button) |
 
 Render sets `PORT` and `NODE_ENV` itself. **Important:** the frontend is served from the committed `public/` folder — Render never rebuilds it, so any UI change needs `npm run build` in `frontend/` + committing `public/` first.
+
+## Security
+
+**Login — password or Google one-tap.** Password login is unchanged. If `GOOGLE_CLIENT_ID` is set, the login screen also shows a "Continue with Google" button (Google Identity Services). The browser sends Google's signed ID token to `POST /api/auth/google`, the server verifies it with `google-auth-library`, then finds the user by Google id, links it to an existing account with the same email, or creates a new Google-only account (random unusable password hash). The same session cookie is issued either way. If no client ID is configured, no Google button renders at all. **Google only ever sees the login event** — no chat, room, or voice data goes to Google.
+
+**Setting up Google sign-in (Ajit does this in Google Cloud Console):**
+1. Create a project at [console.cloud.google.com](https://console.cloud.google.com) (or reuse an existing one).
+2. APIs & Services → OAuth consent screen → create it (External, app name "Orbit", your email).
+3. APIs & Services → Credentials → Create Credentials → OAuth client ID → **Web application**.
+4. Under **Authorized JavaScript origins**, add your Render URL, e.g. `https://orbit-xxxx.onrender.com` (no path, no trailing slash).
+5. Copy the **Client ID** (the `...apps.googleusercontent.com` string) into Render as `GOOGLE_CLIENT_ID`. No client secret is needed — this is the ID-token flow.
+
+**Stored data is encrypted.** Chat messages and room topics are encrypted at rest with **AES-256-GCM** (`lib/crypto.js`, wire format base64 `iv:authTag:ciphertext`, fresh random IV per message). The 32-byte key comes from `DATA_ENCRYPTION_KEY` (base64). Generate it with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+⚠️ **Losing the encryption key makes old messages permanently unreadable — there is no recovery.** Keep it in Render env vars; never commit it. If the var is missing, the server generates an ephemeral key at boot and logs a loud warning — fine for local dev, never for production.
+
+**What is encrypted and what is not (deliberate):**
+
+| Data | Protection |
+|---|---|
+| Chat messages, room topics | AES-256-GCM at rest (MongoDB) |
+| Voice | DTLS-SRTP peer-to-peer; the server never receives media |
+| Passwords | PBKDF2-SHA512, 310k iterations (hashed, never encrypted) |
+| Session tokens | SHA-256 hashed in DB, httpOnly cookies |
+| User emails / names | Plaintext — needed for login lookup and Google matching |
+| Transport | TLS via Render (HTTPS/WSS) |
+| Database disk | MongoDB Atlas encryption at rest |
+
+**No migration needed:** encryption landed before the first deploy, so there is no existing message data to migrate.
 
 ## Known v1 limits
 

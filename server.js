@@ -11,6 +11,10 @@ const { rateLimitMiddleware, csrfMiddleware } = require('./middleware/auth');
 const { attachSocket } = require('./lib/socket');
 const logger = require('./lib/logger');
 const { requestId, requestLog } = require('./middleware/requestLog');
+// Resolve the message-encryption key at boot so a missing
+// DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
+// logs (not silently on the first encrypted message).
+require('./lib/crypto').getKey();
 
 const app = express();
 app.disable('x-powered-by');

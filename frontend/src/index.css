@@ -144,6 +144,25 @@ input::placeholder { color: var(--muted); }
 }
 .auth-tabs button.active { background: var(--accent-grad); color: #fff; }
 
+/* Google one-tap button (rendered by Google Identity Services) + divider */
+.google-btn { display: flex; justify-content: center; min-height: 44px; margin-bottom: 0.9rem; }
+.google-btn:empty { display: none; }
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.auth-divider::before, .auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.auth-divider span { white-space: nowrap; }
+
 /* Home */
 .greeting { padding: 0.4rem 0.1rem 0; }
 .greeting .date-line {
