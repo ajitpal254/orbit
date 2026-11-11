@@ -26,6 +26,7 @@ const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, fin
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { canDm, buildSummaries } = require('../lib/dms');
 const { notExpiredFilter, withExpiry } = require('../lib/fadingChat');
+const { aliveFilter, isVisible, keepRoom } = require('../lib/fadingRooms');
 const { emitToUser, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
 const { buildFriendPresence } = require('../lib/friendPresence');
 const presence = require('../lib/presence');
@@ -417,6 +418,10 @@ const roomJson = (room, meId, profiles = new Map()) => {
     accent: accentById(room.accent),
     createdBy: String(room.createdBy),
     createdAt: room.createdAt,
+    // Campfire state (fading rooms): ephemeral rooms carry their
+    // server-set deadline; legacy/permanent rooms send null.
+    ephemeral: !!room.ephemeral,
+    expiresAt: room.expiresAt || null,
     occupants: occ.map((o) => ({ userId: o.userId, name: o.name, speaking: o.speaking })),
     occupantCount: occ.length,
     isPrivate,
@@ -489,12 +494,19 @@ router.get('/rooms', authMiddleware, asyncHandler(async (req, res) => {
   // or creator). Rooms without isPrivate (pre-private-rooms) match the
   // $ne: true branch and stay public. Both member shapes are matched:
   // 'members.user' for subdocuments, 'members' for legacy plain ids.
+  // Fading rooms: expired or cleanup-claimed rooms never reach the
+  // list — expiry is enforced at read time, not when the worker runs.
   const rooms = await Room.find({
-    $or: [
-      { isPrivate: { $ne: true } },
-      { 'members.user': req.user._id },
-      { members: req.user._id },
-      { createdBy: req.user._id }
+    $and: [
+      {
+        $or: [
+          { isPrivate: { $ne: true } },
+          { 'members.user': req.user._id },
+          { members: req.user._id },
+          { createdBy: req.user._id }
+        ]
+      },
+      aliveFilter()
     ]
   }).sort({ updatedAt: -1 }).lean();
   const profiles = await memberProfilesFor(rooms);
@@ -524,12 +536,36 @@ router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
 
 router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  // A faded campfire reads as gone, exactly like a deleted room — the
+  // worker may not have swept it yet, but its deadline has passed.
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }
   const profiles = await memberProfilesFor([room]);
   res.json(roomJson(room, req.user._id, profiles));
+}));
+
+// POST /api/rooms/:id/keep — the campfire owner's "Keep this room":
+// make an ephemeral room permanent before it fades. Atomic: the
+// conditional update wins only while the room is still an open
+// campfire whose deadline has not passed; if cleanup already claimed
+// it, the client gets the authoritative 410 instead of a silent
+// success. Keeping an already-permanent room is a no-op success.
+router.post('/rooms/:id/keep', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!isVisible(room)) return res.status(410).json({ error: 'This campfire has already faded' });
+  if (!room.ephemeral) return res.json(await freshRoomJson(room._id, req.user._id));
+  // Owner = the creator, or the role-owner after a transfer.
+  const isOwner = String(room.createdBy) === String(req.user._id) ||
+    getRole(room, req.user._id) === 'owner';
+  if (!isOwner) return res.status(403).json({ error: 'Only the room owner can keep it' });
+  const kept = await keepRoom(Room, room._id);
+  if (!kept) return res.status(410).json({ error: 'This campfire has already faded' });
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Campfire kept — room is permanent now');
+  emitRoomsChanged(room._id); // home screens pick the kept room up live
+  res.json(await freshRoomJson(room._id, req.user._id));
 }));
 
 router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
@@ -780,7 +816,7 @@ const messageJson = (m) => {
 
 router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }
@@ -794,7 +830,7 @@ router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) 
 
 router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }

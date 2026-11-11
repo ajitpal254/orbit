@@ -25,6 +25,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
   const [topic, setTopic] = useState('');
   const [accent, setAccent] = useState('violet');
   const [isPrivate, setIsPrivate] = useState(false);
+  // Campfire (fading room): on by default — the playbook makes rooms
+  // temporary by default, and the owner can keep one anytime. The
+  // server only treats an explicit true as ephemeral, so this toggle
+  // is the only thing that ever creates one.
+  const [isCampfire, setIsCampfire] = useState(true);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   // Friend presence, fetched ONCE here and shared by the night sky and
@@ -95,11 +100,12 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
       const room = await apiJson('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, topic, accent, isPrivate })
+        body: JSON.stringify({ name, topic, accent, isPrivate, ephemeral: isCampfire })
       });
       setName('');
       setTopic('');
       setIsPrivate(false);
+      setIsCampfire(true);
       setShowCreate(false);
       onJoin(room);
     } catch (err) {
@@ -226,6 +232,19 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
           {isPrivate && (
             <p className="muted privacy-hint">
               Only people you invite can see or join this room. Invite friends from inside the room.
+            </p>
+          )}
+          <label className="campfire-toggle">
+            <input
+              type="checkbox"
+              checked={isCampfire}
+              onChange={(e) => setIsCampfire(e.target.checked)}
+            />
+            <span><Icon name="flame" size={15} /> Campfire — closes 1 min after the last person leaves</span>
+          </label>
+          {isCampfire && (
+            <p className="muted privacy-hint">
+              Temporary by default, so your list stays short without any tidying. The room owner can keep it anytime.
             </p>
           )}
           {error && <p className="error">{error}</p>}
@@ -356,6 +375,7 @@ function RoomCard({ room, index, onJoin, isHero }) {
         <div>
           <strong className="room-name">
             {room.isPrivate && <span className="lock-badge" title="Private room"><Icon name="lock" size={12} /> </span>}
+            {room.ephemeral && <span className="campfire-badge" title="Campfire — closes 1 min after the last person leaves"><Icon name="flame" size={12} /> Campfire</span>}
             {room.name}
           </strong>
           {room.topic && <p className="room-topic">{room.topic}</p>}

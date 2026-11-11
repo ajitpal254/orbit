@@ -90,6 +90,9 @@ export const inviteToRoom = (roomId, userId) => jsonPost(`/api/rooms/${roomId}/i
 
 export const leavePrivateRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/leave`);
 
+// --- Campfires (fading rooms) ---
+export const keepRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/keep`);
+
 // --- Roles & moderation (private rooms) ---
 
 export const promoteMember = (roomId, userId) =>

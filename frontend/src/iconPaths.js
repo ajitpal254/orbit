@@ -46,6 +46,10 @@ export const ICON_PATHS = {
   chat: [
     { el: 'path', d: 'M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z' }
   ],
+  // Campfire (fading rooms): a flame, drawn as one stroke path.
+  flame: [
+    { el: 'path', d: 'M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z' }
+  ],
   // Hang-up: the plain handset, rotated 135° by .voice-btn.leave CSS —
   // that rotation is what turns it into the familiar hang-up glyph.
   phone: [
