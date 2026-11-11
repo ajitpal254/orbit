@@ -18,7 +18,11 @@ const MONGO_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/orbit-te
 let mongoAvailable = false;
 
 const skipIfNoMongo = (t) => {
-  if (!mongoAvailable) t.skip('no MongoDB reachable at ' + MONGO_URI);
+  if (!mongoAvailable) {
+    t.skip('no MongoDB reachable at ' + MONGO_URI);
+    return true;
+  }
+  return false;
 };
 
 before(async () => {
@@ -55,7 +59,7 @@ const rolesOf = async (roomId) => {
 };
 
 test('addMember adds once; a duplicate add is a no-op (matchedCount 0)', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const owner = oid(), x = oid(), y = oid();
   const room = await makeRoom([
     { user: owner, role: 'owner' }, { user: x, role: 'member' }
@@ -69,7 +73,7 @@ test('addMember adds once; a duplicate add is a no-op (matchedCount 0)', async (
 });
 
 test('addMember to a legacy plain-id room never duplicates the member', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const owner = oid(), x = oid(), y = oid();
   const { insertedId } = await Room.collection.insertOne({
     name: 'Legacy', createdBy: owner, isPrivate: true,
@@ -83,7 +87,7 @@ test('addMember to a legacy plain-id room never duplicates the member', async (t
 });
 
 test('removeMember removes subdocument and legacy plain-id entries in one op', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const owner = oid(), x = oid(), y = oid();
   const room = await makeRoom([
     { user: owner, role: 'owner' }, { user: x, role: 'member' }, { user: y, role: 'member' }
@@ -101,7 +105,7 @@ test('removeMember removes subdocument and legacy plain-id entries in one op', a
 });
 
 test('setMemberRole promotes/demotes once; a stale second attempt gets null', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const owner = oid(), x = oid();
   const room = await makeRoom([
     { user: owner, role: 'owner' }, { user: x, role: 'member' }
@@ -117,7 +121,7 @@ test('setMemberRole promotes/demotes once; a stale second attempt gets null', as
 });
 
 test('setMemberRole promotes a legacy plain-id member into a subdocument', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const owner = oid(), x = oid();
   const { insertedId } = await Room.collection.insertOne({
     name: 'Legacy', createdBy: owner, isPrivate: true,
@@ -134,7 +138,7 @@ test('setMemberRole promotes a legacy plain-id member into a subdocument', async
 });
 
 test('transferOwnership moves createdBy and both roles in one update', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const owner = oid(), x = oid(), y = oid();
   const room = await makeRoom([
     { user: owner, role: 'owner' }, { user: x, role: 'member' }, { user: y, role: 'member' }
@@ -152,7 +156,7 @@ test('transferOwnership moves createdBy and both roles in one update', async (t)
 });
 
 test('concurrent add + kick both hold — neither update is lost', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   // The audit's exact scenario: A reads [X, Y], B reads [X, Y]; A
   // adds Z, B kicks Y. With read-then-$set one effect was lost; with
   // atomic operators both hold, every time.
@@ -173,7 +177,7 @@ test('concurrent add + kick both hold — neither update is lost', async (t) => 
 });
 
 test('concurrent kick + promote: the kicked user stays kicked', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   for (let round = 0; round < 5; round++) {
     const owner = oid(), x = oid();
     const room = await makeRoom([
@@ -192,7 +196,7 @@ test('concurrent kick + promote: the kicked user stays kicked', async (t) => {
 });
 
 test('owner leave is conditional: a join racing the leave keeps the room owned', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const owner = oid(), joiner = oid();
   const room = await makeRoom([{ user: owner, role: 'owner' }]);
   // Simulate the race deterministically: the join lands first, so

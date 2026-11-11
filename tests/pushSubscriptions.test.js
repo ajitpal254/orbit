@@ -30,7 +30,11 @@ let server = null;
 let base = '';
 
 const skipIfNoMongo = (t) => {
-  if (!mongoAvailable) t.skip('no MongoDB reachable at ' + MONGO_URI);
+  if (!mongoAvailable) {
+    t.skip('no MongoDB reachable at ' + MONGO_URI);
+    return true;
+  }
+  return false;
 };
 
 before(async () => {
@@ -115,7 +119,7 @@ const validKeys = () => {
 };
 
 test('syncIndexes drops the old endpoint-only unique index and creates (user, endpoint)', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   // Simulate a pre-v0.5.1 deployment: the old unique index exists.
   await PushSubscription.collection.createIndex({ endpoint: 1 }, { unique: true, name: 'endpoint_1' });
   const names = async () =>
@@ -133,7 +137,7 @@ test('syncIndexes drops the old endpoint-only unique index and creates (user, en
 });
 
 test('two accounts on one device keep their own rows; duplicates per user are rejected', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   await PushSubscription.syncIndexes();
   const a = await makeUser('push-a@orbit.test', 'Push A');
   const b = await makeUser('push-b@orbit.test', 'Push B');
@@ -150,7 +154,7 @@ test('two accounts on one device keep their own rows; duplicates per user are re
 });
 
 test('HTTP: subscribing as B does not reassign A’s row; unsubscribe is scoped to the caller', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   await PushSubscription.syncIndexes();
   // A fresh endpoint for this test: the suite shares one database
   // across tests, and the endpoint is the shared-device identity.
@@ -188,7 +192,7 @@ test('HTTP: subscribing as B does not reassign A’s row; unsubscribe is scoped 
 });
 
 test('both accounts on one device receive pushes; a dead subscription prunes only its owner', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   await PushSubscription.syncIndexes();
   const endpoint = ENDPOINT + '-send';
   const a = await makeUser('send-a@orbit.test', 'Send A');

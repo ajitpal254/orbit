@@ -27,7 +27,11 @@ let server = null;
 let base = '';
 
 const skipIfNoMongo = (t) => {
-  if (!mongoAvailable) t.skip('no MongoDB reachable at ' + MONGO_URI);
+  if (!mongoAvailable) {
+    t.skip('no MongoDB reachable at ' + MONGO_URI);
+    return true;
+  }
+  return false;
 };
 
 before(async () => {
@@ -141,7 +145,7 @@ test('SMTP-unset mode: isSmtpConfigured is false without env', () => {
 // --- DB tests: token lifecycle ---
 
 test('verification token is stored only as a hash, expires in 24h', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const user = await makePasswordUser({ email: 'hashcheck@orbit.test', name: 'Hash', emailVerified: false });
   const raw = await createVerificationToken(user._id);
   assert.match(raw, /^[0-9a-f]{64}$/);
@@ -155,7 +159,7 @@ test('verification token is stored only as a hash, expires in 24h', async (t) =>
 });
 
 test('verifyEmailToken is single-use and refuses expired tokens', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const user = await makePasswordUser({ email: 'singleuse@orbit.test', name: 'Single', emailVerified: false });
   const raw = await createVerificationToken(user._id);
   const verified = await verifyEmailToken(raw);
@@ -176,7 +180,7 @@ test('verifyEmailToken is single-use and refuses expired tokens', async (t) => {
 });
 
 test('sendVerificationEmail sends a hash link with a stubbed transport', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const saved = {};
   for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
     saved[k] = process.env[k];
@@ -214,7 +218,7 @@ test('sendVerificationEmail sends a hash link with a stubbed transport', async (
 });
 
 test('SMTP-unset mode: send fails closed and the account stays unverified', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const saved = {};
   for (const k of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) {
     saved[k] = process.env[k];
@@ -237,7 +241,7 @@ test('SMTP-unset mode: send fails closed and the account stays unverified', asyn
 // --- DB tests: Google link guard ---
 
 test('Google sign-in onto a password account is refused while signed out', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const victim = await makePasswordUser({ email: 'victim@orbit.test', name: 'Victim', emailVerified: true });
   await assert.rejects(
     () => findOrCreateGoogleUser({ googleId: 'google-attacker', email: 'victim@orbit.test', name: 'Victim' }),
@@ -253,7 +257,7 @@ test('Google sign-in onto a password account is refused while signed out', async
 });
 
 test('Google link succeeds when signed in as that account, and verifies the email', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const user = await makePasswordUser({ email: 'linkme@orbit.test', name: 'Link', emailVerified: false });
   const linked = await findOrCreateGoogleUser(
     { googleId: 'google-linkme', email: 'linkme@orbit.test', name: 'Link' },
@@ -265,7 +269,7 @@ test('Google link succeeds when signed in as that account, and verifies the emai
 });
 
 test('Google sign-in with a fresh email creates a verified Google-only account', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const created = await findOrCreateGoogleUser(
     { googleId: 'google-fresh', email: 'fresh@orbit.test', name: 'Fresh' }
   );
@@ -282,7 +286,7 @@ test('Google sign-in with a fresh email creates a verified Google-only account',
 // --- HTTP tests: registration + gates + verify/resend ---
 
 test('HTTP: register creates an unverified account, login still works', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const jar = {};
   await bootstrapCsrf(jar);
   const res = await http('POST', '/api/auth/register', {
@@ -303,7 +307,7 @@ test('HTTP: register creates an unverified account, login still works', async (t
 });
 
 test('HTTP: unverified account is hidden from search and cannot invite or create rooms', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const { jar: unverifiedJar } = await login('newbie@orbit.test');
   const verified = await makePasswordUser({ email: 'verifier@orbit.test', name: 'Verifier Person', emailVerified: true });
   const { jar: verifiedJar } = await login('verifier@orbit.test');
@@ -336,7 +340,7 @@ test('HTTP: unverified account is hidden from search and cannot invite or create
 });
 
 test('HTTP: grandfathered account (no emailVerified field) is unaffected', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   // Insert raw, with no emailVerified field at all — a pre-change row.
   const salt = newSalt();
   const { insertedId } = await User.collection.insertOne({
@@ -360,7 +364,7 @@ test('HTTP: grandfathered account (no emailVerified field) is unaffected', async
 });
 
 test('HTTP: verify endpoint consumes the token, then the gates lift', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const user = await User.findOne({ email: 'newbie@orbit.test' });
   const raw = await createVerificationToken(user._id);
   const jar = {};
@@ -379,7 +383,7 @@ test('HTTP: verify endpoint consumes the token, then the gates lift', async (t) 
 });
 
 test('HTTP: resend is 503 when SMTP is unset, and a no-op when already verified', async (t) => {
-  skipIfNoMongo(t);
+  if (skipIfNoMongo(t)) return;
   const pending = await makePasswordUser({ email: 'resend@orbit.test', name: 'Resend Me', emailVerified: false });
   const { jar } = await login('resend@orbit.test');
   const res = await http('POST', '/api/auth/resend-verification', { jar, body: {} });
