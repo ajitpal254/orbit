@@ -9,6 +9,7 @@ const { verifyGoogleCredential } = require('../lib/googleAuth');
 const payload = {
   sub: 'google-123456',
   email: 'Test@Example.com',
+  email_verified: true,
   name: 'Test User',
   picture: 'https://example.com/pic.jpg'
 };
@@ -30,10 +31,22 @@ test('google verify returns normalized identity for a valid token', async () => 
 });
 
 test('google verify tolerates a payload with no name/picture', async () => {
-  const verify = async () => ticketFor({ sub: 'g-1', email: 'a@b.co' });
+  const verify = async () => ticketFor({ sub: 'g-1', email: 'a@b.co', email_verified: true });
   const identity = await verifyGoogleCredential('cred', verify);
   assert.equal(identity.name, '');
   assert.equal(identity.picture, '');
+});
+
+test('google verify refuses an unverified Google email (audit M1/I7)', async () => {
+  const verify = async () => ticketFor({ sub: 'g-1', email: 'a@b.co', email_verified: false });
+  await assert.rejects(() => verifyGoogleCredential('cred', verify), /not verified/);
+});
+
+test('google verify refuses when email_verified is missing', async () => {
+  // Only an explicit true proves Google owns the email; an absent
+  // claim is not proof.
+  const verify = async () => ticketFor({ sub: 'g-1', email: 'a@b.co' });
+  await assert.rejects(() => verifyGoogleCredential('cred', verify), /not verified/);
 });
 
 test('google verify rejects when the verifier rejects (bad/expired token)', async () => {
@@ -42,12 +55,12 @@ test('google verify rejects when the verifier rejects (bad/expired token)', asyn
 });
 
 test('google verify rejects a payload missing sub', async () => {
-  const verify = async () => ticketFor({ email: 'a@b.co' });
+  const verify = async () => ticketFor({ email: 'a@b.co', email_verified: true });
   await assert.rejects(() => verifyGoogleCredential('cred', verify), /Invalid Google token payload/);
 });
 
 test('google verify rejects a payload missing email', async () => {
-  const verify = async () => ticketFor({ sub: 'g-1' });
+  const verify = async () => ticketFor({ sub: 'g-1', email_verified: true });
   await assert.rejects(() => verifyGoogleCredential('cred', verify), /Invalid Google token payload/);
 });
 

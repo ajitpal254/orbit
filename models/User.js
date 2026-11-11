@@ -22,6 +22,13 @@ const userSchema = new mongoose.Schema({
   // Google account id for one-tap sign-in. Sparse + unique: password-only
   // users have no googleId, and one Google account links to one user.
   googleId: { type: String, unique: true, sparse: true, index: true, default: undefined },
+  // Email verification (audit M1): accounts created before verification
+  // existed have NO field here and count as verified — see
+  // lib/emailVerification.js isEmailVerified(). New registrations set
+  // this to false explicitly until they verify; Google sign-ups set it
+  // to true (Google attests the email). No default: an absent field
+  // must keep meaning "grandfathered", not "unverified".
+  emailVerified: { type: Boolean, default: undefined },
   passwordHash: { type: String, required: true },
   passwordSalt: { type: String, required: true }
 }, { timestamps: true });

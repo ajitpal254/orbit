@@ -17,8 +17,11 @@ const logger = require('./lib/logger');
 const { requestId, requestLog } = require('./middleware/requestLog');
 // Resolve the message-encryption key at boot so a missing
 // DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
-// logs (not silently on the first encrypted message).
+// logs (not silently on the first encrypted message). Same for SMTP:
+// a missing SMTP_* setup logs a clear warning that new accounts will
+// stay unverified until verification email can be sent (audit M1).
 require('./lib/crypto').getKey();
+require('./lib/emailVerification').logSmtpStatus();
 
 const app = express();
 app.disable('x-powered-by');
