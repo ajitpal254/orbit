@@ -24,6 +24,11 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [unread, setUnread] = useState(0);
   // Private rooms: members + inviting friends in.
   const [showInvite, setShowInvite] = useState(false);
+  // M1: on phones the members panel is collapsed by default (see the
+  // ≤520px rules in index.css) so the orb stage gets the freed space.
+  // The toggle only collapses ≤520px — on desktop the panel is always
+  // fully visible, exactly as before.
+  const [membersOpen, setMembersOpen] = useState(false);
   const [friends, setFriends] = useState(null);
   const [invited, setInvited] = useState([]);
   const [inviteError, setInviteError] = useState('');
@@ -419,9 +424,17 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           a sticky side column next to the stage. */}
       <div className={`room-body${room.isPrivate ? ' room-body--with-panel' : ''}`}>
       {room.isPrivate && (
-        <div className="members-panel card">
+        <div className={`members-panel card${membersOpen ? ' members-panel--open' : ''}`}>
           <div className="members-head">
-            <strong>Members ({members.length})</strong>
+            <button
+              className="members-toggle"
+              onClick={() => setMembersOpen((v) => !v)}
+              aria-expanded={membersOpen}
+              aria-controls="members-list"
+            >
+              <Icon name="users" size={15} /> Members ({members.length})
+              <span className="members-toggle-chev" aria-hidden="true"><Icon name="chevron-left" size={14} /></span>
+            </button>
             <span>
               <button className="btn btn-primary btn-small" onClick={openInvite}>
                 {showInvite ? (<><Icon name="x" size={14} /> Close</>) : (<><Icon name="plus" size={14} /> Invite a friend</>)}
@@ -432,7 +445,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               </button>
             </span>
           </div>
-          <div className="members-list">
+          <div className="members-list" id="members-list">
             {members.map((m, i) => {
               const isMe = m.id === user.id;
               const label = m.role === 'owner' ? (<><Icon name="crown" size={11} /> Owner</>) : m.role === 'moderator' ? (<><Icon name="shield" size={11} /> Mod</>) : null;

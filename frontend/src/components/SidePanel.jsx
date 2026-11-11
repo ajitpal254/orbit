@@ -29,17 +29,25 @@ const timeAgo = (iso) => {
   return d === 1 ? 'yesterday' : `${d}d ago`;
 };
 
-export default function SidePanel({ refreshTick, onJoinRoom, onNavigate }) {
-  const [friends, setFriends] = useState(null);
+export default function SidePanel({ refreshTick, onJoinRoom, onNavigate, friends: friendsProp }) {
+  // Home fetches GET /api/friends/presence once and passes it here
+  // (shared with the night sky) — when `friends` is provided, use it
+  // and skip this panel's own fetch/poll entirely. `undefined` means
+  // "not provided" (standalone use): fall back to fetching here, so
+  // the panel still works on its own. `null` while provided means
+  // "still loading".
+  const [ownFriends, setOwnFriends] = useState(null);
+  const friends = friendsProp !== undefined ? friendsProp : ownFriends;
   const [activity, setActivity] = useState([]);
   const [error, setError] = useState('');
   const [joining, setJoining] = useState(null);
 
   const loadPresence = useCallback(async () => {
+    if (friendsProp !== undefined) return;
     try {
-      setFriends(await getFriendsPresence());
+      setOwnFriends(await getFriendsPresence());
     } catch {}
-  }, []);
+  }, [friendsProp]);
 
   const loadActivity = useCallback(async () => {
     try {
@@ -51,9 +59,12 @@ export default function SidePanel({ refreshTick, onJoinRoom, onNavigate }) {
   useEffect(() => {
     loadPresence();
     loadActivity();
+    // Only poll here when this panel owns the fetch (no `friends`
+    // prop); Home polls on the shared path otherwise.
+    if (friendsProp !== undefined) return undefined;
     const t = setInterval(loadPresence, 5000); // same cadence as Home's room poll
     return () => clearInterval(t);
-  }, [loadPresence, loadActivity]);
+  }, [loadPresence, loadActivity, friendsProp]);
 
   // Socket pushes (friend request / invite / DM) bump refreshTick in App.
   useEffect(() => {
