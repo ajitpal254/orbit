@@ -28,6 +28,7 @@ const { authMiddleware, parseCookies, rateLimitMiddleware, asyncHandler } = requ
 const { validateRoomInput, validateMessageInput, accentById } = require('../lib/rooms');
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
+const { addMember, removeMember, setMemberRole, transferOwnership } = require('../lib/membership');
 const { canDm, buildSummaries } = require('../lib/dms');
 const { notExpiredFilter, withExpiry } = require('../lib/fadingChat');
 const { aliveFilter, isVisible, keepRoom } = require('../lib/fadingRooms');
@@ -563,15 +564,6 @@ const freshRoomJson = async (roomId, meId) => {
   return roomJson(room, meId, profiles);
 };
 
-// Rewrite a room's member list from a normalized [{ userId, role }]
-// array. This also migrates legacy plain-ObjectId entries to subdocuments
-// as a side effect. Never $pull/$addToSet raw ids — those operators cannot
-// match both member shapes.
-const writeMembers = (roomId, members) =>
-  Room.updateOne({ _id: roomId }, {
-    $set: { members: members.map((m) => ({ user: m.userId, role: m.role })) }
-  });
-
 // Load a private room for a role action. Returns { room } or
 // { status, error } — 404 / 400 (not private) / 403 (not a member).
 const loadPrivateRoomFor = async (roomId, userId) => {
@@ -766,18 +758,40 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
   if (!isRoomMember(room, req.user._id)) {
     return res.status(403).json({ error: 'You are not a member of this room' });
   }
-  const members = normalizeMembers(room);
   // The owner of a non-empty private room cannot leave until ownership
   // is transferred — otherwise the room would be left ownerless. The
   // owner alone in the room may leave; the room is deleted then.
   if (!canLeave(room, req.user._id)) {
     return res.status(400).json({ error: 'Transfer ownership first — the room owner cannot leave a non-empty private room' });
   }
-  const remaining = members.filter((m) => m.userId !== String(req.user._id));
   setMutedInRoom(room._id, req.user._id, false);
-  if (remaining.length === 0) {
-    // Last member out — the private room (and its chat + invites) goes
-    // with them instead of lingering as an empty locked room.
+  // Atomic removal (audit M4): no read-then-$set of the member list.
+  // When the owner leaves, the removal is conditional on the room
+  // still having exactly one member — a member who joins between the
+  // canLeave check and this update cannot leave the room ownerless.
+  const isOwner = getRole(room, req.user._id) === 'owner';
+  const removed = await removeMember(Room, room._id, req.user._id, { soleMemberOnly: isOwner });
+  if (!removed.matchedCount) {
+    // Lost a race: re-read to tell "room gone" from "someone joined".
+    const fresh = await Room.findById(room._id).lean();
+    if (!fresh) return res.json({ message: 'Left the room — it was deleted as the last member left' });
+    if (isRoomMember(fresh, req.user._id)) {
+      return res.status(400).json({ error: 'Transfer ownership first — the room owner cannot leave a non-empty private room' });
+    }
+    return res.json({ message: 'Left the room' });
+  }
+  // Leaving takes my invite link with me: the link admits friends of
+  // its creator, and I am no longer in the room to vouch for them.
+  await InviteLink.deleteMany({ room: room._id, createdBy: req.user._id });
+  // Last member out — the private room (and its chat + invites) goes
+  // with them instead of lingering as an empty locked room. Re-read
+  // after the atomic removal: two members leaving at once both land
+  // here, and the delete is idempotent. NOTE: check the RAW members
+  // array, not normalizeMembers() — that helper re-adds the creator
+  // as owner by design, so it never reads empty after a sole-owner
+  // leave.
+  const fresh = await Room.findById(room._id).lean();
+  if (fresh && fresh.members.length === 0) {
     await Room.deleteOne({ _id: room._id });
     await Message.deleteMany({ roomId: room._id });
     await RoomInvite.deleteMany({ room: room._id });
@@ -786,10 +800,6 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
     clearMutedForRoom(room._id);
     return res.json({ message: 'Left the room — it was deleted as the last member left' });
   }
-  // Leaving takes my invite link with me: the link admits friends of
-  // its creator, and I am no longer in the room to vouch for them.
-  await InviteLink.deleteMany({ room: room._id, createdBy: req.user._id });
-  await writeMembers(room._id, remaining);
   res.json({ message: 'Left the room' });
 }));
 
@@ -811,10 +821,13 @@ router.post('/rooms/:id/members/:userId/promote', authMiddleware, friendLimit, a
   if (!canPromote(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'Only the room owner can promote members, and only members can be promoted' });
   }
-  const members = normalizeMembers(room).map((m) =>
-    m.userId === String(target._id) ? { ...m, role: 'moderator' } : m
-  );
-  await writeMembers(room._id, members);
+  // Atomic role change (audit M4): the update wins only while the
+  // target is still a plain member — a concurrent demote/kick/transfer
+  // makes it miss, and the caller retries instead of overwriting it.
+  const updated = await setMemberRole(Room, room._id, target._id, 'member', 'moderator');
+  if (!updated) {
+    return res.status(409).json({ error: 'That member changed just now — please retry' });
+  }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Member promoted to moderator');
   res.json(await freshRoomJson(room._id, req.user._id));
 }));
@@ -829,10 +842,11 @@ router.post('/rooms/:id/members/:userId/demote', authMiddleware, friendLimit, as
   if (!canDemote(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'Only the room owner can demote moderators' });
   }
-  const members = normalizeMembers(room).map((m) =>
-    m.userId === String(target._id) ? { ...m, role: 'member' } : m
-  );
-  await writeMembers(room._id, members);
+  // Atomic role change (audit M4) — see promote.
+  const updated = await setMemberRole(Room, room._id, target._id, 'moderator', 'member');
+  if (!updated) {
+    return res.status(409).json({ error: 'That member changed just now — please retry' });
+  }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Moderator demoted to member');
   res.json(await freshRoomJson(room._id, req.user._id));
 }));
@@ -850,8 +864,9 @@ router.post('/rooms/:id/members/:userId/kick', authMiddleware, friendLimit, asyn
   if (!canKick(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'You cannot kick that member' });
   }
-  const members = normalizeMembers(room).filter((m) => m.userId !== String(target._id));
-  await writeMembers(room._id, members);
+  // Atomic removal (audit M4): a concurrent join can no longer be
+  // lost, and the kick itself cannot be undone by a stale $set.
+  await removeMember(Room, room._id, target._id);
   await RoomInvite.deleteMany({ room: room._id, invitee: target._id });
   // A kicked member's invite link goes too — it admits friends of its
   // creator, and they are no longer in the room.
@@ -876,13 +891,13 @@ router.post('/rooms/:id/transfer', authMiddleware, friendLimit, asyncHandler(asy
   if (!canTransfer(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'Only the room owner can transfer ownership, and only to another member' });
   }
-  const members = normalizeMembers(room).map((m) => {
-    if (m.userId === String(target._id)) return { ...m, role: 'owner' };
-    if (m.userId === String(req.user._id)) return { ...m, role: 'moderator' };
-    return m;
-  });
-  await writeMembers(room._id, members);
-  await Room.updateOne({ _id: room._id }, { $set: { createdBy: target._id } });
+  // One atomic update (audit M4): createdBy moves and both roles flip
+  // together, gated on the expected current state. A concurrent
+  // transfer misses and the caller retries.
+  const updated = await transferOwnership(Room, room._id, req.user._id, target._id);
+  if (!updated) {
+    return res.status(409).json({ error: 'Ownership changed just now — please retry' });
+  }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Room ownership transferred');
   res.json(await freshRoomJson(room._id, req.user._id));
 }));
@@ -999,13 +1014,14 @@ router.post('/invites/:id/accept', authMiddleware, friendLimit, asyncHandler(asy
     await RoomInvite.deleteOne({ _id: invite._id });
     return res.status(403).json({ error: 'Room no longer exists' });
   }
-  // New members join as plain members (subdocument shape); the write
-  // also migrates any legacy plain-ObjectId entries.
-  const members = normalizeMembers(room);
-  if (!members.some((m) => m.userId === String(req.user._id))) {
-    members.push({ userId: String(req.user._id), role: 'member' });
+  // Atomic add (audit M4): new members join as plain members. A
+  // matchedCount of 0 just means "already a member" — the re-read
+  // below confirms the room is still there before answering.
+  await addMember(Room, room._id, req.user._id, 'member');
+  if (!await Room.exists({ _id: room._id })) {
+    await RoomInvite.deleteOne({ _id: invite._id });
+    return res.status(403).json({ error: 'Room no longer exists' });
   }
-  await writeMembers(room._id, members);
   invite.status = 'accepted';
   await invite.save();
   const inviter = await User.findById(invite.inviter);
@@ -1190,11 +1206,8 @@ router.post('/invite-links/:token/join', authMiddleware, friendLimit, asyncHandl
     return res.status(403).json({ error: 'This invite link is for friends of the person who shared it — ask them to add you as a friend first' });
   }
   if (room.isPrivate) {
-    const members = normalizeMembers(room);
-    if (!members.some((m) => m.userId === String(req.user._id))) {
-      members.push({ userId: String(req.user._id), role: 'member' });
-      await writeMembers(room._id, members);
-    }
+    // Atomic add (audit M4); already a member is a no-op success.
+    await addMember(Room, room._id, req.user._id, 'member');
   }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Joined room via invite link');
   res.json(await freshRoomJson(room._id, req.user._id));
@@ -1395,13 +1408,9 @@ router.post('/knocks/:id/admit', authMiddleware, friendLimit, asyncHandler(async
     { returnDocument: 'after' }
   );
   if (!claimed) return res.status(400).json({ error: 'This knock was already answered or has expired' });
-  // The knocker may have joined another way since knocking — only add
-  // them when they are still a non-member.
-  const members = normalizeMembers(room);
-  if (!members.some((m) => m.userId === String(knock.user))) {
-    members.push({ userId: String(knock.user), role: 'member' });
-    await writeMembers(room._id, members);
-  }
+  // The knocker may have joined another way since knocking — the
+  // atomic add is a no-op when they are already a member (audit M4).
+  await addMember(Room, room._id, knock.user, 'member');
   await clearKnockNotifications(knock, room);
   const knocker = await User.findById(knock.user);
   emitToUser(knock.user, 'knock-admitted', { roomId: String(room._id), roomName: room.name });
