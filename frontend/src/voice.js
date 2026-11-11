@@ -92,7 +92,7 @@ export class VoiceEngine {
     }
 
     // Load ICE servers before joining: the account TURN (if configured
-    // via /api/config), the no-signup static-auth TURN, then Google STUN.
+    // via /api/turn), the no-signup static-auth TURN, then Google STUN.
     // Peers are only created after join-room, so this always lands first.
     await this._loadIceServers();
 
