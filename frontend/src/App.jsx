@@ -164,34 +164,6 @@ export default function App() {
     return () => { cancelled = true; };
   }, [user, refreshTick]);
 
-  // A notification row was tapped: jump to the right place. A room
-  // invite opens that room directly (falling back to the rooms list
-  // when the room is gone or no longer visible); a DM opens the
-  // thread; everything else lands on the Friends tab.
-  const handleNotifNavigate = useCallback(async (target) => {
-    if (target.view === 'rooms' && target.roomId) {
-      try {
-        const room = await apiJson(`/api/rooms/${target.roomId}`);
-        joinRoom(room);
-        return;
-      } catch {
-        // Fall through to the rooms list below.
-      }
-    }
-    if (target.view === 'messages' && target.dmUser) {
-      setDmUser({
-        id: target.dmUser.id,
-        name: target.dmUser.name,
-        email: target.dmUser.email,
-        avatarPreset: target.dmUser.avatarPreset,
-        avatarImage: target.dmUser.avatarImage
-      });
-      goTo('messages');
-      return;
-    }
-    goTo(target.view === 'friends' ? 'friends' : 'rooms');
-  }, [joinRoom, goTo]);
-
   const openDm = useCallback((friend) => {
     setDmUser(friend);
     setView('messages');
@@ -232,6 +204,39 @@ export default function App() {
     setView('rooms');
     setInRoom(true);
   }, []);
+
+  // A notification row was tapped: jump to the right place. A room
+  // invite opens that room directly (falling back to the rooms list
+  // when the room is gone or no longer visible); a DM opens the
+  // thread; everything else lands on the Friends tab.
+  // NOTE: this must stay below joinRoom/goTo — its dependency array
+  // ([joinRoom, goTo]) is evaluated on the first render, so if either
+  // were declared after it, the app would crash with
+  // "Cannot access ... before initialization". That is exactly what
+  // the v0.2.0 merge did; see tests/appCallbackOrder.test.mjs.
+  const handleNotifNavigate = useCallback(async (target) => {
+    if (target.view === 'rooms' && target.roomId) {
+      try {
+        const room = await apiJson(`/api/rooms/${target.roomId}`);
+        joinRoom(room);
+        return;
+      } catch {
+        // Fall through to the rooms list below.
+      }
+    }
+    if (target.view === 'messages' && target.dmUser) {
+      setDmUser({
+        id: target.dmUser.id,
+        name: target.dmUser.name,
+        email: target.dmUser.email,
+        avatarPreset: target.dmUser.avatarPreset,
+        avatarImage: target.dmUser.avatarImage
+      });
+      goTo('messages');
+      return;
+    }
+    goTo(target.view === 'friends' ? 'friends' : 'rooms');
+  }, [joinRoom, goTo]);
 
   // Mini-player mute: same session, same engine, same sound as the
   // room view's voice bar — RoomView mirrors the state onto my orb.
