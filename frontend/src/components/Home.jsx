@@ -4,6 +4,7 @@ import { getSocket } from '../socket';
 import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
 import { selectBusiestRoom } from '../desktop';
+import { formatBadgeCount } from '../mobileNav';
 import HeroCard from './HeroCard';
 import SidePanel from './SidePanel';
 import { Icon } from './icons';
@@ -13,7 +14,7 @@ import { Icon } from './icons';
 // Shared with the About section, which displays the same beta number.
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 
-export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigate }) {
+export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigate, notifUnread, onOpenNotifications }) {
   const [rooms, setRooms] = useState([]);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -113,6 +114,21 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
             : 'No one is talking right now — start a room.'}
         </p>
       </div>
+
+      {/* M2: on phones the bell lives here, in the Home header — the
+          topbar bell is hidden ≤520px (see index.css), and the bottom
+          tab bar has no notifications tab. Only rendered on phones
+          (.home-bell is display:none above 520px). */}
+      <button
+        className="icon-btn home-bell"
+        onClick={() => onOpenNotifications && onOpenNotifications()}
+        aria-label={`Notifications${notifUnread > 0 ? `, ${notifUnread} unread` : ''}`}
+      >
+        <Icon name="bell" />
+        {notifUnread > 0 && (
+          <span className="bell-badge">{formatBadgeCount(notifUnread)}</span>
+        )}
+      </button>
 
       <button className="btn btn-primary btn-block" onClick={() => setShowCreate((v) => !v)}>
         {showCreate ? (<><Icon name="x" size={16} /> Cancel</>) : (<><Icon name="plus" size={16} /> New room</>)}

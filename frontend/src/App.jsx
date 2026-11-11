@@ -4,6 +4,7 @@ import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound, playMuteSound } from './sounds';
 import { voiceSessionReducer, initialVoiceSessionState } from './voiceSession';
 import MiniPlayer from './components/MiniPlayer';
+import MobileTabBar from './components/MobileTabBar';
 import { onUpdateAvailable, applyUpdate } from './pwa';
 import { parseDeepLinkHash } from './deepLink';
 import Auth from './components/Auth';
@@ -465,7 +466,7 @@ export default function App() {
             onRead={() => setRefreshTick((t) => t + 1)}
           />
         ) : (
-          <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} onNavigate={handleNotifNavigate} />
+          <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} onNavigate={handleNotifNavigate} notifUnread={notifUnread} onOpenNotifications={() => goTo('notifications')} />
         ))}
       </main>
       </div>
@@ -479,6 +480,15 @@ export default function App() {
           onToggleMute={toggleMute}
           onReturn={returnToRoom}
         />
+      )}
+
+      {/* Phone bottom tab bar (M2): the top .view-tabs are gone ≤520px,
+          so this floating pill is the section nav there. Hidden inside
+          an open room view (!inRoom) — the voice bar owns the bottom
+          there — and hidden above 520px in CSS (tablets keep the top
+          tabs, desktop keeps the icon rail). */}
+      {!inRoom && (
+        <MobileTabBar view={view} dmUnread={dmUnread} onNavigate={goTo} />
       )}
 
       {updateAvailable && (

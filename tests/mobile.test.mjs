@@ -74,3 +74,76 @@ test('M1: RoomView wires the toggle to the panel class and aria state', () => {
   assert.ok(roomViewJsx.includes('Invite a friend'));
   assert.ok(roomViewJsx.includes('Leave room'));
 });
+
+// --- M2: bottom tab bar ----------------------------------------------------
+import { MOBILE_TABS, formatBadgeCount } from '../frontend/src/mobileNav.js';
+import { ICON_PATHS } from '../frontend/src/iconPaths.js';
+
+const appJsx = readFileSync(new URL('../frontend/src/App.jsx', import.meta.url), 'utf8');
+const homeJsx = readFileSync(new URL('../frontend/src/components/Home.jsx', import.meta.url), 'utf8');
+const tabBarJsx = readFileSync(new URL('../frontend/src/components/MobileTabBar.jsx', import.meta.url), 'utf8');
+
+test('M2: the tab bar has the four sections, with icons that exist', () => {
+  assert.deepEqual(MOBILE_TABS.map((t) => t.view), ['rooms', 'friends', 'messages', 'profile']);
+  assert.deepEqual(MOBILE_TABS.map((t) => t.label), ['Rooms', 'Friends', 'Messages', 'You']);
+  for (const t of MOBILE_TABS) {
+    assert.ok(ICON_PATHS[t.icon], `tab ${t.view} uses missing icon ${t.icon}`);
+  }
+  // Exactly one badge slot: DM unread on Messages. Notifications live
+  // on the Home header bell, not on a tab.
+  assert.deepEqual(MOBILE_TABS.filter((t) => t.badge).map((t) => `${t.view}:${t.badge}`), ['messages:dm']);
+});
+
+test('M2: badge counts cap at 9+, and 0 hides the badge', () => {
+  assert.equal(formatBadgeCount(0), '');
+  assert.equal(formatBadgeCount(undefined), '');
+  assert.equal(formatBadgeCount(1), '1');
+  assert.equal(formatBadgeCount(9), '9');
+  assert.equal(formatBadgeCount(10), '9+');
+  assert.equal(formatBadgeCount(42), '9+');
+});
+
+test('M2: the phone block hides the top tabs and topbar bell, and shows the pill', () => {
+  assert.match(phone, /\.view-tabs \{ display: none; \}/);
+  assert.match(phone, /\.topbar \.bell-btn \{ display: none; \}/);
+  assert.match(phone, /\.mobile-tab-bar \{[^}]*display: flex;/);
+  assert.match(phone, /\.mobile-tab-bar \{[^}]*position: fixed;/);
+  assert.match(phone, /\.mobile-tab-bar \{[^}]*bottom: calc\(0\.75rem \+ env\(safe-area-inset-bottom\)\);/);
+  assert.match(phone, /\.mobile-tab-bar \{[^}]*height: 3\.5rem;/);
+  // The pill is hidden above 520px (tablets keep top tabs, desktop
+  // keeps the icon rail).
+  assert.match(outsidePhone, /\.mobile-tab-bar, \.home-bell \{ display: none; \}/);
+});
+
+test('M2: the mini-player sits directly above the tab bar, never overlapping it', () => {
+  // Tab bar top edge = bottom offset (0.75rem) + height (3.5rem) =
+  // 4.25rem above the safe-area line; the in-call mini-player bottom
+  // must clear that with room to spare.
+  const tabRule = phone.match(/\.mobile-tab-bar \{([^}]*)\}/);
+  assert.ok(tabRule, 'no .mobile-tab-bar rule in the phone block');
+  const tabBottom = Number(tabRule[1].match(/bottom: calc\(([0-9.]+)rem/)?.[1]);
+  const tabHeight = Number(tabRule[1].match(/height: ([0-9.]+)rem/)?.[1]);
+  assert.ok(tabBottom > 0 && tabHeight > 0, 'tab bar bottom/height not parseable');
+  const miniRule = phone.match(/\.app--in-call \.mini-player \{([^}]*)\}/);
+  assert.ok(miniRule, 'no in-call mini-player rule in the phone block');
+  const miniBottom = Number(miniRule[1].match(/bottom: calc\(([0-9.]+)rem/)?.[1]);
+  assert.ok(miniBottom > 0, 'mini-player bottom not parseable');
+  assert.ok(
+    miniBottom >= tabBottom + tabHeight + 0.5,
+    `mini-player bottom (${miniBottom}rem) must clear the tab bar top edge (${tabBottom + tabHeight}rem) by >= 0.5rem`
+  );
+  // And the in-call main padding must clear the stacked pair.
+  assert.match(phone, /\.app--in-call \.main \{ padding-bottom: calc\(9\.75rem \+ env\(safe-area-inset-bottom\)\); \}/);
+});
+
+test('M2: App renders the tab bar only outside a room view, and Home owns the bell', () => {
+  assert.ok(appJsx.includes("import MobileTabBar from './components/MobileTabBar'"));
+  assert.match(appJsx, /\{!inRoom && \(\s*<MobileTabBar view=\{view\} dmUnread=\{dmUnread\} onNavigate=\{goTo\} \/>/);
+  assert.ok(appJsx.includes('notifUnread={notifUnread} onOpenNotifications={() => goTo(\'notifications\')}'));
+  assert.ok(homeJsx.includes('className="icon-btn home-bell"'));
+  assert.ok(homeJsx.includes('formatBadgeCount(notifUnread)'));
+  assert.ok(tabBarJsx.includes('formatBadgeCount(dmUnread)'));
+  // The bell is hidden on phones only via the CSS above — the topbar
+  // bell JSX stays for tablets (521–899px), where the tab bar is off.
+  assert.ok(appJsx.includes('className="icon-btn bell-btn"'));
+});
