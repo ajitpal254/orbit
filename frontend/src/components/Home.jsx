@@ -82,7 +82,8 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
   const quiet = rooms.filter((r) => r.occupantCount === 0);
 
   return (
-    <div className="view view-anim">
+    <div className="view view-anim home-view">
+      <div className="home-head">
       <div className="greeting">
         <p className="date-line">Your orbit</p>
         <h2>Hey, {user.name ? user.name.split(' ')[0] : 'friend'} 👋</h2>
@@ -96,6 +97,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
       <button className="btn btn-primary btn-block" onClick={() => setShowCreate((v) => !v)}>
         {showCreate ? '✕ Cancel' : '＋ New room'}
       </button>
+      </div>
 
       {showCreate && (
         <form className="card create-card" onSubmit={createRoom}>

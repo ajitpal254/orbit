@@ -140,7 +140,7 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
   };
 
   return (
-    <div className="view view-anim">
+    <div className="view view-anim profile-view">
       <div className="greeting">
         <p className="date-line">Your orbit</p>
         <h2>Profile 👤</h2>

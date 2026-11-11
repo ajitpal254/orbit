@@ -383,6 +383,10 @@ export default function RoomView({ user, room, onLeave }) {
 
       {micError && <p className="mic-error">{micError}</p>}
 
+      {/* Room body: members panel + orb stage. They stack on mobile;
+          on desktop (min-width: 900px in index.css) the panel becomes
+          a sticky side column next to the stage. */}
+      <div className={`room-body${room.isPrivate ? ' room-body--with-panel' : ''}`}>
       {room.isPrivate && (
         <div className="members-panel card">
           <div className="members-head">
@@ -472,6 +476,7 @@ export default function RoomView({ user, room, onLeave }) {
         </div>
       )}
 
+      <div className="room-stage">
       <div className="room-space" ref={spaceRef} onClick={() => setSelectedOrb(null)}>
         <div className="starfield" />
         <div className="starfield-twinkle starfield-twinkle-a" />
@@ -660,6 +665,8 @@ export default function RoomView({ user, room, onLeave }) {
           🔇 Muted by moderator{modMutedBy ? ` (${modMutedBy})` : ''} — you can still hear everyone, but they can't hear you.
         </p>
       )}
+      </div>
+      </div>
     </div>
   );
 }

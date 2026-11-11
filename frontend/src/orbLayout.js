@@ -48,11 +48,19 @@ function clampOrb(x, y, size, container) {
 export function orbPositions(people, container) {
   const n = people.length;
   if (n === 0) return [];
+  // On a big desktop room the 76–112px orbs would look lost, so sizes
+  // scale with the container (up to 1.5×). Phones (min side ≤ 480px)
+  // keep scale 1, so the existing phone sizes are untouched; without a
+  // container there is nothing to scale against, so scale is 1 too.
+  const sizeScale =
+    container && container.width > 0 && container.height > 0
+      ? Math.min(1.5, Math.max(1, Math.min(container.width, container.height) / 480))
+      : 1;
   // People are keyed by socketId in the room view (they have no `id`
   // field); fall back to `id` for callers that use it (tests, home screen).
   const pid = (p) => p.socketId || p.id;
   if (n === 1) {
-    const c = clampOrb(50, 46, 118, container);
+    const c = clampOrb(50, 46, Math.round(118 * sizeScale), container);
     return [{ id: pid(people[0]), x: Math.round(c.x * 10) / 10, y: Math.round(c.y * 10) / 10, size: c.size, delay: 0, duration: 7 }];
   }
   // Golden-angle spiral: even spread, organic feel.
@@ -62,7 +70,7 @@ export function orbPositions(people, container) {
     const ring = 26 + (h % 13); // radius 26–38% of container
     const x = 50 + Math.cos(angle) * ring * 1.15;
     const y = 46 + Math.sin(angle) * ring * 0.82;
-    const c = clampOrb(x, y, 76 + (h % 36), container); // size 76–112px
+    const c = clampOrb(x, y, Math.round((76 + (h % 36)) * sizeScale), container); // size 76–112px on phones, up to 1.5× on desktop
     return {
       id: pid(p),
       x: Math.round(c.x * 10) / 10,

@@ -96,3 +96,45 @@ test('orbPositions: deterministic with a container, and solo stays centered', ()
   assert.equal(solo.x, 50);
   assert.equal(solo.y, 46);
 });
+
+test('orbPositions: desktop rooms stay inside bounds and orbs scale up', () => {
+  // Desktop layout: the orb area is much bigger than a phone room, so
+  // orbs must still clamp inside it (center ± radius) — and they grow
+  // with the room instead of looking lost in it.
+  const inBounds = (p, w, h) => {
+    const r = p.size / 2;
+    const cx = (p.x / 100) * w;
+    const cy = (p.y / 100) * h;
+    assert.ok(cx - r >= 0, `orb ${p.id} clips left at ${w}x${h}`);
+    assert.ok(cx + r <= w, `orb ${p.id} clips right at ${w}x${h}`);
+    assert.ok(cy - r >= 0, `orb ${p.id} clips top at ${w}x${h}`);
+    assert.ok(cy + r <= h, `orb ${p.id} clips bottom at ${w}x${h}`);
+  };
+  for (const [w, h] of [[1200, 800], [1000, 650], [1400, 900], [900, 600]]) {
+    for (let n = 1; n <= 6; n++) {
+      const people = Array.from({ length: n }, (_, i) => ({ id: `d${w}-${n}-${i}` }));
+      for (const p of orbPositions(people, { width: w, height: h })) inBounds(p, w, h);
+    }
+  }
+  // Sizes grow with the room: a solo orb on a 1200×800 desktop room is
+  // bigger than the 118px phone solo orb, and multi-person orbs exceed
+  // the 76–112px phone range.
+  const [solo] = orbPositions([{ id: 'solo-d' }], { width: 1200, height: 800 });
+  assert.ok(solo.size > 118, `solo desktop orb ${solo.size} should be bigger than phone 118`);
+  const multi = orbPositions(
+    Array.from({ length: 4 }, (_, i) => ({ id: `dm${i}` })),
+    { width: 1200, height: 800 }
+  );
+  assert.ok(multi.every((p) => p.size > 76), 'desktop orbs should all be bigger than the smallest phone orb');
+  assert.ok(multi.some((p) => p.size > 112), 'desktop orbs should exceed the phone size range');
+  // Phones keep scale 1: the same people in a 360×520 room stay at
+  // phone sizes.
+  const [soloPhone] = orbPositions([{ id: 'solo-p' }], { width: 360, height: 520 });
+  assert.equal(soloPhone.size, 118);
+});
+
+test('orbPositions: desktop layout is deterministic', () => {
+  const people = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+  const c = { width: 1200, height: 800 };
+  assert.deepEqual(orbPositions(people, c), orbPositions(people, c));
+});

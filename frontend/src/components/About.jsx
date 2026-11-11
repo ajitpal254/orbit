@@ -10,7 +10,7 @@ const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 
 export default function About({ onBack }) {
   return (
-    <div className="view view-anim">
+    <div className="view view-anim about-view">
       <button className="btn btn-text back-btn" onClick={onBack}>← Back</button>
 
       <div className="card about-card">
