@@ -14,7 +14,7 @@ const Room = require('./models/Room');
 const Message = require('./models/Message');
 const RoomInvite = require('./models/RoomInvite');
 const logger = require('./lib/logger');
-const { requestId, requestLog } = require('./middleware/requestLog');
+const { requestId, requestLog, requestPath } = require('./middleware/requestLog');
 const { securityHeaders } = require('./middleware/securityHeaders');
 // Resolve the message-encryption key at boot so a missing
 // DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
@@ -73,7 +73,7 @@ app.get('/*splat', (req, res) => {
 
 // Central error handler: logs fully, responds with a safe { error } shape.
 app.use((err, req, res, _next) => {
-  (req.log || logger).error({ err, url: req.originalUrl }, 'Unhandled error');
+  (req.log || logger).error({ err, url: requestPath(req) }, 'Unhandled error');
   const status = err.status || 500;
   res.status(status).json({ error: status === 500 ? 'Something went wrong' : err.message });
 });

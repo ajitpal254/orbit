@@ -114,7 +114,7 @@ export const revokeInviteLink = (roomId) =>
   apiJson(`/api/rooms/${roomId}/invite-link`, { method: 'DELETE' });
 
 export const joinViaInviteLink = (token) =>
-  jsonPost(`/api/invite-links/${encodeURIComponent(token)}/join`);
+  jsonPost('/api/invite-links/join', { token });
 
 // --- Knocks on private rooms ---
 

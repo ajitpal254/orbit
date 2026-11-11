@@ -947,7 +947,9 @@ router.post('/invites/:id/decline', authMiddleware, friendLimit, asyncHandler(as
 //
 // The link itself is `/#invite-<token>` (a hash, so the token never
 // travels in an HTTP request line or server log — the frontend reads
-// the hash and POSTs the token in the body to /invite-links/:token/join).
+// the hash and POSTs the token in the body to /invite-links/join —
+// never in the URL path, so the token cannot land in a request line
+// or server log (audit M2).
 
 // Serialize a link for an authorized viewer, with the raw token the
 // client needs to build the shareable URL.
@@ -1055,16 +1057,19 @@ router.delete('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandle
   res.json({ message: 'Invite link revoked' });
 }));
 
-// POST /api/invite-links/:token/join — redeem a link. The token is
-// validated by shape first (no DB lookup for garbage), then by hash.
-// Invalid and revoked links share one 404 message so the endpoint
-// cannot tell an attacker whether a token ever existed; expired links
-// get a distinct 410. A private-room join adds the user as a member
-// (plain member, like accepting a room invite); a public-room join
-// adds nothing — the room is already open. Answers with the fresh
-// room JSON so the client can open the room directly.
-router.post('/invite-links/:token/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
-  const { token } = req.params;
+// POST /api/invite-links/join { token } — redeem a link. The token
+// travels in the JSON body, never in the URL path: the old
+// /invite-links/:token/join route put every redeemed token in the
+// request line and the server logs (audit M2), so it was removed.
+// The token is validated by shape first (no DB lookup for garbage),
+// then by hash. Invalid and revoked links share one 404 message so
+// the endpoint cannot tell an attacker whether a token ever existed;
+// expired links get a distinct 410. A private-room join adds the
+// user as a member (plain member, like accepting a room invite); a
+// public-room join adds nothing — the room is already open. Answers
+// with the fresh room JSON so the client can open the room directly.
+router.post('/invite-links/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { token } = req.body || {};
   if (!isValidInviteToken(token)) {
     return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
   }

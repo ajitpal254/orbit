@@ -293,7 +293,7 @@ export default function App() {
   // Deep links from push taps: the service worker opens the app at
   // /#friends, /#room-<id>, /#dm-<userId> or /#notifications. Invite
   // links arrive the same way, as /#invite-<token> — shared by a room
-  // member, redeemed here via POST /api/invite-links/:token/join.
+  // member, redeemed here via POST /api/invite-links/join { token }.
   // Read the hash once the user is known (room/DM/invite targets need
   // auth + a fetch), and on hashchange for taps while a tab is already
   // open (the SW navigates that tab in place instead of opening a new

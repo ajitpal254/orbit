@@ -5,7 +5,7 @@
 // fetches a fresh token and retries once.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { apiJson, getCookie } from '../frontend/src/api.js';
+import { apiJson, getCookie, joinViaInviteLink } from '../frontend/src/api.js';
 
 // Fake browser globals: document.cookie storage + a fetch stub playing
 // the server. The token endpoint issues a cookie; POSTs require the
@@ -116,4 +116,15 @@ test('a rate-limited knock 429 carries the pending knock on the error', async ()
       return true;
     }
   );
+});
+
+// Audit M2: the invite token travels in the JSON body, never in the URL.
+test('joinViaInviteLink POSTs the token in the body to /api/invite-links/join', async () => {
+  reset();
+  const token = 'AbCdEfGhIjKlMnOpQrStUvWxYz012345';
+  await joinViaInviteLink(token);
+  const joins = calls.filter(([url]) => url === '/api/invite-links/join');
+  assert.equal(joins.length, 1);
+  assert.deepEqual(JSON.parse(joins[0][1].body), { token });
+  assert.equal(calls.some(([url]) => url.includes(token)), false);
 });
