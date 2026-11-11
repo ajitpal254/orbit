@@ -1621,8 +1621,9 @@ router.post('/notifications/read-all', authMiddleware, asyncHandler(async (req, 
 // --- WEB PUSH SUBSCRIPTIONS ---
 
 // A push subscription is { endpoint, keys: { p256dh, auth } } from the
-// browser's PushManager. The endpoint is globally unique — resubscribing
-// from the same browser updates the row instead of duplicating it.
+// browser's PushManager. Subscriptions are keyed by (user, endpoint)
+// (audit M5): two accounts on one device share one endpoint, and each
+// keeps its own row — subscribing as B never reassigns A's row.
 const isValidSubscription = (s) =>
   s && typeof s === 'object' &&
   typeof s.endpoint === 'string' && s.endpoint.startsWith('https://') &&
@@ -1636,8 +1637,11 @@ router.post('/push/subscribe', authMiddleware, friendLimit, asyncHandler(async (
     return res.status(400).json({ error: 'Invalid push subscription' });
   }
   await PushSubscription.findOneAndUpdate(
-    { endpoint: subscription.endpoint },
-    { user: req.user._id, keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } },
+    { user: req.user._id, endpoint: subscription.endpoint },
+    {
+      $set: { keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } },
+      $setOnInsert: { user: req.user._id, endpoint: subscription.endpoint }
+    },
     { upsert: true, returnDocument: 'after' }
   );
   res.json({ subscribed: true });

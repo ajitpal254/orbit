@@ -13,6 +13,7 @@ const { startCleanupWorker } = require('./lib/fadingRooms');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const RoomInvite = require('./models/RoomInvite');
+const PushSubscription = require('./models/PushSubscription');
 const logger = require('./lib/logger');
 const { requestId, requestLog } = require('./middleware/requestLog');
 // Resolve the message-encryption key at boot so a missing
@@ -85,8 +86,20 @@ attachSocket(io);
 
 if (require.main === module) {
   mongoose.connect(MONGODB_URI)
-    .then(() => {
+    .then(async () => {
       logger.info('MongoDB connected');
+      // Push subscriptions are keyed by (user, endpoint) (audit M5):
+      // drop the pre-v0.5.1 endpoint-only unique index if it is still
+      // in the database, so two accounts on one device can both stay
+      // subscribed. Best-effort — a failure is logged, never fatal.
+      try {
+        const dropped = await PushSubscription.syncIndexes();
+        if (dropped && dropped.length) {
+          logger.info({ dropped }, 'Dropped obsolete push-subscription indexes');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Push-subscription index sync failed — the old endpoint-only index may still block a second account on one device');
+      }
       // Campfire cleanup worker: sweeps due campfires every 15s and
       // deletes them (persisted expiresAt + atomic claim — restart-safe,
       // safe with two workers). Runs once immediately so rooms whose
