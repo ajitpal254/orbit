@@ -396,6 +396,20 @@ input::placeholder { color: var(--muted); }
 .conn-connected { background: #34d399; box-shadow: 0 0 8px rgba(52, 211, 153, 0.8); }
 .conn-new, .conn-connecting, .conn-checking { background: #f59e0b; }
 .conn-disconnected, .conn-failed, .conn-closed { background: #f87171; box-shadow: 0 0 8px rgba(248, 113, 113, 0.8); }
+/* Live per-peer voice state (connection / ICE) — the debug line under the orbs. */
+.voice-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  justify-content: center;
+  margin: 0.5rem 1rem 0;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+.sound-btn {
+  display: block;
+  margin: 0.75rem auto 0;
+}
 
 /* Floating voice bar */
 .voice-bar {

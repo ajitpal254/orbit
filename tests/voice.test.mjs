@@ -62,14 +62,15 @@ function mockSocket(id) {
   };
 }
 
-function makeEngine(socketId) {
+function makeEngine(socketId, opts = {}) {
   return new VoiceEngine({
     socket: mockSocket(socketId),
     roomId: 'room1',
     selfId: 'user1',
     onSpeaking: () => {},
     onMicError: () => {},
-    onConnectionState: () => {}
+    onConnectionState: () => {},
+    ...opts
   });
 }
 
@@ -179,4 +180,51 @@ test('ICE candidates arriving before the remote description are queued, then flu
   await engine._onSignal({ from: 'peer1', type: 'ice', data: { candidate: 'c2' } });
   assert.equal(peer.pc.addedCandidates.length, 2);
   assert.equal(peer.pendingCandidates.length, 0);
+});
+
+test('_offerTo reuses the same peer connection instead of orphaning one', async () => {
+  const engine = makeEngine('me');
+  await engine._offerTo('peer1');
+  const pc1 = engine.peers.get('peer1').pc;
+  await engine._offerTo('peer1');
+  assert.equal(engine.peers.get('peer1').pc, pc1);
+  assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'offer').length, 2);
+});
+
+test('unanswered offer is re-offered once after the retry delay', async () => {
+  const engine = makeEngine('me', { offerRetryMs: 10 });
+  await engine._offerTo('peer1');
+  assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'offer').length, 1);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'offer').length, 2);
+  // No third offer: only one retry.
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'offer').length, 2);
+  engine._removePeer('peer1');
+});
+
+test('answered offer is never retried', async () => {
+  const engine = makeEngine('me', { offerRetryMs: 10 });
+  await engine._offerTo('peer1');
+  await engine._onSignal({ from: 'peer1', type: 'answer', data: { type: 'answer', sdp: 'y' } });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'offer').length, 1);
+  engine._removePeer('peer1');
+});
+
+test('retryPlayback plays every remote audio element and reports success', async () => {
+  const engine = makeEngine('me');
+  engine._createPeer('p1');
+  engine._createPeer('p2');
+  let played = 0;
+  for (const id of ['p1', 'p2']) {
+    engine.peers.get(id).audioEl = { play: async () => { played += 1; }, remove: () => {} };
+  }
+  assert.equal(await engine.retryPlayback(), true);
+  assert.equal(played, 2);
+
+  engine.peers.get('p2').audioEl = { play: async () => { throw new Error('blocked'); }, remove: () => {} };
+  assert.equal(await engine.retryPlayback(), false);
+  engine._removePeer('p1');
+  engine._removePeer('p2');
 });

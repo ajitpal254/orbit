@@ -10,6 +10,8 @@ export default function RoomView({ user, room, onLeave }) {
   }));
   const [speaking, setSpeaking] = useState({ selfSpeaking: false, levels: {} });
   const [connState, setConnState] = useState({});
+  const [iceState, setIceState] = useState({});
+  const [playBlocked, setPlayBlocked] = useState(false);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [micError, setMicError] = useState('');
@@ -32,8 +34,11 @@ export default function RoomView({ user, room, onLeave }) {
       selfId: user.id,
       onSpeaking: (s) => setSpeaking(s),
       onMicError: (msg) => setMicError(msg),
-      onConnectionState: (socketId, state) =>
-        setConnState((prev) => ({ ...prev, [socketId]: state }))
+      onConnectionState: (socketId, state, ice) => {
+        setConnState((prev) => ({ ...prev, [socketId]: state }));
+        if (ice) setIceState((prev) => ({ ...prev, [socketId]: ice }));
+      },
+      onPlaybackBlocked: () => setPlayBlocked(true)
     });
     voiceRef.current = voice;
 
@@ -59,6 +64,11 @@ export default function RoomView({ user, room, onLeave }) {
         return next;
       });
       setConnState((prev) => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
+      setIceState((prev) => {
         const next = { ...prev };
         delete next[socketId];
         return next;
@@ -204,6 +214,30 @@ export default function RoomView({ user, room, onLeave }) {
           <p className="room-hint">You're alone in here — friends join from the home screen.</p>
         )}
       </div>
+
+      {people.length > 1 && (
+        <div className="voice-status">
+          {people
+            .filter((p) => !p.isSelf)
+            .map((p) => (
+              <span key={p.socketId}>
+                {p.name.split(' ')[0]}: {connState[p.socketId] || 'connecting'} /{' '}
+                {iceState[p.socketId] || 'checking'}
+              </span>
+            ))}
+        </div>
+      )}
+      {playBlocked && (
+        <button
+          className="btn btn-primary sound-btn"
+          onClick={async () => {
+            const ok = await voiceRef.current?.retryPlayback();
+            setPlayBlocked(!ok);
+          }}
+        >
+          🔊 Tap to enable sound
+        </button>
+      )}
 
       {chatOpen && (
         <div className="chat-sheet">

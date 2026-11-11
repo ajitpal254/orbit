@@ -41,14 +41,18 @@ export function isOfferer(mySocketId, otherSocketId) {
 }
 
 export class VoiceEngine {
-  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState }) {
+  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs }) {
     this.socket = socket;
     this.roomId = roomId;
     this.selfId = selfId;
     this.onSpeaking = onSpeaking || (() => {});
     this.onMicError = onMicError || (() => {});
     this.onConnectionState = onConnectionState || (() => {});
-    this.peers = new Map(); // socketId -> { pc, audioEl, analyser, data, speaking, pendingCandidates }
+    this.onPlaybackBlocked = onPlaybackBlocked || (() => {});
+    // If an offer goes unanswered (peer missed it, was backgrounded, ...),
+    // re-offer once after this delay instead of staying silent forever.
+    this.offerRetryMs = offerRetryMs ?? 5000;
+    this.peers = new Map(); // socketId -> { pc, audioEl, analyser, data, speaking, pendingCandidates, polite, makingOffer, ignoreOffer, offerRetries, retryTimer }
     this.localStream = null;
     this.localAnalyser = null;
     this.audioCtx = null;
@@ -122,10 +126,30 @@ export class VoiceEngine {
     }
   }
 
+  // If the browser blocks audio playback (autoplay policy), the user can
+  // tap to retry — returns true when every remote stream is playing.
+  async retryPlayback() {
+    let ok = true;
+    for (const peer of this.peers.values()) {
+      if (!peer.audioEl) continue;
+      try {
+        await peer.audioEl.play();
+      } catch {
+        ok = false;
+      }
+    }
+    return ok;
+  }
+
   // --- peer connections ---
 
   _createPeer(socketId) {
     const existing = this.peers.get(socketId);
+    // Never orphan a live peer connection: close the old one first.
+    if (existing?.pc) {
+      try { existing.pc.close(); } catch {}
+      if (existing.retryTimer) clearTimeout(existing.retryTimer);
+    }
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream));
@@ -136,7 +160,10 @@ export class VoiceEngine {
       }
     };
     pc.onconnectionstatechange = () => {
-      this.onConnectionState(socketId, pc.connectionState);
+      this.onConnectionState(socketId, pc.connectionState, pc.iceConnectionState);
+    };
+    pc.oniceconnectionstatechange = () => {
+      this.onConnectionState(socketId, pc.connectionState, pc.iceConnectionState);
     };
     pc.ontrack = (e) => {
       const stream = e.streams[0];
@@ -145,7 +172,11 @@ export class VoiceEngine {
       audioEl.playsInline = true;
       audioEl.muted = this.deafened;
       audioEl.srcObject = stream;
-      audioEl.play().catch(() => {});
+      audioEl.play().catch(() => {
+        // Autoplay blocked: the connection may be fine while nothing is
+        // heard. The UI offers a tap-to-enable-sound button for this.
+        this.onPlaybackBlocked(socketId);
+      });
       const peer = this.peers.get(socketId);
       if (peer) {
         peer.audioEl = audioEl;
@@ -164,19 +195,33 @@ export class VoiceEngine {
       // colliding offer), larger id is impolite (ignores the collision).
       polite: this.socket.id ? this.socket.id < socketId : false,
       makingOffer: existing ? existing.makingOffer : false,
-      ignoreOffer: false
+      ignoreOffer: false,
+      offerRetries: 0,
+      retryTimer: null
     });
     return pc;
   }
 
   async _offerTo(socketId) {
-    const pc = this._createPeer(socketId);
+    // Reuse the existing peer connection: a second offer on the same pc is
+    // a renegotiation, while a fresh pc would orphan the first one's ICE.
+    const pc = this.peers.get(socketId)?.pc || this._createPeer(socketId);
     const peer = this.peers.get(socketId);
     try {
       peer.makingOffer = true;
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       this.socket.emit('signal', { to: socketId, type: 'offer', data: offer });
+      // No answer within the window: the peer may have missed the offer
+      // (backgrounded tab, dropped packet). Re-offer once on the same pc.
+      if (peer.retryTimer) clearTimeout(peer.retryTimer);
+      peer.retryTimer = setTimeout(() => {
+        peer.retryTimer = null;
+        if (peer.pc.signalingState === 'have-local-offer' && peer.offerRetries < 1) {
+          peer.offerRetries += 1;
+          this._offerTo(socketId);
+        }
+      }, this.offerRetryMs);
     } catch (err) {
       console.warn('offer failed', err);
     } finally {
@@ -245,8 +290,13 @@ export class VoiceEngine {
         await pc.setLocalDescription(answer);
         this.socket.emit('signal', { to: from, type: 'answer', data: answer });
       } else if (type === 'answer') {
-        const pc = this.peers.get(from)?.pc;
+        const peer = this.peers.get(from);
+        const pc = peer?.pc;
         if (pc) {
+          if (peer.retryTimer) {
+            clearTimeout(peer.retryTimer);
+            peer.retryTimer = null;
+          }
           await pc.setRemoteDescription(new RTCSessionDescription(data));
           this._flushPendingCandidates(from);
         }
@@ -266,6 +316,7 @@ export class VoiceEngine {
   _removePeer(socketId) {
     const peer = this.peers.get(socketId);
     if (!peer) return;
+    if (peer.retryTimer) clearTimeout(peer.retryTimer);
     try { peer.pc.close(); } catch {}
     if (peer.audioEl) {
       peer.audioEl.srcObject = null;
