@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson } from '../api';
+import { apiJson, getFriends, inviteToRoom, leavePrivateRoom } from '../api';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
@@ -21,6 +21,12 @@ export default function RoomView({ user, room, onLeave }) {
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [unread, setUnread] = useState(0);
+  // Private rooms: members + inviting friends in.
+  const [showInvite, setShowInvite] = useState(false);
+  const [friends, setFriends] = useState(null);
+  const [invited, setInvited] = useState([]);
+  const [inviteError, setInviteError] = useState('');
+  const [leaving, setLeaving] = useState(false);
   const voiceRef = useRef(null);
   const chatEndRef = useRef(null);
   const chatOpenRef = useRef(false);
@@ -148,6 +154,40 @@ export default function RoomView({ user, room, onLeave }) {
     setUnread(0);
   };
 
+  const openInvite = async () => {
+    setShowInvite((v) => !v);
+    if (friends === null) {
+      try {
+        const data = await getFriends();
+        setFriends(data.friends || []);
+      } catch {
+        setFriends([]);
+      }
+    }
+  };
+
+  const inviteFriend = async (friendId) => {
+    setInviteError('');
+    try {
+      await inviteToRoom(room.id, friendId);
+      setInvited((prev) => [...prev, friendId]);
+    } catch (err) {
+      setInviteError(err.message);
+    }
+  };
+
+  const leaveMembership = async () => {
+    if (!window.confirm(`Leave the private room "${room.name}"? You will need a new invite to come back.`)) return;
+    setLeaving(true);
+    try {
+      await leavePrivateRoom(room.id);
+      onLeave();
+    } catch (err) {
+      setInviteError(err.message);
+      setLeaving(false);
+    }
+  };
+
   const sendMessage = (e) => {
     e.preventDefault();
     const text = draft.trim();
@@ -170,7 +210,10 @@ export default function RoomView({ user, room, onLeave }) {
       <div className="room-header">
         <button className="btn btn-text" onClick={onLeave}>← Rooms</button>
         <div className="room-title">
-          <strong>{room.name}</strong>
+          <strong>
+            {room.isPrivate && <span className="lock-badge" title="Private room">🔒 </span>}
+            {room.name}
+          </strong>
           {room.topic && <span className="muted">{room.topic}</span>}
         </div>
         <span className="room-count">
@@ -179,6 +222,67 @@ export default function RoomView({ user, room, onLeave }) {
       </div>
 
       {micError && <p className="mic-error">{micError}</p>}
+
+      {room.isPrivate && (
+        <div className="members-panel card">
+          <div className="members-head">
+            <strong>Members ({(room.members || []).length})</strong>
+            <span>
+              <button className="btn btn-primary btn-small" onClick={openInvite}>
+                {showInvite ? '✕ Close' : '＋ Invite a friend'}
+              </button>
+              {' '}
+              <button className="btn btn-text btn-small" disabled={leaving} onClick={leaveMembership}>
+                {leaving ? 'Leaving…' : 'Leave room'}
+              </button>
+            </span>
+          </div>
+          <div className="members-list">
+            {(room.members || []).map((m) => (
+              <span key={m.id} className="member-chip" title={m.name}>
+                {initials(m.name)} {m.name ? m.name.split(' ')[0] : ''}
+                {m.id === user.id ? ' (you)' : ''}
+              </span>
+            ))}
+            {(room.members || []).length === 0 && (
+              <span className="muted">No members listed.</span>
+            )}
+          </div>
+          {showInvite && (
+            <div className="invite-picker">
+              {friends === null && <p className="muted">Loading friends…</p>}
+              {friends !== null && friends.length === 0 && (
+                <p className="muted">
+                  No friends yet — add friends from the Friends tab to invite them here.
+                </p>
+              )}
+              {friends !== null && friends.map((f) => {
+                const alreadyMember = (room.members || []).some((m) => m.id === f.id);
+                const justInvited = invited.includes(f.id);
+                return (
+                  <div key={f.id} className="person-row">
+                    <span className="mini-orb person-orb">{initials(f.name || f.email)}</span>
+                    <span className="person-info">
+                      <strong>{f.name || 'Unnamed'}</strong>
+                      <span className="muted person-email">{f.email}</span>
+                    </span>
+                    {alreadyMember ? (
+                      <span className="muted">Member ✓</span>
+                    ) : justInvited ? (
+                      <span className="muted">Invited ✓</span>
+                    ) : (
+                      <button className="btn btn-primary btn-small" onClick={() => inviteFriend(f.id)}>
+                        Invite
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {inviteError && <p className="error">{inviteError}</p>}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="room-space">
         <div className="starfield" />

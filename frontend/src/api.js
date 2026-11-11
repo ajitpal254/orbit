@@ -54,3 +54,38 @@ export const apiJson = async (url, options = {}) => {
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
 };
+
+const jsonPost = (url, body) =>
+  apiJson(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+
+// --- Friends ---
+
+export const searchUsers = (q) =>
+  apiJson(`/api/users/search?q=${encodeURIComponent(q)}`);
+
+export const getFriends = () => apiJson('/api/friends');
+
+export const sendFriendRequest = (userId) => jsonPost('/api/friends/request', { userId });
+
+export const acceptFriendRequest = (userId) => jsonPost('/api/friends/accept', { userId });
+
+export const declineFriendRequest = (userId) => jsonPost('/api/friends/decline', { userId });
+
+export const removeFriend = (userId) =>
+  apiJson(`/api/friends/${userId}`, { method: 'DELETE' });
+
+// --- Room invites ---
+
+export const getInvites = () => apiJson('/api/invites');
+
+export const acceptInvite = (inviteId) => jsonPost(`/api/invites/${inviteId}/accept`);
+
+export const declineInvite = (inviteId) => jsonPost(`/api/invites/${inviteId}/decline`);
+
+export const inviteToRoom = (roomId, userId) => jsonPost(`/api/rooms/${roomId}/invite`, { userId });
+
+export const leavePrivateRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/leave`);

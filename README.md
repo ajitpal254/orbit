@@ -19,6 +19,7 @@ Same family as Budget-Manager and Calorie-Tracker:
 3. Voice room: floating orbs, speaking glow, mute / deafen / leave, participant names, listen-only fallback if the mic is denied.
 4. Text chat per room: persisted in Mongo **AES-256-GCM encrypted at rest**, live via socket.io, bottom-sheet panel with unread badge.
 5. PWA: installable, mobile-responsive, offline shell.
+6. Friends & private rooms: add friends by name/email, send/accept/decline requests, and create private rooms that only members can see or join — invite friends from inside the room. See "Friends & private rooms" below.
 
 ## Project layout
 
@@ -28,16 +29,17 @@ routes/api.js        Auth, rooms, room chat (REST)
 lib/socket.js        socket.io signaling + presence events
 lib/presence.js      In-memory live occupancy registry
 lib/rooms.js         Pure room validation / accents / initials
+lib/friends.js       Pure friendship / private-room predicates
 lib/passwords.js     PBKDF2 + token helpers
 lib/logger.js        pino
 middleware/          auth (sessions/CSRF/rate limit), requestLog
-models/              User, Session, Room, Message
+models/              User, Session, Room, Message, Friendship, RoomInvite
 frontend/src/
   voice.js           Mesh WebRTC engine (the only WebRTC module)
   orbLayout.js       Deterministic spatial orb positions
   socket.js          socket.io client singleton
   api.js             fetch helper (cookie session + CSRF)
-  components/        Auth, Home (room cards), RoomView (orbs + voice bar + chat)
+  components/        Auth, Home (room cards), RoomView (orbs + voice bar + chat), Friends
 tests/               node:test — pure-logic tests (no Mongo needed)
 ```
 
@@ -75,6 +77,17 @@ STUN alone only lets two peers connect directly. On networks where a direct path
    The server exposes them via `GET /api/config`; the voice engine fetches them on join. Changing the env vars restarts the Render service automatically — no rebuild needed. TURN credentials are client-visible by nature (any WebRTC client must hold them to allocate); they are quota-limited, not secret.
 
 Diagnosing: the per-peer status line under the room shows the gathered candidate types — `relay` appearing means TURN is producing candidates; a `failed / disconnected` line with only `host+srflx` means no relay was available and direct paths failed.
+
+## Friends & private rooms
+
+Public rooms work exactly as before — anyone can see and join them. Friends unlock private rooms:
+
+- **Friends tab** — search people by name or email (min 2 characters), send a request, accept/decline incoming requests, see requests you sent, and remove friends. A friend request is one row (`models/Friendship.js`, `pending` → `accepted`); both directions are checked, so there is never a duplicate.
+- **Private rooms** — the create form has a Public/Private toggle. A private room starts with its creator as the only member, shows a 🔒 badge and member count on its card, and is invisible to everyone else: the room list, room detail, messages, and the socket `join-room` all refuse non-members (403 / `error` event).
+- **Invites** — inside a private room, any member can invite one of their accepted friends (never strangers, never existing members; a pending invite is returned instead of duplicated). The invitee gets a live `room-invite` push over their socket (same chime as someone joining) plus an ✉️ Room invites section on the home screen — Join drops them straight into the room, Decline dismisses it. Accepting adds them to `room.members`.
+- **Leaving** — a member can leave a private room from the members panel; if the last member leaves, the room (and its chat + invites) is deleted. Public rooms have nothing to leave. Deleting a room stays creator-only.
+- **Live notifications** — `friend-request`, `room-invite`, and `friend-accepted` are pushed to the recipient's connected socket(s) via a small in-memory userId → socket map in `lib/socket.js`; the app plays the join chime and refreshes the Friends tab / invites list. Offline users see everything on their next load.
+- **Rules, in one place** — the visibility/invite predicates live in `lib/friends.js` (`areFriends`, `friendshipStatus`, `canSeeRoom`, `canInvite`, `findPendingInvite`) and are unit-tested in `tests/friends.test.js` without MongoDB. Route/socket integration tests need MongoDB and were **not** run in the sandbox — smoke-tested via module loads + live `/api/health` instead.
 
 ## Security
 
@@ -114,7 +127,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 - **Mesh voice scales to ~2–6 people.** Every peer connects to every other peer; beyond that, CPU/bandwidth grows fast. The upgrade path is a LiveKit SFU — `voice.js` is isolated so the swap touches one module.
 - **TURN is best-effort by default.** The built-in static-auth Open Relay TURN works with no setup, but it is a free shared relay with no SLA. For reliable calls, add your own free Metered TURN credentials (`TURN_USERNAME` / `TURN_CREDENTIAL` on Render) — see "Voice connectivity (TURN)".
 - **PWA only on mobile** — no native app yet. Install from the browser; mic access works in the PWA.
-- **No DMs, roles, or screen share yet** — rooms + voice + chat only.
+- **No DMs, roles, or screen share yet** — rooms + voice + chat + friends only. Friends and private rooms are in (see "Friends & private rooms").
 - **Presence is in-memory.** A server restart clears "who's in a room" (correct behavior — presence is ephemeral), but chat history and rooms persist in Mongo.
 - Tests cover pure logic (room validation, presence, orb layout, password helpers). Route/socket integration tests need MongoDB and were **not** run in the sandbox — smoke-tested via module loads + live `/api/health` instead.
 
