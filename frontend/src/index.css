@@ -858,6 +858,43 @@ input::placeholder { color: var(--muted); }
 }
 .conn-details-btn:hover { color: var(--text); border-color: var(--border-strong); }
 .conn-details-btn .icon { width: 14px; height: 14px; }
+
+/* Invite link: the header button, the in-flow panel under the room
+   header (RoomView), and the join-error banner (App). The panel is
+   plain in-flow content with no animation, so there is nothing to
+   still under prefers-reduced-motion. */
+.invite-link-btn { flex-shrink: 0; }
+.invite-link-btn .icon { width: 16px; height: 16px; }
+.invite-link-panel { margin: 0 0 0.6rem; padding: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.invite-link-head { display: flex; align-items: center; justify-content: space-between; }
+.invite-link-head strong { display: inline-flex; align-items: center; gap: 0.35rem; }
+.invite-link-row { display: flex; gap: 0.5rem; }
+.invite-link-row input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.6rem;
+  text-overflow: ellipsis;
+}
+.invite-link-actions { display: flex; justify-content: flex-end; }
+.invite-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0 0 0.8rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--text);
+  font-size: 0.9rem;
+}
 .conn-popover {
   position: absolute;
   left: 50%;

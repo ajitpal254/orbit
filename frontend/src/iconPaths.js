@@ -89,6 +89,11 @@ export const ICON_PATHS = {
   'chevron-left': [
     { el: 'polyline', points: '15 18 9 12 15 6' }
   ],
+  // Chain link — invite links (RoomView header) and copy-link controls.
+  link: [
+    { el: 'path', d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' },
+    { el: 'path', d: 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' }
+  ],
   send: [
     { el: 'line', x1: 22, y1: 2, x2: 11, y2: 13 },
     { el: 'polygon', points: '22 2 15 22 11 13 2 9 22 2' }

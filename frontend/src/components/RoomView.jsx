@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, createInviteLink, getInviteLink, revokeInviteLink } from '../api';
+import { buildInviteLinkUrl } from '../deepLink';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
@@ -32,6 +33,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [friends, setFriends] = useState(null);
   const [invited, setInvited] = useState([]);
   const [inviteError, setInviteError] = useState('');
+  // Invite link (shareable join link): the panel under the header, the
+  // fetched/created link, and copy feedback. One link per room — the
+  // panel loads the existing one or creates it on first open.
+  const [showLink, setShowLink] = useState(false);
+  const [linkInfo, setLinkInfo] = useState(null);
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkError, setLinkError] = useState('');
+  const [copied, setCopied] = useState(false);
+  const linkInputRef = useRef(null);
+  const copiedTimerRef = useRef(null);
   const [leaving, setLeaving] = useState(false);
   // Roles & moderation (private rooms): local copy of the member list so
   // role actions refresh it without leaving the room; moderator-mute
@@ -275,13 +286,14 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       if (e.key === 'Escape') {
         if (chatOpen) setChatOpen(false);
         else if (showInvite) setShowInvite(false);
+        else if (showLink) setShowLink(false);
         else if (showConnDetails) setShowConnDetails(false);
         else if (selectedOrb) setSelectedOrb(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showConnDetails, selectedOrb]);
+  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showLink, showConnDetails, selectedOrb]);
 
   const openInvite = async () => {
     setShowInvite((v) => !v);
@@ -302,6 +314,64 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       setInvited((prev) => [...prev, friendId]);
     } catch (err) {
       setInviteError(err.message);
+    }
+  };
+
+  // Invite link: load the room's active link, or create it when there
+  // is none yet. The server returns the existing link instead of
+  // duplicating it, so opening the panel twice is safe.
+  const loadOrCreateLink = async () => {
+    setLinkLoading(true);
+    setLinkError('');
+    try {
+      const data = await getInviteLink(room.id);
+      if (data?.link) {
+        setLinkInfo(data.link);
+      } else {
+        setLinkInfo(await createInviteLink(room.id));
+      }
+    } catch (err) {
+      setLinkError(err.message);
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  const openLinkPanel = () => {
+    const next = !showLink;
+    setShowLink(next);
+    if (next && !linkInfo && !linkLoading) loadOrCreateLink();
+  };
+
+  const linkUrl = linkInfo ? buildInviteLinkUrl(window.location.origin, linkInfo.token) : '';
+
+  // Copy the link: Clipboard API first, with a select-the-input
+  // fallback for browsers/contexts where it is unavailable.
+  const copyLink = async () => {
+    if (!linkUrl) return;
+    try {
+      await navigator.clipboard.writeText(linkUrl);
+    } catch {
+      linkInputRef.current?.select();
+    }
+    setCopied(true);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
+  };
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
+
+  const revokeLink = async () => {
+    if (!window.confirm(`Revoke the invite link for "${room.name}"? Anyone holding it will no longer be able to join with it.`)) return;
+    setLinkError('');
+    try {
+      await revokeInviteLink(room.id);
+      setLinkInfo(null);
+      setCopied(false);
+    } catch (err) {
+      setLinkError(err.message);
     }
   };
 
@@ -415,9 +485,71 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         <span className="room-count">
           <span className="count-dot" /> {people.length} here
         </span>
+        <button
+          className="btn btn-text invite-link-btn"
+          onClick={openLinkPanel}
+          title="Copy invite link"
+          aria-label="Copy invite link"
+          aria-expanded={showLink}
+        >
+          <Icon name="link" size={16} />
+        </button>
       </div>
 
       {micError && <p className="mic-error">{micError}</p>}
+
+      {/* Invite link panel: the room's shareable join link. In flow
+          below the header (not absolute), so it can never hide behind
+          the voice bar. */}
+      {showLink && (
+        <div className="invite-link-panel card">
+          <div className="invite-link-head">
+            <strong><Icon name="link" size={15} /> Invite link</strong>
+            <button className="btn btn-text btn-small" onClick={() => setShowLink(false)} aria-label="Close invite link">
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+          {linkLoading && <p className="muted">Making your link…</p>}
+          {!linkLoading && linkInfo && (
+            <>
+              <div className="invite-link-row">
+                <input
+                  ref={linkInputRef}
+                  readOnly
+                  value={linkUrl}
+                  onClick={(e) => e.target.select()}
+                  aria-label="Invite link"
+                />
+                <button className="btn btn-primary btn-small" onClick={copyLink}>
+                  {copied ? (<><Icon name="check" size={13} /> Copied</>) : 'Copy'}
+                </button>
+              </div>
+              <p className="muted members-note">
+                {room.isPrivate ? (
+                  <>
+                    Only friends of {linkInfo.createdBy.id === user.id ? 'yours' : (linkInfo.createdBy.name || 'the person who made this link')} can join with this link.
+                    {linkInfo.expiresAt ? (
+                      <> It expires {new Date(linkInfo.expiresAt).toLocaleDateString([], { month: 'short', day: 'numeric' })} — revoke it and make a new one for a fresh link.</>
+                    ) : null}
+                  </>
+                ) : (
+                  'Anyone with this link can join — this room is public.'
+                )}
+              </p>
+              <div className="invite-link-actions">
+                <button className="btn btn-text btn-small" onClick={revokeLink}>Revoke link</button>
+              </div>
+            </>
+          )}
+          {!linkLoading && !linkInfo && !linkError && (
+            <p className="muted">
+              No invite link yet.{' '}
+              <button className="btn btn-text btn-small" onClick={loadOrCreateLink}>Create one</button>
+            </p>
+          )}
+          {linkError && <p className="error">{linkError}</p>}
+        </div>
+      )}
 
       {/* Room body: members panel + orb stage. They stack on mobile;
           on desktop (min-width: 900px in index.css) the panel becomes
