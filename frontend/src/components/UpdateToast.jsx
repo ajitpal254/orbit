@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from './icons';
 
 // Shown when a new service-worker version is waiting (see pwa.js).
 // Never auto-reloads: tapping Update is the only thing that reloads,
@@ -20,7 +21,7 @@ export default function UpdateToast({ onUpdate, onDismiss }) {
         onClick={onDismiss}
         aria-label="Dismiss update"
       >
-        ✕
+        <Icon name="x" size={16} />
       </button>
     </div>
   );

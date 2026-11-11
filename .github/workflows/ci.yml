@@ -1,0 +1,45 @@
+# Orbit CI — runs on every pull request and every push to main.
+# Checks: full test suite + frontend build + committed public/ freshness.
+# Render serves the committed public/ folder and never rebuilds the
+# frontend, so a PR with UI changes but a stale public/ would ship a
+# stale UI. The freshness step rebuilds and fails if the rebuild
+# differs from what is committed (the Vite build is deterministic —
+# verified by building twice and diffing).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: node --test tests/*.test.js tests/*.test.mjs
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+      - name: Check committed public/ is fresh
+        run: git diff --exit-code public/

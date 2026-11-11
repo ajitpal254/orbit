@@ -1,14 +1,19 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { apiJson, getInvites, acceptInvite, declineInvite } from '../api';
+import { getSocket } from '../socket';
 import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
+import { selectBusiestRoom } from '../desktop';
+import HeroCard from './HeroCard';
+import SidePanel from './SidePanel';
+import { Icon } from './icons';
 
 // Build version (Vite define from package.json, see vite.config.js).
 // Guarded so the file doesn't break if the define is ever missing.
 // Shared with the About section, which displays the same beta number.
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 
-export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
+export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigate }) {
   const [rooms, setRooms] = useState([]);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -32,8 +37,18 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000); // live occupancy refresh
+    // Slow fallback poll only — the list refreshes live from the
+    // server's `rooms-changed` socket push (join / leave / create /
+    // delete, see lib/socket.js), so the old 5s poll is gone.
+    const t = setInterval(load, 30000);
     return () => clearInterval(t);
+  }, [load]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    const onRoomsChanged = () => load();
+    socket.on('rooms-changed', onRoomsChanged);
+    return () => { socket.off('rooms-changed', onRoomsChanged); };
   }, [load]);
 
   // Socket pushes (friend request / room invite) bump refreshTick in App.
@@ -86,7 +101,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
       <div className="home-head">
       <div className="greeting">
         <p className="date-line">Your orbit</p>
-        <h2>Hey, {user.name ? user.name.split(' ')[0] : 'friend'} 👋</h2>
+        <h2>Hey, {user.name ? user.name.split(' ')[0] : 'friend'}</h2>
         <p className="muted">
           {live.length > 0
             ? `${live.reduce((s, r) => s + r.occupantCount, 0)} friend${live.reduce((s, r) => s + r.occupantCount, 0) === 1 ? '' : 's'} talking right now`
@@ -95,7 +110,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
       </div>
 
       <button className="btn btn-primary btn-block" onClick={() => setShowCreate((v) => !v)}>
-        {showCreate ? '✕ Cancel' : '＋ New room'}
+        {showCreate ? (<><Icon name="x" size={16} /> Cancel</>) : (<><Icon name="plus" size={16} /> New room</>)}
       </button>
       </div>
 
@@ -128,14 +143,14 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
               className={!isPrivate ? 'selected' : ''}
               onClick={() => setIsPrivate(false)}
             >
-              🌐 Public
+              <Icon name="globe" size={15} /> Public
             </button>
             <button
               type="button"
               className={isPrivate ? 'selected' : ''}
               onClick={() => setIsPrivate(true)}
             >
-              🔒 Private
+              <Icon name="lock" size={15} /> Private
             </button>
           </div>
           {isPrivate && (
@@ -150,15 +165,41 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
         </form>
       )}
 
-      {loading && <p className="muted">Finding rooms…</p>}
+      {loading && rooms.length === 0 && (
+        <div className="room-list" aria-hidden="true">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="room-card skeleton-card">
+              <div className="skeleton-line skeleton-title" />
+              <div className="skeleton-line skeleton-topic" />
+              <div className="skeleton-orbs">
+                <span className="skeleton-orb" />
+                <span className="skeleton-orb" />
+                <span className="skeleton-orb" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Desktop 3-zone hero: the busiest live room (or the calm empty
+          state when nobody is live). Hidden below 900px in CSS, so the
+          phone home screen is untouched. */}
+      {!loading && (
+        <HeroCard
+          room={selectBusiestRoom(rooms)}
+          onJoin={onJoin}
+          onStartRoom={() => setShowCreate(true)}
+          onGoFriends={() => onNavigate && onNavigate({ view: 'friends' })}
+        />
+      )}
 
       {invites.length > 0 && (
         <section>
-          <h3 className="section-title">✉️ Room invites</h3>
+          <h3 className="section-title"><Icon name="mail" size={15} /> Room invites</h3>
           <div className="people-list">
             {invites.map((invite, i) => (
               <div key={invite.id} className="person-row stagger-in" style={{ animationDelay: `${i * 40}ms` }}>
-                <span className="mini-orb person-orb">🔒</span>
+                <span className="mini-orb person-orb"><Icon name="lock" size={14} /></span>
                 <span className="person-info">
                   <strong>{invite.room?.name || 'A room'}</strong>
                   <span className="muted person-email">
@@ -188,8 +229,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
 
       {!loading && rooms.length === 0 && (
         <div className="empty-state">
-          <span className="big-emoji">🪐</span>
+          <span className="empty-orb" aria-hidden="true" />
           <p className="muted">No rooms yet.<br />Create the first one and invite your friends.</p>
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+            Create a room
+          </button>
         </div>
       )}
 
@@ -218,6 +262,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
       <button className="app-version app-version-btn" onClick={onOpenAbout}>
         Beta v{APP_VERSION} · About Orbit
       </button>
+
+      {/* Desktop 3-zone right column: friends presence + activity.
+          Rendered last so the ≥900px grid can place it in column 2
+          spanning the rows; hidden below 900px in CSS. */}
+      <SidePanel refreshTick={refreshTick} onJoinRoom={onJoin} onNavigate={onNavigate} />
     </div>
   );
 }
@@ -234,7 +283,7 @@ function RoomCard({ room, index, onJoin }) {
       <div className="room-card-top">
         <div>
           <strong className="room-name">
-            {room.isPrivate && <span className="lock-badge" title="Private room">🔒 </span>}
+            {room.isPrivate && <span className="lock-badge" title="Private room"><Icon name="lock" size={12} /> </span>}
             {room.name}
           </strong>
           {room.topic && <p className="room-topic">{room.topic}</p>}

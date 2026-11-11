@@ -4,6 +4,7 @@
 // cold start (30–60s while the server wakes) reads as progress, not a
 // freeze — and after 25s a Retry button re-runs the boot check.
 import React, { useEffect, useState } from 'react';
+import { Icon } from './icons';
 
 export default function Splash({ onRetry }) {
   const [elapsed, setElapsed] = useState(0);
@@ -30,7 +31,7 @@ export default function Splash({ onRetry }) {
         <span className="splash-orb splash-orb-b" />
         <span className="splash-orb splash-orb-c" />
       </div>
-      <p className="splash-wordmark">🪐 Orbit</p>
+      <p className="splash-wordmark"><Icon name="planet" size={28} /> Orbit</p>
       <p className="splash-status">{status}</p>
       {elapsed >= 25 && onRetry && (
         <button className="btn btn-primary btn-small" onClick={onRetry}>

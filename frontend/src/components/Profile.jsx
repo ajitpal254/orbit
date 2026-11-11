@@ -9,6 +9,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { updateProfile, apiJson } from '../api';
 import { AVATAR_PRESETS } from '../avatars';
 import Avatar from './Avatar';
+import { Icon } from './icons';
 import { isPushSupported, getPushState, subscribeToPush, unsubscribeFromPush } from '../push';
 
 const MAX_AVATAR_IMAGE_LENGTH = 200 * 1024;
@@ -168,7 +169,7 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
     <div className="view view-anim profile-view">
       <div className="greeting">
         <p className="date-line">Your orbit</p>
-        <h2>Profile 👤</h2>
+        <h2><Icon name="user" size={22} /> Profile</h2>
         <p className="muted">How friends see you in rooms and chats.</p>
       </div>
 
@@ -229,7 +230,7 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
         <p className="muted char-count">{bio.length}/140</p>
 
         {error && <p className="error">{error}</p>}
-        {saved && <p className="saved-note">✓ Profile saved</p>}
+        {saved && <p className="saved-note"><Icon name="check" size={14} /> Profile saved</p>}
         <button className="btn btn-primary" disabled={saving}>
           {saving ? 'Saving…' : 'Save profile'}
         </button>

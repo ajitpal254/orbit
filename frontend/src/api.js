@@ -115,6 +115,10 @@ export const updateProfile = (body) =>
 export const getUserAvatars = (ids) =>
   apiJson(`/api/users/avatars?ids=${encodeURIComponent((ids || []).join(','))}`);
 
+// --- Friends presence (desktop right panel) ---
+
+export const getFriendsPresence = () => apiJson('/api/friends/presence');
+
 // --- Notifications ---
 
 export const getNotifications = (limit = 30, offset = 0) =>

@@ -25,7 +25,8 @@ const { validateRoomInput, validateMessageInput, accentById } = require('../lib/
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { canDm, buildSummaries } = require('../lib/dms');
-const { emitToUser, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
+const { emitToUser, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
+const { buildFriendPresence } = require('../lib/friendPresence');
 const presence = require('../lib/presence');
 
 const router = express.Router();
@@ -317,6 +318,42 @@ router.get('/friends', authMiddleware, asyncHandler(async (req, res) => {
   });
 }));
 
+// GET /api/friends/presence — my accepted friends with a live status
+// for the desktop right panel: in-room (with the room, when I can see
+// it), online, or away. Derived from the socket registries that already
+// track this — no new data source. A friend in a private room I cannot
+// see shows as plain `online`, so the room is never leaked. Sorted
+// in-room first, then online, then away (see lib/friendPresence.js).
+router.get('/friends/presence', authMiddleware, asyncHandler(async (req, res) => {
+  const rows = await Friendship.find({
+    status: 'accepted',
+    $or: [{ requester: req.user._id }, { recipient: req.user._id }]
+  }).lean();
+  const friendIds = [...new Set(rows.map((r) => otherUserId(r, req.user._id)))];
+  const friends = await User.find({ _id: { $in: friendIds } })
+    .select('name email avatarPreset avatarImage').lean();
+  // Which visible room each occupant is in, from the live presence
+  // snapshot (one Room lookup for the occupied rooms, not per friend).
+  const snap = presence.snapshot();
+  const roomIds = [...new Set(snap.map((s) => s.roomId))];
+  const rooms = roomIds.length
+    ? await Room.find({ _id: { $in: roomIds } }).lean()
+    : [];
+  const visibleById = new Map();
+  for (const room of rooms) {
+    if (canSeeRoom(room, req.user._id)) visibleById.set(String(room._id), room);
+  }
+  const roomByUser = new Map();
+  for (const { roomId, occupants } of snap) {
+    const room = visibleById.get(String(roomId));
+    if (!room) continue;
+    for (const o of occupants) {
+      roomByUser.set(String(o.userId), { id: String(room._id), name: room.name });
+    }
+  }
+  res.json(buildFriendPresence(friends.map(userJson), onlineUserIds(), roomByUser));
+}));
+
 // DELETE /api/friends/:userId — remove an accepted friendship, either
 // direction. 404 when no accepted friendship exists.
 router.delete('/friends/:userId', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
@@ -480,6 +517,7 @@ router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
   });
   await created.save();
   req.log.info({ userId: String(req.user._id), roomId: String(created._id) }, 'Room created');
+  emitRoomsChanged(created._id); // home screens pick the new room up live
   res.status(201).json(await freshRoomJson(created._id, req.user._id));
 }));
 
@@ -490,7 +528,7 @@ router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'This room is private' });
   }
   const profiles = await memberProfilesFor([room]);
-  res.json(roomJson(room, req.user._id, names));
+  res.json(roomJson(room, req.user._id, profiles));
 }));
 
 router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
@@ -503,6 +541,7 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   await Message.deleteMany({ roomId: room._id });
   await RoomInvite.deleteMany({ room: room._id });
   clearMutedForRoom(room._id);
+  emitRoomsChanged(room._id); // home screens drop the deleted room live
   res.json({ message: 'Room deleted' });
 }));
 
