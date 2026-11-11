@@ -527,10 +527,16 @@ export default function RoomView({ user, room, onLeave }) {
             </div>
           );
         })}
-        {people.length === 1 && (
-          <p className="room-hint">You're alone in here — friends join from the home screen.</p>
-        )}
       </div>
+
+      {/* In flow (not absolute inside the room-space): an absolute hint
+          at the space's bottom edge rested behind the fixed voice bar
+          whenever the page was taller than the viewport. In flow it
+          can only sit below the space, and the room-view's bottom
+          padding keeps it clear of the voice bar at max scroll. */}
+      {people.length === 1 && (
+        <p className="room-hint">You're alone in here — friends join from the home screen.</p>
+      )}
 
       {people.length > 1 && (
         <div className="voice-status">

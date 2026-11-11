@@ -3,6 +3,11 @@ import { apiJson, getInvites, acceptInvite, declineInvite } from '../api';
 import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
 
+// Build version (Vite define from package.json, see vite.config.js).
+// Guarded so the file doesn't break if the define is ever missing.
+// Shared with the About section, which displays the same beta number.
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
+
 export default function Home({ user, onJoin, refreshTick }) {
   const [rooms, setRooms] = useState([]);
   const [invites, setInvites] = useState([]);
@@ -207,6 +212,8 @@ export default function Home({ user, onJoin, refreshTick }) {
           </div>
         </section>
       )}
+
+      <p className="app-version">Beta v{APP_VERSION}</p>
     </div>
   );
 }

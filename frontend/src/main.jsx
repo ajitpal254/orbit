@@ -2,6 +2,12 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+import { initPWA } from './pwa';
+
+// Register the service worker (manual — vite.config injectRegister is
+// false so the app controls the update flow; see pwa.js). Runs once
+// at boot; safe to call before React mounts.
+initPWA();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

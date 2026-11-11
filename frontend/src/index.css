@@ -282,7 +282,7 @@ input::placeholder { color: var(--muted); }
 .empty-state p { margin: 0; line-height: 1.5; }
 
 /* Room view */
-.room-view { display: flex; flex-direction: column; min-height: calc(100vh - 140px); padding-bottom: 6rem; /* clear the fixed voice bar so the status line is never hidden behind it */ }
+.room-view { display: flex; flex-direction: column; min-height: calc(100vh - 140px); padding-bottom: calc(7.5rem + env(safe-area-inset-bottom)); /* clear the fixed voice bar (bar height + bottom offset + safe area) so the voice-status line / hint / mute note are never hidden behind it, even on phones with a gesture bar */ }
 .room-header {
   display: flex;
   align-items: center;
@@ -383,16 +383,14 @@ input::placeholder { color: var(--muted); }
   to { transform: translate3d(6%, 4%, 0) scale(1.12); }
 }
 .room-halo { position: absolute; inset: -10%; pointer-events: none; }
+/* Empty-state hint, in normal flow below the room-space (not absolute
+   at its bottom edge — that rested behind the fixed voice bar whenever
+   the page was taller than the viewport). */
 .room-hint {
-  position: absolute;
-  left: 50%;
-  bottom: 1.2rem;
-  transform: translateX(-50%);
   color: var(--muted);
   font-size: 0.85rem;
   text-align: center;
-  width: 90%;
-  margin: 0;
+  margin: 0.6rem 1rem 0;
 }
 
 /* Orbs: three nested layers so no two animations ever fight over the
@@ -635,8 +633,11 @@ input::placeholder { color: var(--muted); }
   padding: 0.2rem 1.4rem 0.6rem;
   position: relative;
 }
-/* Sliding pill behind the active tab — glides on transform as the
-   active tab changes (--tab-index set inline in App.jsx). */
+/* Sliding pill behind the active tab. Positioned by JS (App.jsx
+   measures the active tab button's offsetLeft/offsetWidth and sets
+   left/width/transform inline) so it tracks the active tab exactly on
+   every width and font; the calc below is only the pre-measure
+   fallback for the first paint. */
 .tab-indicator {
   position: absolute;
   top: 0.2rem;
@@ -647,7 +648,7 @@ input::placeholder { color: var(--muted); }
   background: var(--accent-grad);
   box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4);
   transform: translateX(calc(var(--tab-index, 0) * (100% + 0.4rem)));
-  transition: transform var(--dur-med) var(--ease-spring);
+  transition: transform var(--dur-med) var(--ease-spring), width var(--dur-med) var(--ease-spring);
   pointer-events: none;
 }
 .view-tabs button {
@@ -667,6 +668,38 @@ input::placeholder { color: var(--muted); }
 }
 .view-tabs button.active { background: transparent; color: #fff; border-color: transparent; }
 .btn-small { padding: 0.45rem 0.8rem; font-size: 0.85rem; border-radius: 10px; }
+
+/* PWA update prompt: appears when a new service-worker version is
+   waiting (see pwa.js). Fixed above the floating voice bar so it
+   never covers the mic/deafen/chat buttons; dismissible, and it never
+   reloads on its own. */
+.update-toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(6.5rem + env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: min(480px, calc(100vw - 2rem));
+  padding: 0.7rem 0.8rem 0.7rem 1rem;
+  background: rgba(18, 13, 36, 0.97);
+  border: 1px solid rgba(139, 92, 246, 0.45);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  animation: toast-in var(--dur-med) var(--ease-spring) backwards;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.update-toast p { margin: 0; flex: 1; min-width: 0; font-size: 0.88rem; font-weight: 600; }
+.update-toast small { display: block; font-weight: 400; color: var(--muted); font-size: 0.78rem; margin-top: 0.1rem; }
+
+/* Build version label (Home footer) — small muted text so staleness
+   is diagnosable at a glance. */
+.app-version { text-align: center; color: var(--muted); font-size: 0.75rem; margin: 0.5rem 0 0; opacity: 0.7; }
 
 /* Friends + invites */
 .people-list { display: flex; flex-direction: column; gap: 0.6rem; }
@@ -751,6 +784,24 @@ input::placeholder { color: var(--muted); }
    buttons collided with the name, and wide orbs were cut off at the
    room edge. Desktop is untouched: this only restructures ≤520px. */
 @media (max-width: 520px) {
+  /* Mobile header: the sticky translucent topbar let the tab bar show
+     through (and collide with the logo / Log out) when the page was
+     scrolled even slightly. On mobile the topbar scrolls away with
+     the page on a solid background, and the tab bar sticks to the top
+     instead — two rows that can never overlap. Desktop is untouched. */
+  .topbar {
+    position: static;
+    background: var(--bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .view-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg);
+  }
+
   /* Members header: the title stays on one line; the buttons wrap
      below it instead of crowding the title. */
   .members-head { flex-wrap: wrap; }

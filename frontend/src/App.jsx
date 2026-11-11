@@ -1,13 +1,15 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useLayoutEffect, useRef } from 'react';
 import { apiFetch, apiJson, getDms } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound } from './sounds';
+import { onUpdateAvailable, applyUpdate } from './pwa';
 import Auth from './components/Auth';
 import Home from './components/Home';
 import RoomView from './components/RoomView';
 import Friends from './components/Friends';
 import DirectMessages from './components/DirectMessages';
 import Splash from './components/Splash';
+import UpdateToast from './components/UpdateToast';
 
 // Boot timeout per /api/auth/me attempt. Render's free tier sleeps when
 // idle, so a cold start can take 30–60s — the attempts below ride that
@@ -29,6 +31,14 @@ export default function App() {
   // Friend whose DM thread should open (set by Friends "Message").
   const [dmUser, setDmUser] = useState(null);
   const [dmUnread, setDmUnread] = useState(0);
+  // A new app version is waiting in the service worker (see pwa.js).
+  // Shown as a toast; the app never auto-reloads for it.
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  // Sliding tab pill: measured from the active tab button (offsetLeft /
+  // offsetWidth) instead of CSS calc, so it tracks the active tab
+  // exactly on every width and font.
+  const tabsRef = useRef(null);
+  const [pillStyle, setPillStyle] = useState(null);
 
   // Bootstrap the CSRF cookie so login/register POSTs pass the
   // double-submit check, then check for an existing session.
@@ -119,6 +129,31 @@ export default function App() {
     setView('messages');
   }, []);
 
+  // Update toast: subscribe once; pwa.js replays the event if a new
+  // version was already waiting before this mounted.
+  useEffect(() => onUpdateAvailable(() => setUpdateAvailable(true)), []);
+
+  // Measure the sliding tab pill from the active tab button. Runs on
+  // mount / tab change / room enter-leave (the nav mounts when leaving
+  // a room) and whenever the layout can shift under it (resize, fonts).
+  const measurePill = useCallback(() => {
+    const nav = tabsRef.current;
+    if (!nav) return;
+    const active = nav.querySelector('button.active');
+    if (!active) return;
+    setPillStyle({ left: active.offsetLeft, width: active.offsetWidth });
+  }, []);
+
+  useLayoutEffect(() => {
+    measurePill();
+  }, [view, room, measurePill]);
+
+  useEffect(() => {
+    window.addEventListener('resize', measurePill);
+    if (document.fonts?.ready) document.fonts.ready.then(measurePill).catch(() => {});
+    return () => window.removeEventListener('resize', measurePill);
+  }, [measurePill]);
+
   const logout = async () => {
     try {
       await apiJson('/api/auth/logout', { method: 'POST' });
@@ -136,7 +171,16 @@ export default function App() {
     return <Splash key={bootKey} onRetry={retryBoot} />;
   }
 
-  if (!user) return <Auth onAuth={setUser} notice={bootError} onRetry={bootError ? retryBoot : undefined} />;
+  if (!user) {
+    return (
+      <>
+        <Auth onAuth={setUser} notice={bootError} onRetry={bootError ? retryBoot : undefined} />
+        {updateAvailable && (
+          <UpdateToast onUpdate={() => applyUpdate()} onDismiss={() => setUpdateAvailable(false)} />
+        )}
+      </>
+    );
+  }
 
   return (
     <div className="app">
@@ -149,9 +193,13 @@ export default function App() {
         <nav
           className="view-tabs"
           aria-label="Sections"
-          style={{ '--tab-index': view === 'rooms' ? 0 : view === 'friends' ? 1 : 2 }}
+          ref={tabsRef}
         >
-          <span className="tab-indicator" aria-hidden="true" />
+          <span
+            className="tab-indicator"
+            aria-hidden="true"
+            style={pillStyle ? { left: 0, width: pillStyle.width, transform: `translateX(${pillStyle.left}px)` } : undefined}
+          />
           <button
             className={view === 'rooms' ? 'active' : ''}
             onClick={() => setView('rooms')}
@@ -191,6 +239,10 @@ export default function App() {
           <Home user={user} onJoin={setRoom} refreshTick={refreshTick} />
         )}
       </main>
+
+      {updateAvailable && (
+        <UpdateToast onUpdate={() => applyUpdate()} onDismiss={() => setUpdateAvailable(false)} />
+      )}
     </div>
   );
 }
