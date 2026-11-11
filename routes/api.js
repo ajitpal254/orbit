@@ -19,6 +19,7 @@ const PushSubscription = require('../models/PushSubscription');
 const { validateProfileUpdate, profileJson } = require('../lib/profile');
 const { notificationJson, recordNotification } = require('../lib/notifications');
 const { getVapidPublicKey, isPushConfigured, sendPushToUser, pushPayloadFor } = require('../lib/push');
+const { turnUrls, turnHandler } = require('../lib/turnCredentials');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
 const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
@@ -61,27 +62,30 @@ const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.tes
 // --- PUBLIC CONFIG ---
 
 // GET /api/config — public: tells the frontend whether Google sign-in is
-// configured, and which TURN relay to use for voice (if any). The client
-// ID is a public identifier (it is embedded in the Google button anyway),
-// so exposing it is safe. No secret is involved in the ID-token flow.
-// TURN credentials are also client-visible by nature — any WebRTC client
-// must hold them to allocate — they are quota-limited, not secret. They
-// come from the server env (see README "Voice connectivity (TURN)").
+// configured, and which TURN relay servers to use for voice (if any). The
+// client ID is a public identifier (it is embedded in the Google button
+// anyway), so exposing it is safe. No secret is involved in the ID-token
+// flow.
+//
+// TURN relay URLs are public too (they name a host, nothing more), so
+// they stay here. TURN *credentials* are NOT here: the old design served
+// the account's static TURN username/credential to anyone who asked
+// (audit H2 — quota exhaustion by anyone on the internet). Credentials
+// are now minted per user, time-limited, behind session auth at
+// GET /api/turn (see lib/turnCredentials.js); the static credential is
+// never sent to a client. Rotate it on the provider side — assume the
+// old one is public.
 router.get('/config', (req, res) => {
-  const turn =
-    process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL
-      ? {
-          urls: (process.env.TURN_URLS ||
-            'turn:standard.relay.metered.ca:80,turn:standard.relay.metered.ca:443,turn:standard.relay.metered.ca:443?transport=tcp')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean),
-          username: process.env.TURN_USERNAME,
-          credential: process.env.TURN_CREDENTIAL
-        }
-      : null;
-  res.json({ googleClientId: getGoogleClientId(), turn, vapidPublicKey: getVapidPublicKey() });
+  res.json({ googleClientId: getGoogleClientId(), turn: { urls: turnUrls() }, vapidPublicKey: getVapidPublicKey() });
 });
+
+// GET /api/turn — session-authenticated: mint a time-limited TURN
+// credential for this user (TURN REST API / coturn static auth —
+// username "<expiry>:<userId>", credential base64(HMAC-SHA1(
+// TURN_SECRET, username)), 24h expiry). Answers { turn: null } when
+// TURN_SECRET is unset; the client then uses STUN + the built-in
+// fallback relays and voice keeps working.
+router.get('/turn', authMiddleware, asyncHandler(async (req, res) => turnHandler(req, res)));
 
 // --- AUTH ---
 
@@ -943,7 +947,9 @@ router.post('/invites/:id/decline', authMiddleware, friendLimit, asyncHandler(as
 //
 // The link itself is `/#invite-<token>` (a hash, so the token never
 // travels in an HTTP request line or server log — the frontend reads
-// the hash and POSTs the token in the body to /invite-links/:token/join).
+// the hash and POSTs the token in the body to /invite-links/join —
+// never in the URL path, so the token cannot land in a request line
+// or server log (audit M2).
 
 // Serialize a link for an authorized viewer, with the raw token the
 // client needs to build the shareable URL.
@@ -1051,16 +1057,19 @@ router.delete('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandle
   res.json({ message: 'Invite link revoked' });
 }));
 
-// POST /api/invite-links/:token/join — redeem a link. The token is
-// validated by shape first (no DB lookup for garbage), then by hash.
-// Invalid and revoked links share one 404 message so the endpoint
-// cannot tell an attacker whether a token ever existed; expired links
-// get a distinct 410. A private-room join adds the user as a member
-// (plain member, like accepting a room invite); a public-room join
-// adds nothing — the room is already open. Answers with the fresh
-// room JSON so the client can open the room directly.
-router.post('/invite-links/:token/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
-  const { token } = req.params;
+// POST /api/invite-links/join { token } — redeem a link. The token
+// travels in the JSON body, never in the URL path: the old
+// /invite-links/:token/join route put every redeemed token in the
+// request line and the server logs (audit M2), so it was removed.
+// The token is validated by shape first (no DB lookup for garbage),
+// then by hash. Invalid and revoked links share one 404 message so
+// the endpoint cannot tell an attacker whether a token ever existed;
+// expired links get a distinct 410. A private-room join adds the
+// user as a member (plain member, like accepting a room invite); a
+// public-room join adds nothing — the room is already open. Answers
+// with the fresh room JSON so the client can open the room directly.
+router.post('/invite-links/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { token } = req.body || {};
   if (!isValidInviteToken(token)) {
     return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
   }

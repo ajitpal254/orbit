@@ -9,8 +9,15 @@
 //
 // Two TURN sources, in order:
 //   1. Account TURN (reliable): a free Metered.ca account's TURN
-//      credentials, served by GET /api/config from the server's
-//      TURN_USERNAME / TURN_CREDENTIAL env vars (see README).
+//      relay. The server mints a 24h time-limited credential per user
+//      (TURN REST API / coturn static auth, HMAC-SHA1 over
+//      TURN_SECRET — see lib/turnCredentials.js) and serves it from
+//      the session-authenticated GET /api/turn; the static account
+//      credential is never shipped to clients (audit H2). The
+//      /api/config `turn` object carries only the relay URLs now, so
+//      getIceServers fetches the credential from /api/turn whenever
+//      the object it was handed has none — voice.js itself is owned
+//      by the H1 work and is not touched here.
 //   2. Static-auth TURN (no signup, best-effort): Metered's Open Relay
 //      static endpoint. The old copy-pasted public credentials
 //      (openrelayproject / openrelayproject) are stale and no longer
@@ -73,15 +80,46 @@ export async function getStaticAuthServers() {
   return servers;
 }
 
+// Account TURN from the server: GET /api/turn mints a time-limited
+// credential for the signed-in user (session cookie, no CSRF needed —
+// GET). Returns the { urls, username, credential } object, or null
+// when the account relay is not configured (TURN_SECRET unset),
+// the user is signed out, or the request fails. Never throws — the
+// caller falls through to the fallback relays.
+export async function getAccountTurn() {
+  try {
+    if (typeof fetch !== 'function') return null;
+    const res = await fetch('/api/turn', { credentials: 'include' });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => ({}));
+    const turn = data && data.turn;
+    if (turn && turn.username && turn.credential) return turn;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // Full ICE server list for one RTCPeerConnection. accountTurn is the
 // /api/config `turn` object ({ urls, username, credential }) or null.
+//
+// The /api/config object no longer carries credentials (audit H2), so
+// when the object handed in has URLs but no username/credential — or
+// nothing was handed in at all — the account credential is fetched
+// from GET /api/turn. An object that already carries a
+// username/credential is used as-is (keeps the unit tests honest and
+// lets a caller pass a minted credential directly).
 export async function getIceServers(accountTurn) {
   const servers = [];
-  if (accountTurn?.username && accountTurn?.credential) {
+  let account = accountTurn;
+  if (!account?.username || !account?.credential) {
+    account = await getAccountTurn();
+  }
+  if (account?.username && account?.credential) {
     servers.push({
-      urls: accountTurn.urls,
-      username: accountTurn.username,
-      credential: accountTurn.credential
+      urls: account.urls,
+      username: account.username,
+      credential: account.credential
     });
   }
   servers.push(...(await getStaticAuthServers()));

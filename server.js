@@ -14,17 +14,22 @@ const Room = require('./models/Room');
 const Message = require('./models/Message');
 const RoomInvite = require('./models/RoomInvite');
 const logger = require('./lib/logger');
-const { requestId, requestLog } = require('./middleware/requestLog');
+const { requestId, requestLog, requestPath } = require('./middleware/requestLog');
+const { securityHeaders } = require('./middleware/securityHeaders');
 // Resolve the message-encryption key at boot so a missing
 // DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
 // logs (not silently on the first encrypted message).
 require('./lib/crypto').getKey();
+// Loud warning when the account TURN relay is not configured
+// (TURN_SECRET unset) — voice still works via STUN + fallbacks.
+require('./lib/turnCredentials').warnIfTurnSecretMissing(logger);
 
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
 app.use(compression());
+app.use(securityHeaders);
 app.use(requestId);
 app.use(requestLog);
 
@@ -51,6 +56,13 @@ app.use('/api', rateLimitMiddleware());
 app.use('/api', csrfMiddleware);
 app.use('/api', apiRoutes);
 
+// Unknown /api path: JSON 404 — not the SPA page, and not Express's
+// bare finalhandler response (which would overwrite the CSP with its
+// own "default-src 'none'" and drop the security headers).
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
 // Serve the built frontend.
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -61,7 +73,7 @@ app.get('/*splat', (req, res) => {
 
 // Central error handler: logs fully, responds with a safe { error } shape.
 app.use((err, req, res, _next) => {
-  (req.log || logger).error({ err, url: req.originalUrl }, 'Unhandled error');
+  (req.log || logger).error({ err, url: requestPath(req) }, 'Unhandled error');
   const status = err.status || 500;
   res.status(status).json({ error: status === 500 ? 'Something went wrong' : err.message });
 });
