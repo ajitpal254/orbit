@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { apiJson, getCookie } from '../api';
+import { apiJson } from '../api';
 import { getGoogleClientId, shouldShowGoogleButton, loadGoogleScript, renderGoogleButton } from '../googleSignIn';
 
 export default function Auth({ onAuth }) {
@@ -60,7 +60,7 @@ export default function Auth({ onAuth }) {
     try {
       const data = await apiJson(`/api/auth/${mode}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-csrf-token': getCookie('csrfToken') },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, name })
       });
       onAuth(data.user);

@@ -1,5 +1,13 @@
 // Central API helper: cookie sessions + double-submit CSRF, same pattern
 // as the Calorie-Tracker frontend.
+//
+// Cold-load race, fixed here: the app bootstraps the csrfToken cookie on
+// mount, but a fast submit (or an automated login) could fire before that
+// fetch landed, sending an empty x-csrf-token header and getting a 403
+// without the password ever being checked. So every non-GET call first
+// makes sure a token exists, and a 403 "Invalid CSRF token" refreshes the
+// token and retries the request once. The retry also covers expired or
+// replaced cookies later in the session.
 
 export const getCookie = (name) => {
   const value = `; ${document.cookie}`;
@@ -8,20 +16,40 @@ export const getCookie = (name) => {
   return '';
 };
 
+// Fetch a fresh csrfToken cookie (the response's Set-Cookie stores it;
+// the token itself is read back from document.cookie by apiFetch).
+const refreshCsrfToken = () =>
+  fetch('/api/auth/csrf-token', { credentials: 'include' }).catch(() => {});
+
+const ensureCsrfToken = async () => {
+  if (!getCookie('csrfToken')) await refreshCsrfToken();
+};
+
 export const apiFetch = (url, options = {}) => {
   const { headers = {}, ...rest } = options;
   return fetch(url, {
     credentials: 'include',
     ...rest,
     headers: {
-      'x-csrf-token': getCookie('csrfToken'),
-      ...headers
+      ...headers,
+      // Always the fresh cookie value: a caller-supplied header may be a
+      // stale copy captured before the bootstrap fetch landed.
+      'x-csrf-token': getCookie('csrfToken')
     }
   });
 };
 
 export const apiJson = async (url, options = {}) => {
-  const res = await apiFetch(url, options);
+  const method = (options.method || 'GET').toUpperCase();
+  if (method !== 'GET') await ensureCsrfToken();
+  let res = await apiFetch(url, options);
+  if (res.status === 403 && method !== 'GET') {
+    const probe = await res.clone().json().catch(() => ({}));
+    if (probe.error === 'Invalid CSRF token') {
+      await refreshCsrfToken();
+      res = await apiFetch(url, options);
+    }
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;

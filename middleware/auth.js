@@ -35,7 +35,10 @@ const csrfMiddleware = (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const cookie = parseCookies(req.headers.cookie).csrfToken;
   const header = req.headers['x-csrf-token'];
-  if (!cookie || !header || !crypto.timingSafeEqual(Buffer.from(cookie), Buffer.from(header))) {
+  // Compare lengths first: timingSafeEqual throws on unequal lengths,
+  // which would 500 instead of cleanly rejecting a stale/truncated token.
+  if (!cookie || !header || cookie.length !== header.length ||
+      !crypto.timingSafeEqual(Buffer.from(cookie), Buffer.from(header))) {
     return res.status(403).json({ error: 'Invalid CSRF token' });
   }
   next();
