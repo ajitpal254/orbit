@@ -138,7 +138,7 @@ Routes (all `authMiddleware`, mutating ones rate-limited, `{error: string}` cont
 2. Add to Render env vars: `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` (optional `VAPID_SUBJECT`, default `mailto:orbit@example.com`). **Never commit the private key.**
 3. The public key is exposed via `GET /api/config` as `vapidPublicKey`; the Profile screen has a "Push notifications" toggle that subscribes through the existing service worker. If the keys are not set, the toggle says "Push is not set up yet" and does nothing — the bell still works.
 
-Push subscriptions that come back 410/404 from the push service are deleted on send, so dead browsers don't accumulate. Tapping a push notification opens the app (deep-link navigation from a push click would need a custom service worker — the generated Workbox SW doesn't have one — so the in-app center is where navigation happens).
+Push subscriptions that come back 410/404 from the push service are deleted on send, so dead browsers don't accumulate. The service worker is custom (`frontend/src/sw.js`, vite-plugin-pwa `injectManifest` strategy — the generated Workbox shell had no push handler, so pushes were silently dropped): it shows the push as a system notification and tapping it deep-links into the app (`data.url` hash — `#friends`, `#room-<id>`, `#dm-<userId>`, `#notifications`; `App.jsx` reads the hash on boot / hashchange via `frontend/src/deepLink.js`). Verify push end to end in one tap from Profile: turn push on, then **Send test notification** (`POST /api/push/test`, returns `{ sent }`) — a system notification should appear even with the app backgrounded.
 
 ## Security
 

@@ -15,7 +15,7 @@ const Notification = require('../models/Notification');
 const PushSubscription = require('../models/PushSubscription');
 const { validateProfileUpdate, profileJson } = require('../lib/profile');
 const { notificationJson, recordNotification } = require('../lib/notifications');
-const { getVapidPublicKey } = require('../lib/push');
+const { getVapidPublicKey, isPushConfigured, sendPushToUser, pushPayloadFor } = require('../lib/push');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
 const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
@@ -1019,7 +1019,7 @@ router.post('/push/subscribe', authMiddleware, friendLimit, asyncHandler(async (
   await PushSubscription.findOneAndUpdate(
     { endpoint: subscription.endpoint },
     { user: req.user._id, keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: 'after' }
   );
   res.json({ subscribed: true });
 }));
@@ -1030,6 +1030,31 @@ router.post('/push/unsubscribe', authMiddleware, friendLimit, asyncHandler(async
     await PushSubscription.deleteOne({ endpoint, user: req.user._id });
   }
   res.json({ subscribed: false });
+}));
+
+// POST /api/push/test — send a test push to your own subscriptions so
+// push can be verified in one tap (Profile has a button for it), and
+// leave an in-app test notification behind so the bell shows it too.
+// Self-targeted only: the only person it can ever notify is the
+// caller. Returns how many subscriptions the push was sent to.
+router.post('/push/test', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isPushConfigured()) {
+    return res.status(400).json({ error: 'Push is not set up yet on the server' });
+  }
+  const payload = pushPayloadFor({ type: 'test', actorName: req.user.name });
+  const sent = await sendPushToUser(req.user._id, payload);
+  // In-app row, deduped like every other notification — created
+  // directly, not via recordNotification, which would fire a second
+  // push for the same event.
+  await Notification.findOneAndUpdate(
+    { user: req.user._id, type: 'test', actor: req.user._id, room: null, read: false },
+    {
+      $setOnInsert: { user: req.user._id, type: 'test', actor: req.user._id, room: null, read: false },
+      $set: { updatedAt: new Date() }
+    },
+    { upsert: true, returnDocument: 'after' }
+  );
+  res.json({ sent });
 }));
 
 module.exports = router;

@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback, useLayoutEffect, useRef } from 'react';
-import { apiFetch, apiJson, getDms, getNotifications } from './api';
+import { apiFetch, apiJson, getDms, getFriends, getNotifications } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound } from './sounds';
 import { onUpdateAvailable, applyUpdate } from './pwa';
+import { parseDeepLinkHash } from './deepLink';
 import Auth from './components/Auth';
 import Home from './components/Home';
 import RoomView from './components/RoomView';
@@ -182,6 +183,51 @@ export default function App() {
   // Update toast: subscribe once; pwa.js replays the event if a new
   // version was already waiting before this mounted.
   useEffect(() => onUpdateAvailable(() => setUpdateAvailable(true)), []);
+
+  // Deep links from push taps: the service worker opens the app at
+  // /#friends, /#room-<id>, /#dm-<userId> or /#notifications. Read the
+  // hash once the user is known (room/DM targets need auth + a fetch),
+  // and on hashchange for taps while a tab is already open (the SW
+  // navigates that tab in place instead of opening a new one).
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const handleHash = async () => {
+      const target = parseDeepLinkHash(window.location.hash || '');
+      if (!target) return;
+      // Consume the hash so a reload doesn't re-navigate.
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      if (target.view === 'rooms' && target.roomId) {
+        try {
+          const room = await apiJson(`/api/rooms/${target.roomId}`);
+          if (!cancelled) setRoom(room);
+        } catch {
+          if (!cancelled) setView('rooms');
+        }
+        return;
+      }
+      if (target.view === 'messages' && target.dmUserId) {
+        try {
+          const { friends } = await getFriends();
+          const friend = (friends || []).find((f) => String(f.id) === String(target.dmUserId));
+          if (!cancelled && friend) {
+            setDmUser(friend);
+            setView('messages');
+            return;
+          }
+        } catch {}
+        if (!cancelled) setView('messages');
+        return;
+      }
+      if (!cancelled) setView(target.view);
+    };
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('hashchange', handleHash);
+    };
+  }, [user]);
 
   // Measure the sliding tab pill from the active tab button. Runs on
   // mount / tab change / room enter-leave (the nav mounts when leaving

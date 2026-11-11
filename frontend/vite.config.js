@@ -30,6 +30,24 @@ export default defineConfig({
       // No auto-injected registration script: src/pwa.js registers via
       // virtual:pwa-register so it can pass onNeedRefresh.
       injectRegister: false,
+      // 'injectManifest': the SW source is frontend/src/sw.js, bundled
+      // by Vite and then given its precache manifest by workbox-build.
+      // The default generateSW shell has no `push` handler, so pushes
+      // were delivered and silently dropped — the custom SW adds the
+      // push + notificationclick handlers (see src/sw.js). The prompt
+      // update flow (pwa.js + UpdateToast) works the same either way:
+      // the new SW installs and waits until the user taps Update.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
+      injectManifest: {
+        // workbox-build defaults globPatterns to [] for injectManifest,
+        // so without this NOTHING would be precached. js/css/html covers
+        // index.html + the hashed assets; the icons + webmanifest come
+        // via includeAssets below (additionalManifestEntries), so they
+        // are deliberately not in this list (no duplicates).
+        globPatterns: ['**/*.{js,css,html}']
+      },
       includeAssets: ['icon-192.png', 'icon-512.png'],
       manifest: {
         name: 'Orbit — voice rooms for friends',

@@ -51,6 +51,11 @@ export default function Notifications({ refreshTick, onNavigate, onBack, onRead 
       markNotificationRead(n.id).catch(() => {});
       if (onRead) onRead();
     }
+    if (n.type === 'test') {
+      // A test notification has nowhere to jump to — it was already
+      // marked read above, so staying on the list is the whole action.
+      return;
+    }
     if (n.type === 'room_invite' && n.room) {
       onNavigate({ view: 'rooms', roomId: n.room.id });
     } else if (n.type === 'dm' && n.actor) {

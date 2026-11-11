@@ -62,6 +62,10 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState('');
   const [vapidKey, setVapidKey] = useState(undefined); // undefined = not loaded yet
+  // "Send test notification" state — one tap verifies push end to end
+  // without needing a second user (POST /api/push/test).
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -136,6 +140,27 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
       else setPushError(err.message || 'Could not change push settings');
     } finally {
       setPushBusy(false);
+    }
+  };
+
+  // One-tap push check: the server sends a test push to this device's
+  // subscriptions and leaves an in-app test notification behind. Only
+  // offered while subscribed — without a subscription there is nothing
+  // for the push to reach.
+  const sendTestPush = async () => {
+    setTestResult('');
+    setTestBusy(true);
+    try {
+      const data = await apiJson('/api/push/test', { method: 'POST' });
+      setTestResult(
+        data.sent > 0
+          ? 'Sent — a notification should appear even with the app in the background. Give it a few seconds.'
+          : 'No push subscription was found on the server — turn push off and on again, then retry.'
+      );
+    } catch (err) {
+      setTestResult(err.message || 'Could not send a test notification');
+    } finally {
+      setTestBusy(false);
     }
   };
 
@@ -232,6 +257,19 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
           </button>
         </div>
         {pushError && <p className="error">{pushError}</p>}
+        {pushState === 'subscribed' && (
+          <div className="push-test-row">
+            <button
+              type="button"
+              className="btn btn-text btn-small"
+              disabled={testBusy}
+              onClick={sendTestPush}
+            >
+              {testBusy ? 'Sending…' : 'Send test notification'}
+            </button>
+            {testResult && <p className="muted">{testResult}</p>}
+          </div>
+        )}
       </div>
 
       <button className="btn btn-text" onClick={onOpenAbout}>
