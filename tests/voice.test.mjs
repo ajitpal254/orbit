@@ -246,3 +246,26 @@ test('retryPlayback plays every remote audio element and reports success', async
   engine._removePeer('p1');
   engine._removePeer('p2');
 });
+
+test('join loads account TURN from /api/config into iceServers', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.equal(url, '/api/config');
+    return {
+      json: async () => ({
+        turn: { urls: ['turn:standard.relay.metered.ca:80'], username: 'u1', credential: 'p1' }
+      })
+    };
+  };
+  try {
+    const engine = makeEngine('me');
+    await engine.join(); // no navigator in node → micFailed, listen-only
+    assert.ok(engine.micFailed);
+    assert.ok(engine.iceServers.some((s) => s.username === 'u1'));
+    assert.ok(engine.iceServers.some((s) => String(s.urls).includes('staticauth.openrelay.metered.ca')));
+    assert.ok(engine.iceServers.some((s) => JSON.stringify(s.urls).includes('stun.l.google.com')));
+    engine.leave();
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

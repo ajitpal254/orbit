@@ -59,9 +59,22 @@ Ajit creates the service himself — **Web Service** (not Static Site):
 |---|---|
 | Build command | `npm install` |
 | Start command | `node server.js` |
-| Env vars | `MONGODB_URI` (Atlas, db `orbit`), `DATA_ENCRYPTION_KEY` (see Security — required in production), `GOOGLE_CLIENT_ID` (optional — enables the Google button) |
+| Env vars | `MONGODB_URI` (Atlas, db `orbit`), `DATA_ENCRYPTION_KEY` (see Security — required in production), `GOOGLE_CLIENT_ID` (optional — enables the Google button), `TURN_USERNAME` + `TURN_CREDENTIAL` (optional — see Voice connectivity below) |
 
 Render sets `PORT` and `NODE_ENV` itself. **Important:** the frontend is served from the committed `public/` folder — Render never rebuilds it, so any UI change needs `npm run build` in `frontend/` + committing `public/` first.
+
+## Voice connectivity (TURN)
+
+STUN alone only lets two peers connect directly. On networks where a direct path fails (same-WiFi AP isolation, symmetric NAT, some mobile carriers), ICE can only complete through a TURN relay — without one the connection sits at "connecting / checking" and then fails, and the status line shows `(host+srflx)` with no `relay` candidate. The app therefore uses two TURN sources, in order:
+
+1. **Built-in, no setup** — Metered's Open Relay static-auth endpoint (`staticauth.openrelay.metered.ca`). The client computes a 24h time-limited credential (HMAC-SHA1, see `frontend/src/turnAuth.js`). Best-effort: a free shared relay with no SLA.
+2. **Your own Metered account (recommended, reliable)** — sign up free at https://dashboard.metered.ca/signup (20 GB/month free), create TURN credentials, then set these Render env vars (use the exact `urls` from the dashboard's "Show ICE Server Array" if they differ):
+   - `TURN_USERNAME` and `TURN_CREDENTIAL` — required to enable it
+   - `TURN_URLS` — optional, comma-separated; defaults to `turn:standard.relay.metered.ca:80,turn:standard.relay.metered.ca:443,turn:standard.relay.metered.ca:443?transport=tcp`
+
+   The server exposes them via `GET /api/config`; the voice engine fetches them on join. Changing the env vars restarts the Render service automatically — no rebuild needed. TURN credentials are client-visible by nature (any WebRTC client must hold them to allocate); they are quota-limited, not secret.
+
+Diagnosing: the per-peer status line under the room shows the gathered candidate types — `relay` appearing means TURN is producing candidates; a `failed / disconnected` line with only `host+srflx` means no relay was available and direct paths failed.
 
 ## Security
 
@@ -99,7 +112,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ## Known v1 limits
 
 - **Mesh voice scales to ~2–6 people.** Every peer connects to every other peer; beyond that, CPU/bandwidth grows fast. The upgrade path is a LiveKit SFU — `voice.js` is isolated so the swap touches one module.
-- **No TURN server.** Google STUN only. Most home/mobile networks work; some strict corporate/symmetric NATs may fail to connect.
+- **TURN is best-effort by default.** The built-in static-auth Open Relay TURN works with no setup, but it is a free shared relay with no SLA. For reliable calls, add your own free Metered TURN credentials (`TURN_USERNAME` / `TURN_CREDENTIAL` on Render) — see "Voice connectivity (TURN)".
 - **PWA only on mobile** — no native app yet. Install from the browser; mic access works in the PWA.
 - **No DMs, roles, or screen share yet** — rooms + voice + chat only.
 - **Presence is in-memory.** A server restart clears "who's in a room" (correct behavior — presence is ephemeral), but chat history and rooms persist in Mongo.

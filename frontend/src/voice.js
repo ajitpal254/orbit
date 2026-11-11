@@ -18,17 +18,14 @@
 //   - offers/answers/ICE relay through `signal` { to, type, data }
 //   - ICE candidates arriving before the remote description is set are
 //     queued and flushed after setRemoteDescription, never dropped.
-//   - Google STUN + free OpenRelay TURN (only used when a direct
-//     peer-to-peer path fails, e.g. both phones on mobile networks behind
-//     symmetric NAT). Media stays DTLS-SRTP encrypted end to end; a TURN
-//     relay only forwards opaque packets and cannot decrypt them.
-
-const ICE_SERVERS = [
-  { urls: ['stun:stun.l.google.com:19302'] },
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-];
+//   - Google STUN + TURN (only used when a direct peer-to-peer path
+//     fails, e.g. both phones on mobile networks behind symmetric NAT).
+//     The ICE servers are loaded in join() from frontend/src/turnAuth.js:
+//     an account TURN from /api/config when configured, Metered's no-signup
+//     static-auth TURN, then Google STUN. Media stays DTLS-SRTP encrypted
+//     end to end; a TURN relay only forwards opaque packets and cannot
+//     decrypt them.
+import { getIceServers, FALLBACK_ICE_SERVERS } from './turnAuth.js';
 const SPEAK_THRESHOLD = 0.02; // RMS of time-domain audio samples
 const SPEAK_POLL_MS = 150;
 
@@ -61,6 +58,7 @@ export class VoiceEngine {
     this.micFailed = false;
     this.joined = false;
     this._pollTimer = null;
+    this.iceServers = null; // loaded in join() before any peer is created
     this._lastLevels = {};
     this._onSignal = this._onSignal.bind(this);
     this._onUserLeft = this._onUserLeft.bind(this);
@@ -88,8 +86,27 @@ export class VoiceEngine {
       this.onMicError('Microphone unavailable — you are listening only.');
     }
 
+    // Load ICE servers before joining: the account TURN (if configured
+    // via /api/config), the no-signup static-auth TURN, then Google STUN.
+    // Peers are only created after join-room, so this always lands first.
+    await this._loadIceServers();
+
     this.socket.emit('join-room', { roomId: this.roomId });
     this._pollTimer = setInterval(() => this._pollSpeaking(), SPEAK_POLL_MS);
+  }
+
+  async _loadIceServers() {
+    try {
+      const res = await fetch('/api/config', { credentials: 'include' });
+      const cfg = await res.json().catch(() => ({}));
+      this.iceServers = await getIceServers(cfg.turn || null);
+    } catch {
+      try {
+        this.iceServers = await getIceServers(null);
+      } catch {
+        this.iceServers = FALLBACK_ICE_SERVERS;
+      }
+    }
   }
 
   leave() {
@@ -150,7 +167,7 @@ export class VoiceEngine {
       try { existing.pc.close(); } catch {}
       if (existing.retryTimer) clearTimeout(existing.retryTimer);
     }
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers || FALLBACK_ICE_SERVERS });
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream));
     }

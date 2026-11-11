@@ -23,11 +23,26 @@ const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.tes
 // --- PUBLIC CONFIG ---
 
 // GET /api/config — public: tells the frontend whether Google sign-in is
-// configured. The client ID is a public identifier (it is embedded in the
-// Google button anyway), so exposing it is safe. No secret is involved in
-// the ID-token flow.
+// configured, and which TURN relay to use for voice (if any). The client
+// ID is a public identifier (it is embedded in the Google button anyway),
+// so exposing it is safe. No secret is involved in the ID-token flow.
+// TURN credentials are also client-visible by nature — any WebRTC client
+// must hold them to allocate — they are quota-limited, not secret. They
+// come from the server env (see README "Voice connectivity (TURN)").
 router.get('/config', (req, res) => {
-  res.json({ googleClientId: getGoogleClientId() });
+  const turn =
+    process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL
+      ? {
+          urls: (process.env.TURN_URLS ||
+            'turn:standard.relay.metered.ca:80,turn:standard.relay.metered.ca:443,turn:standard.relay.metered.ca:443?transport=tcp')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+          username: process.env.TURN_USERNAME,
+          credential: process.env.TURN_CREDENTIAL
+        }
+      : null;
+  res.json({ googleClientId: getGoogleClientId(), turn });
 });
 
 // --- AUTH ---
