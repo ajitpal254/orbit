@@ -37,6 +37,14 @@ export function heroOccupants(room) {
   }));
 }
 
+// Stories row (phones, M3): the friends worth showing are the ones
+// actually around — in-room first, then online, never away. The
+// presence endpoint already sorts in-room → online → away, so this
+// just drops the away tail (and any entry without a status).
+export function storiesFriends(friends) {
+  return (friends || []).filter((f) => f.status === 'in-room' || f.status === 'online');
+}
+
 // Group consecutive activity rows with the same type and actor into
 // one row with a count and the latest time — "3 new messages from
 // Ajit Pal" instead of the same row three times. Only consecutive

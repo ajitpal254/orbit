@@ -919,8 +919,9 @@ input::placeholder { color: var(--muted); }
 .view-tabs button.active { background: transparent; color: #fff; border-color: transparent; }
 /* Bottom tab bar (M2) + Home header bell: phone-only. display:none
    at every other width — tablets keep the top .view-tabs, desktop
-   keeps the icon rail, and the topbar bell stays put. */
-.mobile-tab-bar, .home-bell { display: none; }
+   keeps the icon rail, and the topbar bell stays put. The stories
+   row (M3) is phone-only the same way. */
+.mobile-tab-bar, .home-bell, .stories-row-wrap { display: none; }
 .btn-small { padding: 0.45rem 0.8rem; font-size: 0.85rem; border-radius: 10px; }
 
 /* PWA update prompt: appears when a new service-worker version is
@@ -1182,6 +1183,61 @@ input::placeholder { color: var(--muted); }
   .app--in-call .main { padding-bottom: calc(9.75rem + env(safe-area-inset-bottom)); }
   .app--in-call .mini-player { bottom: calc(5rem + env(safe-area-inset-bottom)); }
   .app--in-call .update-toast { bottom: calc(9.75rem + env(safe-area-inset-bottom)); }
+
+  /* M3: friends stories row — a horizontal scroll of online friends
+     at the top of Home. In-room friends get a glowing ring and tap
+     through to their room; online friends are shown, not tappable.
+     The glow is static (no animation), so prefers-reduced-motion
+     needs no special case. */
+  .stories-row-wrap { display: block; }
+  .stories-row {
+    display: flex;
+    gap: 0.9rem;
+    overflow-x: auto;
+    padding: 0.3rem 0.1rem 0.5rem;
+    scrollbar-width: none;
+  }
+  .stories-row::-webkit-scrollbar { display: none; }
+  .story {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+    width: 64px;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .story--online { cursor: default; }
+  .story-avatar.story-in-room {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #34d399, 0 0 14px rgba(52, 211, 153, 0.6);
+  }
+  .story-avatar:not(.story-in-room) {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px rgba(52, 211, 153, 0.4);
+  }
+  .story-name {
+    font-size: 0.7rem;
+    font-weight: 700;
+    max-width: 64px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+  }
+  .story-room {
+    font-size: 0.62rem;
+    color: #34d399;
+    font-weight: 700;
+    max-width: 64px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+  }
 
   /* Members header: the title stays on one line; the buttons wrap
      below it instead of crowding the title. (Member rows are two

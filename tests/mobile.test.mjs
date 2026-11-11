@@ -112,7 +112,7 @@ test('M2: the phone block hides the top tabs and topbar bell, and shows the pill
   assert.match(phone, /\.mobile-tab-bar \{[^}]*height: 3\.5rem;/);
   // The pill is hidden above 520px (tablets keep top tabs, desktop
   // keeps the icon rail).
-  assert.match(outsidePhone, /\.mobile-tab-bar, \.home-bell \{ display: none; \}/);
+  assert.match(outsidePhone, /\.mobile-tab-bar, \.home-bell, \.stories-row-wrap \{ display: none; \}/);
 });
 
 test('M2: the mini-player sits directly above the tab bar, never overlapping it', () => {
@@ -146,4 +146,54 @@ test('M2: App renders the tab bar only outside a room view, and Home owns the be
   // The bell is hidden on phones only via the CSS above — the topbar
   // bell JSX stays for tablets (521–899px), where the tab bar is off.
   assert.ok(appJsx.includes('className="icon-btn bell-btn"'));
+});
+
+// --- M3: home polish --------------------------------------------------------
+import { storiesFriends } from '../frontend/src/desktop.js';
+
+const storiesJsx = readFileSync(new URL('../frontend/src/components/StoriesRow.jsx', import.meta.url), 'utf8');
+
+test('M3: storiesFriends keeps in-room and online friends, drops away ones', () => {
+  const f = (id, status) => ({ id, name: id, status, room: status === 'in-room' ? { id: 'r', name: 'Room' } : null });
+  assert.deepEqual(
+    storiesFriends([f('a', 'in-room'), f('b', 'online'), f('c', 'away'), f('d', 'online')]).map((x) => x.id),
+    ['a', 'b', 'd']
+  );
+  // Presence order is preserved (the endpoint already sorts in-room
+  // first, then online) — no re-sorting here.
+  assert.deepEqual(storiesFriends([f('b', 'online'), f('a', 'in-room')]).map((x) => x.id), ['b', 'a']);
+  assert.deepEqual(storiesFriends([]), []);
+  assert.deepEqual(storiesFriends(null), []);
+  assert.deepEqual(storiesFriends([{ id: 'x' }]), []);
+});
+
+test('M3: the phone block shows the stories row with a glowing in-room ring', () => {
+  assert.match(phone, /\.stories-row-wrap \{ display: block; \}/);
+  assert.match(phone, /\.stories-row \{[^}]*display: flex;/);
+  assert.match(phone, /\.stories-row \{[^}]*overflow-x: auto;/);
+  assert.match(phone, /\.story-avatar\.story-in-room \{[^}]*box-shadow:[^}]*#34d399/);
+  assert.match(phone, /\.story-avatar:not\(\.story-in-room\) \{[^}]*box-shadow:/);
+  // Hidden above 520px (see the shared base rule asserted in M2).
+  assert.ok(!outsidePhone.includes('.stories-row-wrap { display: block; }'));
+});
+
+test('M3: the greeting-to-New-room gap is at least 12px on phones', () => {
+  const headRule = phone.match(/\.home-head \{([^}]*)\}/);
+  assert.ok(headRule, 'no .home-head rule in the phone block');
+  const gap = Number(headRule[1].match(/gap: ([0-9.]+)rem/)?.[1]);
+  assert.ok(gap >= 0.75, `home-head gap is ${gap}rem, need >= 0.75rem (12px)`);
+  // The New room button takes its own full-width row below the
+  // greeting, so the gap is the vertical spacing.
+  assert.match(phone, /\.home-head \.btn-block \{ flex: 1 1 100%; \}/);
+});
+
+test('M3: Home renders the stories row from the same presence data as the side panel', () => {
+  assert.ok(homeJsx.includes("import StoriesRow from './StoriesRow'"));
+  assert.ok(homeJsx.includes('<StoriesRow refreshTick={refreshTick} onJoin={onJoin} />'));
+  assert.ok(storiesJsx.includes("getFriendsPresence"), 'stories row must reuse GET /api/friends/presence');
+  assert.ok(storiesJsx.includes("matchMedia('(max-width: 520px)')"), 'stories row must stay off-phone (desktop untouched)');
+  assert.ok(storiesJsx.includes('storiesFriends(friends)'));
+  // Tap joins that friend's room, like the desktop SidePanel Join.
+  assert.ok(storiesJsx.includes("apiJson(`/api/rooms/${friend.room.id}`)"));
+  assert.ok(storiesJsx.includes('aria-label={`Join ${f.name} in ${f.room.name}`}'));
 });

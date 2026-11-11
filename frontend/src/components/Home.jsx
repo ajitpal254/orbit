@@ -5,6 +5,7 @@ import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
 import { selectBusiestRoom } from '../desktop';
 import { formatBadgeCount } from '../mobileNav';
+import StoriesRow from './StoriesRow';
 import HeroCard from './HeroCard';
 import SidePanel from './SidePanel';
 import { Icon } from './icons';
@@ -104,6 +105,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
 
   return (
     <div className="view view-anim home-view">
+      {/* M3: friends stories row (phones only) — online friends at the
+          top of Home; tap an in-room friend to join their room. The
+          night-sky feature also touches the top of Home; the merge
+          coordinator resolves any overlap. */}
+      <StoriesRow refreshTick={refreshTick} onJoin={onJoin} />
       <div className="home-head">
       <div className="greeting">
         <p className="date-line">Your orbit</p>
