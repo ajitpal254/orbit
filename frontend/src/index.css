@@ -609,6 +609,71 @@ input::placeholder { color: var(--muted); }
   100% { transform: scale(1); }
 }
 .voice-btn.leave { background: rgba(248, 113, 113, 0.9); transform: rotate(135deg); }
+
+/* Mini-player: the call keeps going while you browse another view.
+   Fixed at the bottom like the voice bar (App only ever renders one
+   of the two, so they can never overlap), above the tab bar / bottom
+   area, clear of the gesture bar via safe-area-inset-bottom. */
+.mini-player {
+  position: fixed;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: min(480px, calc(100vw - 2rem));
+  padding: 0.55rem 0.6rem 0.55rem 1rem;
+  border-radius: 999px;
+  background: rgba(18, 13, 36, 0.92);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+  animation: bar-up var(--dur-med) var(--ease-spring) backwards;
+}
+.mini-player-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 10px #34d399;
+  flex-shrink: 0;
+  animation: mini-pulse 2s infinite;
+}
+@keyframes mini-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.mini-player-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.mini-player-info strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.95rem;
+}
+.mini-player-time {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.mini-player .voice-btn { width: 44px; height: 44px; font-size: 1.2rem; flex-shrink: 0; }
+
+/* Hidden room view: the session stays mounted (voice keeps running)
+   while another view is on screen — only its rendering is off. */
+.room-view-hidden { display: none; }
+
+/* While a call runs in the background, give the other views room at
+   the bottom so the mini-player never covers their last row. */
+.app--in-call .main { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
 .unread-badge {
   position: absolute;
   top: -2px;

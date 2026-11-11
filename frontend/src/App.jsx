@@ -1,7 +1,9 @@
-import React, { useEffect, useState, useCallback, useLayoutEffect, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useLayoutEffect, useRef, useReducer } from 'react';
 import { apiFetch, apiJson, getDms, getFriends, getNotifications } from './api';
 import { getSocket, disconnectSocket } from './socket';
-import { playJoinSound } from './sounds';
+import { playJoinSound, playMuteSound } from './sounds';
+import { voiceSessionReducer, initialVoiceSessionState } from './voiceSession';
+import MiniPlayer from './components/MiniPlayer';
 import { onUpdateAvailable, applyUpdate } from './pwa';
 import { parseDeepLinkHash } from './deepLink';
 import Auth from './components/Auth';
@@ -29,6 +31,19 @@ export default function App() {
   const [bootError, setBootError] = useState('');
   const [bootKey, setBootKey] = useState(0); // bump to re-run the boot check
   const [room, setRoom] = useState(null);
+  // Whether the room view itself is on screen. The voice session is
+  // keyed off `room`, not this flag: navigating to another view hides
+  // the room (RoomView stays mounted, so the call keeps running) and
+  // the mini-player takes over until you tap back in.
+  const [inRoom, setInRoom] = useState(false);
+  // The voice session (mute / deafen / moderator-mute / call start)
+  // lives here, above the view switch, so the room view's voice bar
+  // and the mini-player read and control the same session.
+  const [session, dispatchSession] = useReducer(voiceSessionReducer, initialVoiceSessionState);
+  // The VoiceEngine instance, created by RoomView. App needs it so the
+  // mini-player's mute button can toggle the live session while the
+  // room view is hidden; RoomView clears it when the session ends.
+  const voiceEngineRef = useRef(null);
   const [view, setView] = useState('rooms'); // 'rooms' | 'friends' | 'messages' | 'profile' | 'about' | 'notifications'
   // Bumped whenever a friend request / room invite / DM arrives over the
   // socket, so Home (invites), Friends (requests) and Messages refresh live.
@@ -155,7 +170,7 @@ export default function App() {
     if (target.view === 'rooms' && target.roomId) {
       try {
         const room = await apiJson(`/api/rooms/${target.roomId}`);
-        setRoom(room);
+        joinRoom(room);
         return;
       } catch {
         // Fall through to the rooms list below.
@@ -169,16 +184,62 @@ export default function App() {
         avatarPreset: target.dmUser.avatarPreset,
         avatarImage: target.dmUser.avatarImage
       });
-      setView('messages');
+      goTo('messages');
       return;
     }
-    setView(target.view === 'friends' ? 'friends' : 'rooms');
-  }, []);
+    goTo(target.view === 'friends' ? 'friends' : 'rooms');
+  }, [joinRoom, goTo]);
 
   const openDm = useCallback((friend) => {
     setDmUser(friend);
     setView('messages');
+    setInRoom(false);
   }, []);
+
+  // Joining a room starts the voice session (RoomView mounts and its
+  // engine joins); leaving it ends the session. Navigating between
+  // views never touches either — that is the whole point.
+  const joinRoom = useCallback((r) => {
+    if (room?.id === r.id) {
+      // Already in this room's session — just show the room again
+      // instead of restarting the call timer and resetting mute.
+      setView('rooms');
+      setInRoom(true);
+      return;
+    }
+    setRoom(r);
+    setInRoom(true);
+    setView('rooms');
+    dispatchSession({ type: 'join', joinedAt: Date.now() });
+  }, [room]);
+
+  const leaveRoom = useCallback(() => {
+    setRoom(null);
+    setInRoom(false);
+    dispatchSession({ type: 'leave' });
+  }, []);
+
+  // Navigate to a view without dropping the call: the room view hides,
+  // RoomView stays mounted, and the mini-player appears.
+  const goTo = useCallback((v) => {
+    setView(v);
+    setInRoom(false);
+  }, []);
+
+  const returnToRoom = useCallback(() => {
+    setView('rooms');
+    setInRoom(true);
+  }, []);
+
+  // Mini-player mute: same session, same engine, same sound as the
+  // room view's voice bar — RoomView mirrors the state onto my orb.
+  const toggleMute = useCallback(() => {
+    if (session.modMuted) return;
+    const next = !session.muted;
+    voiceEngineRef.current?.setMuted(next);
+    dispatchSession({ type: 'set-muted', muted: next });
+    playMuteSound(next);
+  }, [session.muted, session.modMuted]);
 
   // Update toast: subscribe once; pwa.js replays the event if a new
   // version was already waiting before this mounted.
@@ -200,9 +261,9 @@ export default function App() {
       if (target.view === 'rooms' && target.roomId) {
         try {
           const room = await apiJson(`/api/rooms/${target.roomId}`);
-          if (!cancelled) setRoom(room);
+          if (!cancelled) joinRoom(room);
         } catch {
-          if (!cancelled) setView('rooms');
+          if (!cancelled) goTo('rooms');
         }
         return;
       }
@@ -212,14 +273,14 @@ export default function App() {
           const friend = (friends || []).find((f) => String(f.id) === String(target.dmUserId));
           if (!cancelled && friend) {
             setDmUser(friend);
-            setView('messages');
+            goTo('messages');
             return;
           }
         } catch {}
-        if (!cancelled) setView('messages');
+        if (!cancelled) goTo('messages');
         return;
       }
-      if (!cancelled) setView(target.view);
+      if (!cancelled) goTo(target.view);
     };
     handleHash();
     window.addEventListener('hashchange', handleHash);
@@ -227,7 +288,7 @@ export default function App() {
       cancelled = true;
       window.removeEventListener('hashchange', handleHash);
     };
-  }, [user]);
+  }, [user, joinRoom, goTo]);
 
   // Measure the sliding tab pill from the active tab button. Runs on
   // mount / tab change / room enter-leave (the nav mounts when leaving
@@ -242,7 +303,7 @@ export default function App() {
 
   useLayoutEffect(() => {
     measurePill();
-  }, [view, room, measurePill]);
+  }, [view, room, inRoom, measurePill]);
 
   useEffect(() => {
     window.addEventListener('resize', measurePill);
@@ -256,6 +317,8 @@ export default function App() {
     } catch {}
     disconnectSocket();
     setRoom(null);
+    setInRoom(false);
+    dispatchSession({ type: 'leave' });
     setView('rooms');
     setDmUser(null);
     setDmUnread(0);
@@ -280,13 +343,13 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${room && !inRoom ? ' app--in-call' : ''}`}>
       <header className="topbar">
         <span className="logo">🪐 Orbit</span>
         <span className="topbar-actions">
           <button
             className="icon-btn bell-btn"
-            onClick={() => setView('notifications')}
+            onClick={() => goTo('notifications')}
             aria-label={`Notifications${notifUnread > 0 ? `, ${notifUnread} unread` : ''}`}
           >
             🔔
@@ -296,7 +359,7 @@ export default function App() {
           </button>
           <button
             className="topbar-avatar"
-            onClick={() => setView('profile')}
+            onClick={() => goTo('profile')}
             aria-label="Profile"
             title="Profile"
           >
@@ -306,7 +369,7 @@ export default function App() {
         </span>
       </header>
 
-      {!room && (view === 'rooms' || view === 'friends' || view === 'messages') && (
+      {!inRoom && (view === 'rooms' || view === 'friends' || view === 'messages') && (
         <nav
           className="view-tabs"
           aria-label="Sections"
@@ -319,19 +382,19 @@ export default function App() {
           />
           <button
             className={view === 'rooms' ? 'active' : ''}
-            onClick={() => setView('rooms')}
+            onClick={() => goTo('rooms')}
           >
             Rooms
           </button>
           <button
             className={view === 'friends' ? 'active' : ''}
-            onClick={() => setView('friends')}
+            onClick={() => goTo('friends')}
           >
             Friends
           </button>
           <button
             className={view === 'messages' ? 'active' : ''}
-            onClick={() => setView('messages')}
+            onClick={() => goTo('messages')}
           >
             Messages
             {dmUnread > 0 && <span className="tab-badge">{dmUnread}</span>}
@@ -340,9 +403,24 @@ export default function App() {
       )}
 
       <main className="main">
-        {room ? (
-          <RoomView key={room.id} user={user} room={room} onLeave={() => setRoom(null)} />
-        ) : view === 'friends' ? (
+        {room && (
+          // The room view stays mounted at this one spot while a call is
+          // active — hiding it (display: none) instead of unmounting it
+          // is what keeps the voice session alive while you browse
+          // another view. Only Leave (or logout / kick) unmounts it.
+          <div className={inRoom ? undefined : 'room-view-hidden'} aria-hidden={!inRoom || undefined}>
+            <RoomView
+              key={room.id}
+              user={user}
+              room={room}
+              onLeave={leaveRoom}
+              session={session}
+              dispatchSession={dispatchSession}
+              voiceEngineRef={voiceEngineRef}
+            />
+          </div>
+        )}
+        {(!room || !inRoom) && (view === 'friends' ? (
           <Friends refreshTick={refreshTick} onMessage={openDm} />
         ) : view === 'messages' ? (
           <DirectMessages
@@ -353,20 +431,31 @@ export default function App() {
             onMessagesRead={() => setRefreshTick((t) => t + 1)}
           />
         ) : view === 'profile' ? (
-          <Profile user={user} onSaved={setUser} onOpenAbout={() => setView('about')} />
+          <Profile user={user} onSaved={setUser} onOpenAbout={() => goTo('about')} />
         ) : view === 'about' ? (
-          <About onBack={() => setView('rooms')} />
+          <About onBack={() => goTo('rooms')} />
         ) : view === 'notifications' ? (
           <Notifications
             refreshTick={refreshTick}
             onNavigate={handleNotifNavigate}
-            onBack={() => setView('rooms')}
+            onBack={() => goTo('rooms')}
             onRead={() => setRefreshTick((t) => t + 1)}
           />
         ) : (
-          <Home user={user} onJoin={setRoom} refreshTick={refreshTick} onOpenAbout={() => setView('about')} />
-        )}
+          <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} />
+        ))}
       </main>
+
+      {room && !inRoom && (
+        <MiniPlayer
+          roomName={room.name}
+          joinedAt={session.joinedAt}
+          muted={session.muted}
+          modMuted={session.modMuted}
+          onToggleMute={toggleMute}
+          onReturn={returnToRoom}
+        />
+      )}
 
       {updateAvailable && (
         <UpdateToast onUpdate={() => applyUpdate()} onDismiss={() => setUpdateAvailable(false)} />
