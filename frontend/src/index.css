@@ -1498,7 +1498,7 @@ textarea {
   body::before {
     content: '';
     position: fixed;
-    inset: 0;
+    inset: -3%; /* oversized so the 1.5%/1% drift never exposes an edge */
     z-index: 0;
     pointer-events: none;
     background-image:
