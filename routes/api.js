@@ -19,6 +19,7 @@ const PushSubscription = require('../models/PushSubscription');
 const { validateProfileUpdate, profileJson } = require('../lib/profile');
 const { notificationJson, recordNotification } = require('../lib/notifications');
 const { getVapidPublicKey, isPushConfigured, sendPushToUser, pushPayloadFor } = require('../lib/push');
+const { turnUrls, turnHandler } = require('../lib/turnCredentials');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
 const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
@@ -61,27 +62,30 @@ const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.tes
 // --- PUBLIC CONFIG ---
 
 // GET /api/config — public: tells the frontend whether Google sign-in is
-// configured, and which TURN relay to use for voice (if any). The client
-// ID is a public identifier (it is embedded in the Google button anyway),
-// so exposing it is safe. No secret is involved in the ID-token flow.
-// TURN credentials are also client-visible by nature — any WebRTC client
-// must hold them to allocate — they are quota-limited, not secret. They
-// come from the server env (see README "Voice connectivity (TURN)").
+// configured, and which TURN relay servers to use for voice (if any). The
+// client ID is a public identifier (it is embedded in the Google button
+// anyway), so exposing it is safe. No secret is involved in the ID-token
+// flow.
+//
+// TURN relay URLs are public too (they name a host, nothing more), so
+// they stay here. TURN *credentials* are NOT here: the old design served
+// the account's static TURN username/credential to anyone who asked
+// (audit H2 — quota exhaustion by anyone on the internet). Credentials
+// are now minted per user, time-limited, behind session auth at
+// GET /api/turn (see lib/turnCredentials.js); the static credential is
+// never sent to a client. Rotate it on the provider side — assume the
+// old one is public.
 router.get('/config', (req, res) => {
-  const turn =
-    process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL
-      ? {
-          urls: (process.env.TURN_URLS ||
-            'turn:standard.relay.metered.ca:80,turn:standard.relay.metered.ca:443,turn:standard.relay.metered.ca:443?transport=tcp')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean),
-          username: process.env.TURN_USERNAME,
-          credential: process.env.TURN_CREDENTIAL
-        }
-      : null;
-  res.json({ googleClientId: getGoogleClientId(), turn, vapidPublicKey: getVapidPublicKey() });
+  res.json({ googleClientId: getGoogleClientId(), turn: { urls: turnUrls() }, vapidPublicKey: getVapidPublicKey() });
 });
+
+// GET /api/turn — session-authenticated: mint a time-limited TURN
+// credential for this user (TURN REST API / coturn static auth —
+// username "<expiry>:<userId>", credential base64(HMAC-SHA1(
+// TURN_SECRET, username)), 24h expiry). Answers { turn: null } when
+// TURN_SECRET is unset; the client then uses STUN + the built-in
+// fallback relays and voice keeps working.
+router.get('/turn', authMiddleware, asyncHandler(async (req, res) => turnHandler(req, res)));
 
 // --- AUTH ---
 

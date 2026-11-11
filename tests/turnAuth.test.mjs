@@ -9,6 +9,7 @@ import {
   computeTurnCredential,
   staticAuthUsername,
   getStaticAuthServers,
+  getAccountTurn,
   getIceServers
 } from '../frontend/src/turnAuth.js';
 
@@ -52,4 +53,45 @@ test('getIceServers puts account TURN first, then static-auth, then freeturn, th
   const noAccount = await getIceServers(null);
   assert.ok(!noAccount.some((s) => s.username === 'u1'));
   assert.ok(noAccount.some((s) => String(s.urls).includes('staticauth.openrelay.metered.ca')));
+});
+
+// Audit H2 client seam: /api/config no longer carries TURN credentials,
+// so getIceServers fetches the minted credential from GET /api/turn
+// whenever the object it was handed has URLs but no credential.
+// voice.js is untouched — this is the seam it already calls.
+const realFetch = globalThis.fetch;
+
+test('getAccountTurn returns the minted credential, null on any failure', async (t) => {
+  t.after(() => { globalThis.fetch = realFetch; });
+  const minted = { urls: ['turn:standard.relay.metered.ca:80'], username: '1794364800:aaaa', credential: 'AAAA' };
+  globalThis.fetch = async (url, opts) => {
+    assert.equal(url, '/api/turn');
+    assert.equal(opts.credentials, 'include');
+    return { ok: true, json: async () => ({ turn: minted }) };
+  };
+  assert.deepEqual(await getAccountTurn(), minted);
+  globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
+  assert.equal(await getAccountTurn(), null);
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ turn: null }) });
+  assert.equal(await getAccountTurn(), null);
+  globalThis.fetch = async () => { throw new Error('network down'); };
+  assert.equal(await getAccountTurn(), null);
+});
+
+test('getIceServers with a urls-only object fetches /api/turn for the credential', async (t) => {
+  t.after(() => { globalThis.fetch = realFetch; });
+  const minted = { urls: ['turn:standard.relay.metered.ca:443'], username: '1794364800:aaaa', credential: 'BBBB' };
+  let fetched = 0;
+  globalThis.fetch = async () => {
+    fetched += 1;
+    return { ok: true, json: async () => ({ turn: minted }) };
+  };
+  const servers = await getIceServers({ urls: ['turn:standard.relay.metered.ca:443'] });
+  assert.equal(fetched, 1);
+  assert.deepEqual(servers[0], minted);
+  // An object that already carries a credential is used as-is, no fetch.
+  fetched = 0;
+  const direct = { urls: ['turn:x.test:3478'], username: 'u1', credential: 'p1' };
+  assert.deepEqual((await getIceServers(direct))[0], direct);
+  assert.equal(fetched, 0);
 });

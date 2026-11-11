@@ -19,6 +19,9 @@ const { requestId, requestLog } = require('./middleware/requestLog');
 // DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
 // logs (not silently on the first encrypted message).
 require('./lib/crypto').getKey();
+// Loud warning when the account TURN relay is not configured
+// (TURN_SECRET unset) — voice still works via STUN + fallbacks.
+require('./lib/turnCredentials').warnIfTurnSecretMissing(logger);
 
 const app = express();
 app.disable('x-powered-by');
