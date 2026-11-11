@@ -1015,16 +1015,28 @@ input::placeholder { color: var(--muted); }
 .members-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.6rem; }
 .member-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.55rem;
+  row-gap: 0.45rem;
   padding: 0.35rem 0.5rem;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border);
 }
-.member-row .person-info { display: flex; align-items: center; gap: 0.45rem; min-width: 0; flex: 1; }
-.member-row .person-info strong { font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.member-actions { display: flex; flex-wrap: wrap; gap: 0.1rem; justify-content: flex-end; }
+.member-row .person-info { display: flex; align-items: center; gap: 0.45rem; min-width: 0; flex: 1 1 0; }
+.member-row .person-info strong { flex: 1 1 auto; min-width: 0; font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.member-row .role-badge { flex-shrink: 0; }
+.member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1 1 100%;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  margin-left: calc(32px + 0.55rem); /* line up under the name, not the avatar */
+}
+.member-actions:empty { display: none; }
+.member-actions .btn-small { min-height: 36px; padding: 0.45rem 0.75rem; }
 .role-badge {
   font-size: 0.72rem;
   font-weight: 800;
@@ -1073,27 +1085,11 @@ input::placeholder { color: var(--muted); }
   }
 
   /* Members header: the title stays on one line; the buttons wrap
-     below it instead of crowding the title. */
+     below it instead of crowding the title. (Member rows are two
+     lines at every width — see the base .member-row rules above.) */
   .members-head { flex-wrap: wrap; }
   .members-head strong { white-space: nowrap; }
   .members-head > span { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-
-  /* Member rows become two lines. Line 1: avatar + name + role badge —
-     the name truncates with an ellipsis and the badge can never slide
-     behind the avatar. Line 2: the action buttons in a clean wrapping
-     row with 36px tap targets. */
-  .member-row { flex-wrap: wrap; row-gap: 0.45rem; }
-  .member-row .person-info { flex-direction: row; flex: 1 1 0; min-width: 0; }
-  .member-row .person-info strong { flex: 1 1 auto; min-width: 0; }
-  .member-row .role-badge { flex-shrink: 0; }
-  .member-actions {
-    flex: 1 1 100%;
-    justify-content: flex-start;
-    gap: 0.35rem;
-    margin-left: calc(32px + 0.55rem); /* line up under the name, not the avatar */
-  }
-  .member-actions:empty { display: none; }
-  .member-actions .btn-small { min-height: 36px; padding: 0.45rem 0.75rem; }
 }
 .invite-picker { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .invite-picker .person-row { background: rgba(255, 255, 255, 0.03); }
