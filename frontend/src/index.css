@@ -1732,9 +1732,10 @@ textarea {
     gap: 1rem;
     align-items: start;
   }
-  .room-body--with-panel .room-stage { grid-column: 1; min-width: 0; }
+  .room-body--with-panel .room-stage { grid-column: 1; grid-row: 1; min-width: 0; }
   .room-body--with-panel .members-panel {
     grid-column: 2;
+    grid-row: 1;
     margin-bottom: 0;
     align-self: start;
     position: sticky;
