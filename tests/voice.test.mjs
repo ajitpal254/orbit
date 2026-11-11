@@ -15,6 +15,7 @@ class FakePC {
     this.localDescription = null;
     this.addedCandidates = [];
     this.connectionState = 'new';
+    this.iceConnectionState = 'new';
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
@@ -209,6 +210,23 @@ test('answered offer is never retried', async () => {
   await engine._onSignal({ from: 'peer1', type: 'answer', data: { type: 'answer', sdp: 'y' } });
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'offer').length, 1);
+  engine._removePeer('peer1');
+});
+
+test('candidate types are reported as they are gathered', async () => {
+  const seen = [];
+  const engine = makeEngine('me', {
+    onConnectionState: (socketId, conn, ice, candidates) =>
+      seen.push([socketId, conn, ice, candidates])
+  });
+  await engine._offerTo('peer1');
+  const peer = engine.peers.get('peer1');
+  // Simulate ICE gathering: host, then srflx, then relay (TURN).
+  peer.pc.onicecandidate({ candidate: { type: 'host' } });
+  peer.pc.onicecandidate({ candidate: { type: 'srflx' } });
+  peer.pc.onicecandidate({ candidate: { type: 'relay' } });
+  assert.ok(seen.length >= 3);
+  assert.equal(seen[seen.length - 1][3], 'host+srflx+relay');
   engine._removePeer('peer1');
 });
 

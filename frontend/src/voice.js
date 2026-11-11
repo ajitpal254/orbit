@@ -156,14 +156,19 @@ export class VoiceEngine {
     }
     pc.onicecandidate = (e) => {
       if (e.candidate) {
+        // Track which kinds of candidates we gathered: if 'relay' never
+        // appears, the TURN server is not producing relay candidates.
+        const p = this.peers.get(socketId);
+        if (p) p.candidateTypes.add(e.candidate.type || 'unknown');
+        this._reportConnection(socketId);
         this.socket.emit('signal', { to: socketId, type: 'ice', data: e.candidate });
       }
     };
     pc.onconnectionstatechange = () => {
-      this.onConnectionState(socketId, pc.connectionState, pc.iceConnectionState);
+      this._reportConnection(socketId);
     };
     pc.oniceconnectionstatechange = () => {
-      this.onConnectionState(socketId, pc.connectionState, pc.iceConnectionState);
+      this._reportConnection(socketId);
     };
     pc.ontrack = (e) => {
       const stream = e.streams[0];
@@ -197,9 +202,22 @@ export class VoiceEngine {
       makingOffer: existing ? existing.makingOffer : false,
       ignoreOffer: false,
       offerRetries: 0,
-      retryTimer: null
+      retryTimer: null,
+      candidateTypes: new Set()
     });
     return pc;
+  }
+
+  // Report connection + ICE state (and gathered candidate types) to the UI.
+  _reportConnection(socketId) {
+    const peer = this.peers.get(socketId);
+    if (!peer) return;
+    this.onConnectionState(
+      socketId,
+      peer.pc.connectionState,
+      peer.pc.iceConnectionState,
+      [...peer.candidateTypes].join('+')
+    );
   }
 
   async _offerTo(socketId) {

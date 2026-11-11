@@ -31,6 +31,26 @@ test('orbPositions: no two orbs share the same spot', () => {
   assert.equal(new Set(spots).size, spots.length);
 });
 
+test('orbPositions: room-view people use socketId, not id', () => {
+  // Regression: the room view passes occupants shaped like
+  // { socketId, userId, name } with no `id` field. Positions must be
+  // keyed by socketId, or the orbs never render (posById lookup misses).
+  const people = [
+    { socketId: 'sock-aaa', userId: 'u1', name: 'Ajit Pal' },
+    { socketId: 'sock-zzz', userId: 'u2', name: 'Riya' },
+    { socketId: 'self', userId: 'u3', name: 'Test' }
+  ];
+  const positions = orbPositions(people);
+  assert.deepEqual(positions.map((p) => p.id), ['sock-aaa', 'sock-zzz', 'self']);
+  for (const p of positions) {
+    assert.ok(p.x >= 12 && p.x <= 88, `x ${p.x} out of bounds`);
+    assert.ok(p.y >= 14 && p.y <= 84, `y ${p.y} out of bounds`);
+  }
+  const [solo] = orbPositions([{ socketId: 'only-one', userId: 'u9', name: 'Solo' }]);
+  assert.equal(solo.id, 'only-one');
+  assert.equal(solo.x, 50);
+});
+
 test('initials and orbHue behave', () => {
   assert.equal(initials('Ajit Pal'), 'AP');
   assert.equal(initials('riya'), 'RI');

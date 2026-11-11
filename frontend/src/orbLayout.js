@@ -17,18 +17,21 @@ const hashString = (str = '') => {
 export function orbPositions(people) {
   const n = people.length;
   if (n === 0) return [];
+  // People are keyed by socketId in the room view (they have no `id`
+  // field); fall back to `id` for callers that use it (tests, home screen).
+  const pid = (p) => p.socketId || p.id;
   if (n === 1) {
-    return [{ id: people[0].id, x: 50, y: 46, size: 118, delay: 0, duration: 7 }];
+    return [{ id: pid(people[0]), x: 50, y: 46, size: 118, delay: 0, duration: 7 }];
   }
   // Golden-angle spiral: even spread, organic feel.
   return people.map((p, i) => {
-    const h = hashString(p.id);
+    const h = hashString(pid(p));
     const angle = i * 2.39996 + (h % 100) / 100; // golden angle + jitter
     const ring = 26 + (h % 13); // radius 26–38% of container
     const x = 50 + Math.cos(angle) * ring * 1.15;
     const y = 46 + Math.sin(angle) * ring * 0.82;
     return {
-      id: p.id,
+      id: pid(p),
       x: Math.round(Math.min(88, Math.max(12, x)) * 10) / 10,
       y: Math.round(Math.min(84, Math.max(14, y)) * 10) / 10,
       size: 76 + (h % 36), // 76–112px

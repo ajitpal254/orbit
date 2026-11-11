@@ -12,6 +12,7 @@ export default function RoomView({ user, room, onLeave }) {
   const [speaking, setSpeaking] = useState({ selfSpeaking: false, levels: {} });
   const [connState, setConnState] = useState({});
   const [iceState, setIceState] = useState({});
+  const [candTypes, setCandTypes] = useState({});
   const [playBlocked, setPlayBlocked] = useState(false);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
@@ -35,9 +36,12 @@ export default function RoomView({ user, room, onLeave }) {
       selfId: user.id,
       onSpeaking: (s) => setSpeaking(s),
       onMicError: (msg) => setMicError(msg),
-      onConnectionState: (socketId, state, ice) => {
+      onConnectionState: (socketId, state, ice, candidates) => {
         setConnState((prev) => ({ ...prev, [socketId]: state }));
         if (ice) setIceState((prev) => ({ ...prev, [socketId]: ice }));
+        if (candidates !== undefined) {
+          setCandTypes((prev) => ({ ...prev, [socketId]: candidates }));
+        }
       },
       onPlaybackBlocked: () => setPlayBlocked(true)
     });
@@ -71,6 +75,11 @@ export default function RoomView({ user, room, onLeave }) {
         return next;
       });
       setIceState((prev) => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
+      setCandTypes((prev) => {
         const next = { ...prev };
         delete next[socketId];
         return next;
@@ -221,8 +230,9 @@ export default function RoomView({ user, room, onLeave }) {
             .filter((p) => !p.isSelf)
             .map((p) => (
               <span key={p.socketId}>
-                {p.name.split(' ')[0]}: {connState[p.socketId] || 'connecting'} /{' '}
-                {iceState[p.socketId] || 'checking'}
+                {p.name.split(' ')[0]}: {connState[p.socketId] || '—'} /{' '}
+                {iceState[p.socketId] || '—'}
+                {candTypes[p.socketId] ? ` (${candTypes[p.socketId]})` : ''}
               </span>
             ))}
         </div>
