@@ -39,6 +39,26 @@ export default function RoomView({ user, room, onLeave }) {
   const chatEndRef = useRef(null);
   const chatOpenRef = useRef(false);
   chatOpenRef.current = chatOpen;
+  // Measured room area, so orbPositions can clamp orbs inside it — without
+  // this, a wide orb near the edge is half cut off on narrow phones.
+  const spaceRef = useRef(null);
+  const [spaceSize, setSpaceSize] = useState({ width: 360, height: 480 });
+
+  useEffect(() => {
+    const el = spaceRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (w > 0 && h > 0) {
+        setSpaceSize((prev) => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const accent = room.accent || { from: '#8b5cf6', to: '#d946ef' };
 
@@ -282,7 +302,7 @@ export default function RoomView({ user, room, onLeave }) {
   };
 
   const people = Object.values(occupants);
-  const positions = orbPositions(people);
+  const positions = orbPositions(people, spaceSize);
   const posById = Object.fromEntries(positions.map((p) => [p.id, p]));
 
   const isSpeaking = (person) => {
@@ -409,7 +429,7 @@ export default function RoomView({ user, room, onLeave }) {
         </div>
       )}
 
-      <div className="room-space">
+      <div className="room-space" ref={spaceRef}>
         <div className="starfield" />
         <div
           className="room-halo"

@@ -57,3 +57,42 @@ test('initials and orbHue behave', () => {
   assert.equal(orbHue('ajit'), orbHue('ajit'));
   assert.ok(orbHue('ajit') >= 0 && orbHue('ajit') < 360);
 });
+
+test('orbPositions: with a container, no orb clips at any edge on a phone', () => {
+  // Regression: on a ~390px phone the blue orb was half cut off at the
+  // left edge — the old %-only clamp (x >= 12%) ignored the orb radius
+  // in px, so a 112px orb centered at 12% of a 360px room stuck 13px
+  // past the edge. With a container, center ± radius must stay inside.
+  const inBounds = (p, w, h) => {
+    const r = p.size / 2;
+    const cx = (p.x / 100) * w;
+    const cy = (p.y / 100) * h;
+    assert.ok(cx - r >= 0, `orb ${p.id} clips left at ${w}x${h} (x=${p.x}, size=${p.size})`);
+    assert.ok(cx + r <= w, `orb ${p.id} clips right at ${w}x${h}`);
+    assert.ok(cy - r >= 0, `orb ${p.id} clips top at ${w}x${h}`);
+    assert.ok(cy + r <= h, `orb ${p.id} clips bottom at ${w}x${h}`);
+  };
+  for (const [w, h] of [[360, 520], [320, 480], [390, 600], [800, 600], [280, 400]]) {
+    for (let n = 1; n <= 6; n++) {
+      const people = Array.from({ length: n }, (_, i) => ({ id: `u${w}-${n}-${i}` }));
+      for (const p of orbPositions(people, { width: w, height: h })) inBounds(p, w, h);
+    }
+  }
+  // Fuzz: many ids and room sizes, room-view shaped people included.
+  for (let i = 0; i < 200; i++) {
+    const n = 2 + (i % 5);
+    const people = Array.from({ length: n }, (_, j) => ({ socketId: `sock-${i}-${j}` }));
+    const w = 300 + ((i * 37) % 500);
+    const h = 400 + ((i * 53) % 300);
+    for (const p of orbPositions(people, { width: w, height: h })) inBounds(p, w, h);
+  }
+});
+
+test('orbPositions: deterministic with a container, and solo stays centered', () => {
+  const people = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  const c = { width: 360, height: 520 };
+  assert.deepEqual(orbPositions(people, c), orbPositions(people, c));
+  const [solo] = orbPositions([{ id: 'only' }], c);
+  assert.equal(solo.x, 50);
+  assert.equal(solo.y, 46);
+});
