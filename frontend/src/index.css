@@ -268,7 +268,7 @@ input::placeholder { color: var(--muted); }
 .empty-state p { margin: 0; line-height: 1.5; }
 
 /* Room view */
-.room-view { display: flex; flex-direction: column; min-height: calc(100vh - 140px); }
+.room-view { display: flex; flex-direction: column; min-height: calc(100vh - 140px); padding-bottom: 6rem; /* clear the fixed voice bar so the status line is never hidden behind it */ }
 .room-header {
   display: flex;
   align-items: center;
