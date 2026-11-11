@@ -1725,6 +1725,11 @@ textarea {
   .home-head .greeting h2 { font-size: 2rem; }
   .home-head .btn-block { width: auto; flex-shrink: 0; }
   .room-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+  /* The hero room is also in the Live-now list — hide its duplicate
+     card on desktop, and hide the whole section when the hero is the
+     only live room. Phones have no hero, so the list stays complete. */
+  .room-card--is-hero { display: none; }
+  .live-section--only-hero { display: none; }
   .create-card { max-width: 640px; }
 
   /* Room view: the orb stage takes the main width and the members
