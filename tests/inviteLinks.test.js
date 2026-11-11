@@ -175,21 +175,36 @@ test('canJoinViaLink: public room admits anyone with the link', () => {
 
 test('InviteLink model: validates required fields offline', async () => {
   const good = new InviteLink({
-    room: ROOM_ID, createdBy: OWNER, tokenHash: 'a'.repeat(64), expiresAt: null
+    room: ROOM_ID, createdBy: OWNER, tokenHash: 'a'.repeat(64),
+    token: 'iv:tag:ciphertext', expiresAt: null
   });
   await good.validate();
-  const missingRoom = new InviteLink({ createdBy: OWNER, tokenHash: 'a'.repeat(64) });
+  const missingRoom = new InviteLink({ createdBy: OWNER, tokenHash: 'a'.repeat(64), token: 'iv:tag:ciphertext' });
   await assert.rejects(missingRoom.validate(), /room/);
-  const missingHash = new InviteLink({ room: ROOM_ID, createdBy: OWNER });
+  const missingHash = new InviteLink({ room: ROOM_ID, createdBy: OWNER, token: 'iv:tag:ciphertext' });
   await assert.rejects(missingHash.validate(), /tokenHash/);
-  const missingCreator = new InviteLink({ room: ROOM_ID, tokenHash: 'a'.repeat(64) });
+  const missingToken = new InviteLink({ room: ROOM_ID, createdBy: OWNER, tokenHash: 'a'.repeat(64) });
+  await assert.rejects(missingToken.validate(), /token/);
+  const missingCreator = new InviteLink({ room: ROOM_ID, tokenHash: 'a'.repeat(64), token: 'iv:tag:ciphertext' });
   await assert.rejects(missingCreator.validate(), /createdBy/);
   // expiresAt is optional (null = public-room link, never expires).
   const noExpiry = new InviteLink({
-    room: ROOM_ID, createdBy: OWNER, tokenHash: 'a'.repeat(64)
+    room: ROOM_ID, createdBy: OWNER, tokenHash: 'a'.repeat(64), token: 'iv:tag:ciphertext'
   });
   await noExpiry.validate();
   assert.equal(noExpiry.expiresAt, null);
+});
+
+test('InviteLink model: encrypted token round-trips (re-displayable)', () => {
+  // The stored `token` field is AES-256-GCM ciphertext, not the raw
+  // token — so the link can be shown again later to an authorized
+  // user without invalidating the copy already shared.
+  const { encrypt, decrypt } = require('../lib/crypto');
+  const token = generateInviteToken();
+  const stored = encrypt(token);
+  assert.notEqual(stored, token);
+  assert.equal(stored.includes(token), false);
+  assert.equal(decrypt(stored), token);
 });
 
 test('InviteLink model: has the one-link-per-room + TTL indexes', () => {
