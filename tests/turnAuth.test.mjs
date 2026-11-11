@@ -41,11 +41,13 @@ test('getStaticAuthServers returns staticauth TURN on 80/443 + TCP 443', async (
   assert.equal(servers[0].credential.length, 28);
 });
 
-test('getIceServers puts account TURN first, then static-auth, then STUN', async () => {
+test('getIceServers puts account TURN first, then static-auth, then freeturn, then STUN', async () => {
   const account = { urls: ['turn:standard.relay.metered.ca:80'], username: 'u1', credential: 'p1' };
   const servers = await getIceServers(account);
   assert.deepEqual(servers[0], account);
   assert.ok(servers.some((s) => String(s.urls).includes('staticauth.openrelay.metered.ca')));
+  assert.ok(servers.some((s) => s.urls === 'turn:freeturn.net:3478' && s.username === 'free'));
+  assert.ok(servers.some((s) => s.urls === 'turns:freeturn.net:5349'));
   assert.ok(servers.some((s) => JSON.stringify(s.urls).includes('stun.l.google.com')));
   const noAccount = await getIceServers(null);
   assert.ok(!noAccount.some((s) => s.username === 'u1'));

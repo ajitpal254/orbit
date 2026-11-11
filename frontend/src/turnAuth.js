@@ -19,6 +19,11 @@
 //      credential base64(HMAC-SHA1(secret, username)), with the public
 //      shared secret below (documented by Metered; it is not a private
 //      key, it only mints 24h relay credentials).
+//   3. freeturn.net (no signup, best-effort): a second public TURN with
+//      documented public credentials (free / free), added because the
+//      static-auth endpoint's liveness cannot be verified from the
+//      sandbox (its egress proxy drops STUN traffic) — a dead server
+//      simply yields no relay candidates and costs nothing.
 // Google STUN is always last (direct paths first).
 
 const STATIC_AUTH_SECRET = 'openrelayprojectsecret';
@@ -80,6 +85,13 @@ export async function getIceServers(accountTurn) {
     });
   }
   servers.push(...(await getStaticAuthServers()));
+  // freeturn.net: public TURN, documented credentials free / free.
+  // UDP first, then TCP, then TLS — whichever the network allows.
+  servers.push(
+    { urls: 'turn:freeturn.net:3478', username: 'free', credential: 'free' },
+    { urls: 'turn:freeturn.net:3478?transport=tcp', username: 'free', credential: 'free' },
+    { urls: 'turns:freeturn.net:5349', username: 'free', credential: 'free' }
+  );
   servers.push(...FALLBACK_ICE_SERVERS);
   return servers;
 }
