@@ -207,3 +207,53 @@ test('Knock model validates offline (no MongoDB)', () => {
   assert.ok(new Knock({ room: ROOM_ID }).validateSync());
   assert.ok(new Knock({ room: ROOM_ID, user: KNOCKER, status: 'maybe' }).validateSync());
 });
+
+// --- Wiring: the routes + UI exist and are connected (source checks,
+// same pattern as tests/mobile.test.mjs — no MongoDB, no DOM). ---
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+const src = (rel) => readFileSync(join(__dirname, '..', rel), 'utf8');
+
+test('wiring: knock routes exist in routes/api.js', () => {
+  const api = src('routes/api.js');
+  for (const route of [
+    "router.post('/rooms/:id/knock'",
+    "router.get('/rooms/:id/knock'",
+    "router.delete('/rooms/:id/knock'",
+    "router.get('/rooms/:id/knocks'",
+    "router.post('/knocks/:id/admit'",
+    "router.post('/knocks/:id/decline'"
+  ]) assert.ok(api.includes(route), `missing route: ${route}`);
+  // A faded campfire answers 410 before any knock logic runs.
+  assert.ok(api.includes("if (!isVisible(room)) return res.status(410).json({ error: 'This campfire has already faded' })"));
+  // The fading-rooms worker is untouched by this feature.
+  assert.ok(!src('lib/fadingRooms.js').includes('Knock'), 'knock must not touch the fading-rooms worker');
+});
+
+test('wiring: App listens for knock pushes and renders the locked room', () => {
+  const app = src('frontend/src/App.jsx');
+  assert.ok(app.includes("socket.on('knock-received', onNotify)"));
+  assert.ok(app.includes("socket.on('knock-admitted', onNotify)"));
+  assert.ok(app.includes('<LockedRoom'));
+  assert.ok(app.includes('err.room'));
+  // handleNotifNavigate stays below joinRoom/goTo (guarded by
+  // tests/appCallbackOrder.test.mjs too — this is the same rule).
+  assert.ok(app.indexOf('const joinRoom') < app.indexOf('const handleNotifNavigate'));
+});
+
+test('wiring: RoomView has the admit/decline panel for owner/mods', () => {
+  const view = src('frontend/src/components/RoomView.jsx');
+  assert.ok(view.includes('getRoomKnocks'));
+  assert.ok(view.includes('admitKnock'));
+  assert.ok(view.includes('declineKnock'));
+  assert.ok(view.includes('knock-received'));
+  assert.ok(view.includes('Knocking ('));
+});
+
+test('wiring: notifications map the knock type, and the icon exists', () => {
+  const notifs = src('frontend/src/components/Notifications.jsx');
+  assert.ok(notifs.includes("knock: 'knock'"));
+  assert.ok(notifs.includes("n.type === 'knock'"));
+  assert.ok(src('frontend/src/iconPaths.js').includes('knock: ['));
+  assert.ok(src('frontend/src/api.js').includes('knockOnRoom'));
+});

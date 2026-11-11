@@ -28,6 +28,12 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   if (url === '/api/config') return fakeRes(200, { googleClientId: null });
   if (url === '/api/forbidden') return fakeRes(403, { error: 'Forbidden' });
+  if (url === '/api/rooms/locked-id') {
+    return fakeRes(403, { error: 'This room is private', room: { id: 'locked-id', name: 'Late Night', isPrivate: true } });
+  }
+  if (url === '/api/rooms/locked-id/knock') {
+    return fakeRes(429, { error: 'You already knocked — give them a moment before knocking again', knock: { id: 'k1', status: 'pending' } });
+  }
   const header = opts.headers?.['x-csrf-token'];
   if (!serverCookie || header !== serverCookie) {
     return fakeRes(403, { error: 'Invalid CSRF token' });
@@ -85,4 +91,29 @@ test('a non-CSRF 403 is thrown, not retried', async () => {
     (err) => err.message === 'Forbidden'
   );
   assert.equal(calls.filter(([url]) => url === '/api/forbidden').length, 1);
+});
+
+test('a private-room 403 carries the locked room stub on the error', async () => {
+  reset();
+  await assert.rejects(
+    apiJson('/api/rooms/locked-id'),
+    (err) => {
+      assert.equal(err.message, 'This room is private');
+      assert.equal(err.status, 403);
+      assert.deepEqual(err.room, { id: 'locked-id', name: 'Late Night', isPrivate: true });
+      return true;
+    }
+  );
+});
+
+test('a rate-limited knock 429 carries the pending knock on the error', async () => {
+  reset();
+  await assert.rejects(
+    apiJson('/api/rooms/locked-id/knock', { method: 'POST' }),
+    (err) => {
+      assert.equal(err.status, 429);
+      assert.deepEqual(err.knock, { id: 'k1', status: 'pending' });
+      return true;
+    }
+  );
 });
