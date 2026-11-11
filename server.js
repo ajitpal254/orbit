@@ -8,7 +8,11 @@ const path = require('path');
 const { Server } = require('socket.io');
 const apiRoutes = require('./routes/api');
 const { rateLimitMiddleware, csrfMiddleware } = require('./middleware/auth');
-const { attachSocket } = require('./lib/socket');
+const { attachSocket, emitRoomsChanged, clearMutedForRoom } = require('./lib/socket');
+const { startCleanupWorker } = require('./lib/fadingRooms');
+const Room = require('./models/Room');
+const Message = require('./models/Message');
+const RoomInvite = require('./models/RoomInvite');
 const logger = require('./lib/logger');
 const { requestId, requestLog } = require('./middleware/requestLog');
 // Resolve the message-encryption key at boot so a missing
@@ -80,6 +84,22 @@ if (require.main === module) {
   mongoose.connect(MONGODB_URI)
     .then(() => {
       logger.info('MongoDB connected');
+      // Campfire cleanup worker: sweeps due campfires every 15s and
+      // deletes them (persisted expiresAt + atomic claim — restart-safe,
+      // safe with two workers). Runs once immediately so rooms whose
+      // deadline passed while the server was down fade on boot.
+      startCleanupWorker({
+        Room,
+        Message,
+        RoomInvite,
+        clearMutedForRoom,
+        log: (fields, msg) => (fields && fields.err ? logger.error(fields, msg) : logger.info(fields, msg)),
+        onClosed: async (room) => {
+          const id = String(room._id);
+          io.to(id).emit('room-closed', { roomId: id });
+          emitRoomsChanged(id);
+        }
+      });
       httpServer.listen(PORT, () => logger.info(`Orbit running on port ${PORT}`));
     })
     .catch((err) => {
