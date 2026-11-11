@@ -15,6 +15,7 @@ const Message = require('./models/Message');
 const RoomInvite = require('./models/RoomInvite');
 const logger = require('./lib/logger');
 const { requestId, requestLog } = require('./middleware/requestLog');
+const { securityHeaders } = require('./middleware/securityHeaders');
 // Resolve the message-encryption key at boot so a missing
 // DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
 // logs (not silently on the first encrypted message).
@@ -28,6 +29,7 @@ app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
 app.use(compression());
+app.use(securityHeaders);
 app.use(requestId);
 app.use(requestLog);
 
@@ -53,6 +55,13 @@ app.get('/api/health', (req, res) => {
 app.use('/api', rateLimitMiddleware());
 app.use('/api', csrfMiddleware);
 app.use('/api', apiRoutes);
+
+// Unknown /api path: JSON 404 — not the SPA page, and not Express's
+// bare finalhandler response (which would overwrite the CSP with its
+// own "default-src 'none'" and drop the security headers).
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 // Serve the built frontend.
 app.use(express.static(path.join(__dirname, 'public')));
