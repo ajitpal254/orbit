@@ -82,7 +82,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
 
   if (selected) {
     return (
-      <div className="view dm-thread">
+      <div className="view view-anim dm-thread">
         <div className="dm-thread-head">
           <button className="btn btn-text" onClick={() => setSelected(null)}>← Messages</button>
           <span className="mini-orb person-orb">{initials(selected.name || selected.email)}</span>
@@ -121,7 +121,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
   }
 
   return (
-    <div className="view">
+    <div className="view view-anim">
       <div className="greeting">
         <p className="date-line">Private chats</p>
         <h2>Messages 💬</h2>
@@ -137,10 +137,11 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
         </div>
       ) : (
         <div className="people-list">
-          {conversations.map((c) => (
+          {conversations.map((c, i) => (
             <button
               key={c.userId}
-              className="person-row dm-row"
+              className="person-row dm-row stagger-in"
+              style={{ animationDelay: `${i * 40}ms` }}
               onClick={() => setSelected({ userId: c.userId, name: c.name, email: c.email })}
             >
               <span className="mini-orb person-orb">{initials(c.name || c.email)}</span>

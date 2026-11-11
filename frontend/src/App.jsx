@@ -146,7 +146,12 @@ export default function App() {
       </header>
 
       {!room && (
-        <nav className="view-tabs" aria-label="Sections">
+        <nav
+          className="view-tabs"
+          aria-label="Sections"
+          style={{ '--tab-index': view === 'rooms' ? 0 : view === 'friends' ? 1 : 2 }}
+        >
+          <span className="tab-indicator" aria-hidden="true" />
           <button
             className={view === 'rooms' ? 'active' : ''}
             onClick={() => setView('rooms')}

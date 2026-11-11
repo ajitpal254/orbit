@@ -77,7 +77,7 @@ export default function Home({ user, onJoin, refreshTick }) {
   const quiet = rooms.filter((r) => r.occupantCount === 0);
 
   return (
-    <div className="view">
+    <div className="view view-anim">
       <div className="greeting">
         <p className="date-line">Your orbit</p>
         <h2>Hey, {user.name ? user.name.split(' ')[0] : 'friend'} 👋</h2>
@@ -149,8 +149,8 @@ export default function Home({ user, onJoin, refreshTick }) {
         <section>
           <h3 className="section-title">✉️ Room invites</h3>
           <div className="people-list">
-            {invites.map((invite) => (
-              <div key={invite.id} className="person-row">
+            {invites.map((invite, i) => (
+              <div key={invite.id} className="person-row stagger-in" style={{ animationDelay: `${i * 40}ms` }}>
                 <span className="mini-orb person-orb">🔒</span>
                 <span className="person-info">
                   <strong>{invite.room?.name || 'A room'}</strong>
@@ -190,8 +190,8 @@ export default function Home({ user, onJoin, refreshTick }) {
         <section>
           <h3 className="section-title"><span className="live-dot" /> Live now</h3>
           <div className="room-list">
-            {live.map((room) => (
-              <RoomCard key={room.id} room={room} onJoin={onJoin} />
+            {live.map((room, i) => (
+              <RoomCard key={room.id} room={room} index={i} onJoin={onJoin} />
             ))}
           </div>
         </section>
@@ -201,8 +201,8 @@ export default function Home({ user, onJoin, refreshTick }) {
         <section>
           <h3 className="section-title">Rooms</h3>
           <div className="room-list">
-            {quiet.map((room) => (
-              <RoomCard key={room.id} room={room} onJoin={onJoin} />
+            {quiet.map((room, i) => (
+              <RoomCard key={room.id} room={room} index={i} onJoin={onJoin} />
             ))}
           </div>
         </section>
@@ -211,14 +211,14 @@ export default function Home({ user, onJoin, refreshTick }) {
   );
 }
 
-function RoomCard({ room, onJoin }) {
+function RoomCard({ room, index, onJoin }) {
   const a = room.accent || {};
   const speaking = room.occupants?.some((o) => o.speaking);
   return (
     <button
-      className="room-card"
+      className="room-card stagger-in"
       onClick={() => onJoin(room)}
-      style={{ '--room-from': a.from || '#8b5cf6', '--room-to': a.to || '#d946ef' }}
+      style={{ '--room-from': a.from || '#8b5cf6', '--room-to': a.to || '#d946ef', animationDelay: `${(index || 0) * 50}ms` }}
     >
       <div className="room-card-top">
         <div>

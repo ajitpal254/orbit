@@ -69,7 +69,7 @@ export default function Friends({ refreshTick, onMessage }) {
   };
 
   return (
-    <div className="view">
+    <div className="view view-anim">
       <div className="greeting">
         <p className="date-line">Your people</p>
         <h2>Friends 👋</h2>
@@ -89,10 +89,11 @@ export default function Friends({ refreshTick, onMessage }) {
         <section>
           <h3 className="section-title">Results</h3>
           <div className="people-list">
-            {results.map((u) => (
+            {results.map((u, i) => (
               <PersonRow
                 key={u.id}
                 person={u}
+                index={i}
                 busy={busy === u.id}
                 action={
                   u.friendship === 'friends' ? (
@@ -137,10 +138,11 @@ export default function Friends({ refreshTick, onMessage }) {
         <section>
           <h3 className="section-title">Requests for you</h3>
           <div className="people-list">
-            {pendingReceived.map((u) => (
+            {pendingReceived.map((u, i) => (
               <PersonRow
                 key={u.id}
                 person={u}
+                index={i}
                 busy={busy === u.id}
                 action={
                   <span className="row-actions">
@@ -170,8 +172,8 @@ export default function Friends({ refreshTick, onMessage }) {
         <section>
           <h3 className="section-title">Requests you sent</h3>
           <div className="people-list">
-            {pendingSent.map((u) => (
-              <PersonRow key={u.id} person={u} action={<span className="muted">Requested ✓</span>} />
+            {pendingSent.map((u, i) => (
+              <PersonRow key={u.id} person={u} index={i} action={<span className="muted">Requested ✓</span>} />
             ))}
           </div>
         </section>
@@ -185,10 +187,11 @@ export default function Friends({ refreshTick, onMessage }) {
           <p className="muted">No friends yet — search above to add someone.</p>
         ) : (
           <div className="people-list">
-            {friends.map((u) => (
+            {friends.map((u, i) => (
               <PersonRow
                 key={u.id}
                 person={u}
+                index={i}
                 busy={busy === u.id}
                 action={
                   <span className="row-actions">
@@ -222,9 +225,12 @@ export default function Friends({ refreshTick, onMessage }) {
   );
 }
 
-function PersonRow({ person, action, busy }) {
+function PersonRow({ person, action, busy, index }) {
   return (
-    <div className={`person-row ${busy ? 'busy' : ''}`}>
+    <div
+      className={`person-row stagger-in ${busy ? 'busy' : ''}`}
+      style={{ animationDelay: `${(index || 0) * 40}ms` }}
+    >
       <span className="mini-orb person-orb">{initials(person.name || person.email)}</span>
       <span className="person-info">
         <strong>{person.name || 'Unnamed'}</strong>

@@ -35,6 +35,11 @@ export default function RoomView({ user, room, onLeave }) {
   const [modMuted, setModMuted] = useState(false);
   const [modMutedBy, setModMutedBy] = useState('');
   const [kicked, setKicked] = useState(false);
+  // Orb tap popover + bounce: which orb's info card is open, and which
+  // orb just got tapped (drives the one-shot .orb-tapped bounce).
+  const [selectedOrb, setSelectedOrb] = useState(null);
+  const [tapOrbId, setTapOrbId] = useState(null);
+  const tapTimerRef = useRef(null);
   const voiceRef = useRef(null);
   const chatEndRef = useRef(null);
   const chatOpenRef = useRef(false);
@@ -226,6 +231,16 @@ export default function RoomView({ user, room, onLeave }) {
     playDeafenSound(next);
   }, [deafened]);
 
+  // Tap an orb: quick bounce + toggle its info popover. The class is
+  // removed and re-added on a later frame so a fast double-tap replays
+  // the bounce instead of being swallowed by the still-present class.
+  const tapOrb = useCallback((socketId) => {
+    setTapOrbId(null);
+    requestAnimationFrame(() => requestAnimationFrame(() => setTapOrbId(socketId)));
+    if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+    tapTimerRef.current = setTimeout(() => setTapOrbId(null), 380);
+  }, []);
+
   const openChat = () => {
     setChatOpen((v) => !v);
     setUnread(0);
@@ -309,6 +324,8 @@ export default function RoomView({ user, room, onLeave }) {
     if (person.isSelf) return speaking.selfSpeaking;
     return (speaking.levels[person.socketId] || 0) > 0.25;
   };
+  // Private-room role for the orb popover (owner / moderator / member).
+  const roleOf = (userId) => (members.find((m) => m.id === userId) || {}).role || null;
 
   if (kicked) {
     return (
@@ -355,11 +372,11 @@ export default function RoomView({ user, room, onLeave }) {
             </span>
           </div>
           <div className="members-list">
-            {members.map((m) => {
+            {members.map((m, i) => {
               const isMe = m.id === user.id;
               const label = m.role === 'owner' ? '👑 Owner' : m.role === 'moderator' ? '🛡️ Mod' : null;
               return (
-                <div key={m.id} className="member-row">
+                <div key={m.id} className="member-row stagger-in" style={{ animationDelay: `${i * 40}ms` }}>
                   <span className="mini-orb person-orb">{initials(m.name)}</span>
                   <span className="person-info">
                     <strong>{m.name || 'Unnamed'}{isMe ? ' (you)' : ''}</strong>
@@ -401,11 +418,11 @@ export default function RoomView({ user, room, onLeave }) {
                   No friends yet — add friends from the Friends tab to invite them here.
                 </p>
               )}
-              {friends !== null && friends.map((f) => {
+              {friends !== null && friends.map((f, i) => {
                 const alreadyMember = members.some((m) => m.id === f.id);
                 const justInvited = invited.includes(f.id);
                 return (
-                  <div key={f.id} className="person-row">
+                  <div key={f.id} className="person-row stagger-in" style={{ animationDelay: `${i * 40}ms` }}>
                     <span className="mini-orb person-orb">{initials(f.name || f.email)}</span>
                     <span className="person-info">
                       <strong>{f.name || 'Unnamed'}</strong>
@@ -429,8 +446,12 @@ export default function RoomView({ user, room, onLeave }) {
         </div>
       )}
 
-      <div className="room-space" ref={spaceRef}>
+      <div className="room-space" ref={spaceRef} onClick={() => setSelectedOrb(null)}>
         <div className="starfield" />
+        <div className="starfield-twinkle starfield-twinkle-a" />
+        <div className="starfield-twinkle starfield-twinkle-b" />
+        <div className="nebula nebula-a" />
+        <div className="nebula nebula-b" />
         <div
           className="room-halo"
           style={{ background: `radial-gradient(circle, ${accent.from}33, transparent 65%)` }}
@@ -439,34 +460,69 @@ export default function RoomView({ user, room, onLeave }) {
           const pos = posById[person.socketId];
           if (!pos) return null;
           const speakingNow = isSpeaking(person);
+          // Glide on transform (px), not left/top: orbLayout gives % of
+          // the measured room, so convert once here. When someone joins
+          // or leaves, every orb's target moves and the transition
+          // glides them there instead of jumping.
+          const px = (pos.x / 100) * spaceSize.width;
+          const py = (pos.y / 100) * spaceSize.height;
+          const role = person.isSelf ? myRole : roleOf(person.userId);
+          const selected = selectedOrb === person.socketId;
           return (
             <div
               key={person.socketId}
-              className={`orb ${speakingNow ? 'speaking' : ''} ${person.muted ? 'is-muted' : ''}`}
+              className={`orb-wrap ${selected ? 'selected' : ''}`}
               style={{
-                left: `${pos.x}%`,
-                top: `${pos.y}%`,
+                '--tx': `${px}px`,
+                '--ty': `${py}px`,
                 width: pos.size,
-                height: pos.size,
-                background: `linear-gradient(135deg, ${accent.from}, ${accent.to})`,
-                filter: `hue-rotate(${orbHue(person.userId)}deg)`,
-                animationDelay: `${pos.delay}s`,
-                animationDuration: `${pos.duration}s`
+                height: pos.size
               }}
+              onClick={(e) => {
+                e.stopPropagation();
+                tapOrb(person.socketId);
+                setSelectedOrb(selected ? null : person.socketId);
+              }}
+              role="button"
+              aria-label={person.name}
+              title={person.name}
             >
-              <span className="orb-initials">{initials(person.name)}</span>
-              <span className="orb-name">
-                {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
-              </span>
-              {person.muted && <span className="orb-muted">🔇</span>}
-              {person.isSelf && modMuted && (
-                <span className="orb-mod-muted">Muted by moderator{modMutedBy ? ` — ${modMutedBy}` : ''}</span>
-              )}
-              {!person.isSelf && (
-                <span
-                  className={`conn-dot conn-${connState[person.socketId] || 'new'}`}
-                  title={`Voice: ${connState[person.socketId] || 'connecting…'}`}
-                />
+              <div
+                className="orb-bob"
+                style={{ animationDelay: `${pos.delay}s`, animationDuration: `${pos.duration}s` }}
+              >
+                <div
+                  className={`orb ${speakingNow ? 'speaking' : ''} ${person.muted ? 'is-muted' : ''} ${tapOrbId === person.socketId ? 'orb-tapped' : ''}`}
+                  style={{
+                    background: `linear-gradient(135deg, ${accent.from}, ${accent.to})`,
+                    filter: `hue-rotate(${orbHue(person.userId)}deg)`
+                  }}
+                >
+                  <span className="orb-initials">{initials(person.name)}</span>
+                  <span className="orb-name">
+                    {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
+                  </span>
+                  {person.muted && <span className="orb-muted">🔇</span>}
+                  {person.isSelf && modMuted && (
+                    <span className="orb-mod-muted">Muted by moderator{modMutedBy ? ` — ${modMutedBy}` : ''}</span>
+                  )}
+                  {!person.isSelf && (
+                    <span
+                      className={`conn-dot conn-${connState[person.socketId] || 'new'}`}
+                      title={`Voice: ${connState[person.socketId] || 'connecting…'}`}
+                    />
+                  )}
+                </div>
+              </div>
+              {selected && (
+                <div className={`orb-popover ${pos.y < 32 ? 'below' : ''}`}>
+                  <span>
+                    {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
+                  </span>
+                  {role === 'owner' && <span className="role-badge role-owner">👑 Owner</span>}
+                  {role === 'moderator' && <span className="role-badge role-mod">🛡️ Mod</span>}
+                  {person.muted && <span>🔇 Muted</span>}
+                </div>
               )}
             </div>
           );
@@ -542,14 +598,14 @@ export default function RoomView({ user, room, onLeave }) {
           title={modMuted ? 'Muted by moderator' : undefined}
           aria-label={modMuted ? 'Muted by moderator' : muted ? 'Unmute' : 'Mute'}
         >
-          {muted ? '🔇' : '🎙️'}
+          <span key={muted ? 'off' : 'on'} className="voice-ico">{muted ? '🔇' : '🎙️'}</span>
         </button>
         <button
           className={`voice-btn ${deafened ? 'off' : ''}`}
           onClick={toggleDeafen}
           aria-label={deafened ? 'Undeafen' : 'Deafen'}
         >
-          {deafened ? '🔕' : '🔊'}
+          <span key={deafened ? 'off' : 'on'} className="voice-ico">{deafened ? '🔕' : '🔊'}</span>
         </button>
         <button className="voice-btn" onClick={openChat} aria-label="Chat">
           💬
