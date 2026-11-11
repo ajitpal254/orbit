@@ -36,3 +36,57 @@ export function heroOccupants(room) {
     speaking: !!o.speaking
   }));
 }
+
+// Group consecutive activity rows with the same type and actor into
+// one row with a count and the latest time — "3 new messages from
+// Ajit Pal" instead of the same row three times. Only consecutive
+// items merge: a different actor or type in between keeps the groups
+// separate. Each group keeps the newest underlying notification, so
+// a click still navigates (and marks read) using that id, and the
+// unread dot shows if any item in the group is unread.
+const GROUP_TEXT = {
+  dm: (count, name) => `${count} new messages from ${name}`,
+  friend_request: (count, name) => `${count} friend requests from ${name}`,
+  room_invite: (count, name) => `${count} room invites from ${name}`,
+  friend_accepted: (count, name) => `${count} friend requests accepted by ${name}`
+};
+
+function groupDisplayText(type, count, actorName, firstText) {
+  if (count === 1) return firstText;
+  const make = GROUP_TEXT[type];
+  return make ? make(count, actorName) : `${count} notifications from ${actorName}`;
+}
+
+export function groupActivity(notifications) {
+  const groups = [];
+  for (const n of notifications || []) {
+    const actorId = n.actor?.id ?? null;
+    const last = groups[groups.length - 1];
+    const time = new Date(n.updatedAt || n.createdAt).getTime();
+    if (last && last.type === n.type && last.actorId === actorId) {
+      last.items.push(n);
+      last.count += 1;
+      if (time > last.latestTime) {
+        last.latestTime = time;
+        last.latestAt = n.updatedAt || n.createdAt;
+        last.newest = n;
+      }
+      if (!n.read) last.unread = true;
+      last.text = groupDisplayText(last.type, last.count, last.actor?.name || 'someone', last.items[0].text);
+    } else {
+      groups.push({
+        type: n.type,
+        actorId,
+        actor: n.actor || null,
+        count: 1,
+        items: [n],
+        newest: n,
+        latestAt: n.updatedAt || n.createdAt,
+        latestTime: time,
+        unread: !n.read,
+        text: n.text
+      });
+    }
+  }
+  return groups;
+}

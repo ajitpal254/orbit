@@ -1015,16 +1015,28 @@ input::placeholder { color: var(--muted); }
 .members-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.6rem; }
 .member-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.55rem;
+  row-gap: 0.45rem;
   padding: 0.35rem 0.5rem;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border);
 }
-.member-row .person-info { display: flex; align-items: center; gap: 0.45rem; min-width: 0; flex: 1; }
-.member-row .person-info strong { font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.member-actions { display: flex; flex-wrap: wrap; gap: 0.1rem; justify-content: flex-end; }
+.member-row .person-info { display: flex; align-items: center; gap: 0.45rem; min-width: 0; flex: 1 1 0; }
+.member-row .person-info strong { flex: 1 1 auto; min-width: 0; font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.member-row .role-badge { flex-shrink: 0; }
+.member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1 1 100%;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  margin-left: calc(32px + 0.55rem); /* line up under the name, not the avatar */
+}
+.member-actions:empty { display: none; }
+.member-actions .btn-small { min-height: 36px; padding: 0.45rem 0.75rem; }
 .role-badge {
   font-size: 0.72rem;
   font-weight: 800;
@@ -1073,27 +1085,11 @@ input::placeholder { color: var(--muted); }
   }
 
   /* Members header: the title stays on one line; the buttons wrap
-     below it instead of crowding the title. */
+     below it instead of crowding the title. (Member rows are two
+     lines at every width — see the base .member-row rules above.) */
   .members-head { flex-wrap: wrap; }
   .members-head strong { white-space: nowrap; }
   .members-head > span { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-
-  /* Member rows become two lines. Line 1: avatar + name + role badge —
-     the name truncates with an ellipsis and the badge can never slide
-     behind the avatar. Line 2: the action buttons in a clean wrapping
-     row with 36px tap targets. */
-  .member-row { flex-wrap: wrap; row-gap: 0.45rem; }
-  .member-row .person-info { flex-direction: row; flex: 1 1 0; min-width: 0; }
-  .member-row .person-info strong { flex: 1 1 auto; min-width: 0; }
-  .member-row .role-badge { flex-shrink: 0; }
-  .member-actions {
-    flex: 1 1 100%;
-    justify-content: flex-start;
-    gap: 0.35rem;
-    margin-left: calc(32px + 0.55rem); /* line up under the name, not the avatar */
-  }
-  .member-actions:empty { display: none; }
-  .member-actions .btn-small { min-height: 36px; padding: 0.45rem 0.75rem; }
 }
 .invite-picker { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .invite-picker .person-row { background: rgba(255, 255, 255, 0.03); }
@@ -1502,7 +1498,7 @@ textarea {
   body::before {
     content: '';
     position: fixed;
-    inset: 0;
+    inset: -3%; /* oversized so the 1.5%/1% drift never exposes an edge */
     z-index: 0;
     pointer-events: none;
     background-image:
@@ -1532,6 +1528,12 @@ textarea {
   .app { max-width: 1440px; padding: 0 1rem; flex-direction: row; }
   .app-body { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 100vh; }
   .topbar { padding: 0.9rem 2rem; }
+  /* The left rail already shows the logo, bell and profile at ≥900px,
+     so the top bar drops its duplicates — only Log out stays, pinned
+     right. The rail bell carries the notifications badge instead.
+     Phones keep the full top bar. */
+  .topbar .logo, .topbar .bell-btn, .topbar .topbar-avatar { display: none; }
+  .topbar { justify-content: flex-end; }
   .main { padding: 1rem 2rem 3rem; }
   /* The centred top tabs are replaced by the left icon rail on
      desktop (IconRail.jsx); the tab bar stays for mobile/tablet. */
@@ -1553,6 +1555,7 @@ textarea {
     z-index: 20;
   }
   .rail-logo { font-size: 1.5rem; line-height: 1; margin-bottom: 0.4rem; }
+  .rail-logo .icon { width: 24px; height: 24px; }
   .rail-items { display: flex; flex-direction: column; gap: 0.5rem; }
   .rail-btn {
     position: relative;
@@ -1721,7 +1724,17 @@ textarea {
   .home-head .greeting { flex: 1; min-width: 0; }
   .home-head .greeting h2 { font-size: 2rem; }
   .home-head .btn-block { width: auto; flex-shrink: 0; }
-  .room-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+  /* Room cards size to their container, not the viewport: at ≥1600px
+     the centre column is only ~930px once the rail and side panel are
+     subtracted, so the old fixed 4-column rule squeezed cards to
+     ~220px. auto-fill keeps cards ≥260px and never stretches a lone
+     card full-width (unlike auto-fit, which collapses empty tracks). */
+  .room-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.9rem; }
+  /* The hero room is also in the Live-now list — hide its duplicate
+     card on desktop, and hide the whole section when the hero is the
+     only live room. Phones have no hero, so the list stays complete. */
+  .room-card--is-hero { display: none; }
+  .live-section--only-hero { display: none; }
   .create-card { max-width: 640px; }
 
   /* Room view: the orb stage takes the main width and the members
@@ -1732,9 +1745,10 @@ textarea {
     gap: 1rem;
     align-items: start;
   }
-  .room-body--with-panel .room-stage { grid-column: 1; min-width: 0; }
+  .room-body--with-panel .room-stage { grid-column: 1; grid-row: 1; min-width: 0; }
   .room-body--with-panel .members-panel {
     grid-column: 2;
+    grid-row: 1;
     margin-bottom: 0;
     align-self: start;
     position: sticky;
@@ -1765,12 +1779,4 @@ textarea {
 @keyframes sheet-in-right {
   from { opacity: 0; transform: translateX(28px); }
   to { opacity: 1; transform: translateX(0); }
-}
-
-@media (min-width: 1200px) {
-  .room-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-@media (min-width: 1600px) {
-  .room-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }

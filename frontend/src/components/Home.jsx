@@ -95,6 +95,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
 
   const live = rooms.filter((r) => r.occupantCount > 0);
   const quiet = rooms.filter((r) => r.occupantCount === 0);
+  // The hero room (busiest live room) is also in `live` — the Live-now
+  // list hides it on desktop via .room-card--is-hero so it appears
+  // once; phones have no hero, so they still list every live room.
+  const heroRoom = selectBusiestRoom(rooms);
+  const liveOthers = live.filter((r) => r.id !== heroRoom?.id);
 
   return (
     <div className="view view-anim home-view">
@@ -186,7 +191,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
           phone home screen is untouched. */}
       {!loading && (
         <HeroCard
-          room={selectBusiestRoom(rooms)}
+          room={heroRoom}
           onJoin={onJoin}
           onStartRoom={() => setShowCreate(true)}
           onGoFriends={() => onNavigate && onNavigate({ view: 'friends' })}
@@ -238,11 +243,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
       )}
 
       {live.length > 0 && (
-        <section>
+        <section className={liveOthers.length === 0 ? 'live-section--only-hero' : undefined}>
           <h3 className="section-title"><span className="live-dot" /> Live now</h3>
           <div className="room-list">
             {live.map((room, i) => (
-              <RoomCard key={room.id} room={room} index={i} onJoin={onJoin} />
+              <RoomCard key={room.id} room={room} index={i} onJoin={onJoin} isHero={heroRoom?.id === room.id} />
             ))}
           </div>
         </section>
@@ -271,12 +276,12 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
   );
 }
 
-function RoomCard({ room, index, onJoin }) {
+function RoomCard({ room, index, onJoin, isHero }) {
   const a = room.accent || {};
   const speaking = room.occupants?.some((o) => o.speaking);
   return (
     <button
-      className="room-card stagger-in"
+      className={`room-card stagger-in${isHero ? ' room-card--is-hero' : ''}`}
       onClick={() => onJoin(room)}
       style={{ '--room-from': a.from || '#8b5cf6', '--room-to': a.to || '#d946ef', animationDelay: `${(index || 0) * 50}ms` }}
     >

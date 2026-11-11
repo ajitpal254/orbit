@@ -8,12 +8,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { apiJson, getFriendsPresence, getNotifications } from '../api';
 import Avatar from './Avatar';
+import { Icon } from './icons';
+import { groupActivity } from '../desktop';
 
 const ICONS = {
-  friend_request: '👋',
-  friend_accepted: '✅',
-  room_invite: '🔒',
-  dm: '💬'
+  friend_request: 'user-plus',
+  friend_accepted: 'check-circle',
+  room_invite: 'lock',
+  dm: 'chat'
 };
 
 // Mirrors the timeAgo in Notifications.jsx (kept local so this panel
@@ -87,6 +89,10 @@ export default function SidePanel({ refreshTick, onJoinRoom, onNavigate }) {
   };
 
   const onlineCount = (friends || []).filter((f) => f.status !== 'away').length;
+  // Consecutive rows from the same actor collapse into one row with a
+  // count ("3 new messages from Ajit Pal"); a click navigates using
+  // the newest underlying notification.
+  const groupedActivity = groupActivity(activity);
 
   return (
     <aside className="home-side" aria-label="Friends and activity">
@@ -143,20 +149,20 @@ export default function SidePanel({ refreshTick, onJoinRoom, onNavigate }) {
           <p className="muted side-empty">Nothing yet — friend requests, room invites and DMs will show up here.</p>
         ) : (
           <div className="notif-list">
-            {activity.map((n, i) => (
+            {groupedActivity.map((g, i) => (
               <button
-                key={n.id}
-                className={`notif-row stagger-in ${n.read ? '' : 'unread'}`}
+                key={g.newest.id}
+                className={`notif-row stagger-in ${g.unread ? 'unread' : ''}`}
                 style={{ animationDelay: `${i * 40}ms` }}
-                onClick={() => openActivity(n)}
+                onClick={() => openActivity(g.newest)}
               >
-                <span className="notif-icon">{ICONS[n.type] || '🔔'}</span>
-                <Avatar user={n.actor || {}} size="sm" />
+                <span className="notif-icon"><Icon name={ICONS[g.type] || 'bell'} size={20} /></span>
+                <Avatar user={g.actor || {}} size="sm" />
                 <span className="person-info">
-                  <span className="notif-text">{n.text}</span>
-                  <span className="muted notif-time">{timeAgo(n.updatedAt || n.createdAt)}</span>
+                  <span className="notif-text">{g.text}</span>
+                  <span className="muted notif-time">{timeAgo(g.latestAt)}</span>
                 </span>
-                {!n.read && <span className="notif-dot" aria-label="Unread" />}
+                {g.unread && <span className="notif-dot" aria-label="Unread" />}
               </button>
             ))}
           </div>
