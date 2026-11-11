@@ -25,7 +25,8 @@ const { validateRoomInput, validateMessageInput, accentById } = require('../lib/
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { canDm, buildSummaries } = require('../lib/dms');
-const { emitToUser, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
+const { emitToUser, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
+const { buildFriendPresence } = require('../lib/friendPresence');
 const presence = require('../lib/presence');
 
 const router = express.Router();
@@ -315,6 +316,42 @@ router.get('/friends', authMiddleware, asyncHandler(async (req, res) => {
     pendingReceived: rows.filter((r) => r.status === 'pending' && String(r.recipient) === String(req.user._id)).map(pick).filter(Boolean),
     pendingSent: rows.filter((r) => r.status === 'pending' && String(r.requester) === String(req.user._id)).map(pick).filter(Boolean)
   });
+}));
+
+// GET /api/friends/presence — my accepted friends with a live status
+// for the desktop right panel: in-room (with the room, when I can see
+// it), online, or away. Derived from the socket registries that already
+// track this — no new data source. A friend in a private room I cannot
+// see shows as plain `online`, so the room is never leaked. Sorted
+// in-room first, then online, then away (see lib/friendPresence.js).
+router.get('/friends/presence', authMiddleware, asyncHandler(async (req, res) => {
+  const rows = await Friendship.find({
+    status: 'accepted',
+    $or: [{ requester: req.user._id }, { recipient: req.user._id }]
+  }).lean();
+  const friendIds = [...new Set(rows.map((r) => otherUserId(r, req.user._id)))];
+  const friends = await User.find({ _id: { $in: friendIds } })
+    .select('name email avatarPreset avatarImage').lean();
+  // Which visible room each occupant is in, from the live presence
+  // snapshot (one Room lookup for the occupied rooms, not per friend).
+  const snap = presence.snapshot();
+  const roomIds = [...new Set(snap.map((s) => s.roomId))];
+  const rooms = roomIds.length
+    ? await Room.find({ _id: { $in: roomIds } }).lean()
+    : [];
+  const visibleById = new Map();
+  for (const room of rooms) {
+    if (canSeeRoom(room, req.user._id)) visibleById.set(String(room._id), room);
+  }
+  const roomByUser = new Map();
+  for (const { roomId, occupants } of snap) {
+    const room = visibleById.get(String(roomId));
+    if (!room) continue;
+    for (const o of occupants) {
+      roomByUser.set(String(o.userId), { id: String(room._id), name: room.name });
+    }
+  }
+  res.json(buildFriendPresence(friends.map(userJson), onlineUserIds(), roomByUser));
 }));
 
 // DELETE /api/friends/:userId — remove an accepted friendship, either

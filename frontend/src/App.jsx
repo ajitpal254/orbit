@@ -15,6 +15,7 @@ import Profile from './components/Profile';
 import About from './components/About';
 import Notifications from './components/Notifications';
 import Avatar from './components/Avatar';
+import IconRail from './components/IconRail';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
 
@@ -344,6 +345,22 @@ export default function App() {
 
   return (
     <div className={`app${room && !inRoom ? ' app--in-call' : ''}`}>
+      {/* Desktop 3-zone icon rail (hidden below 900px in CSS, and while
+          inside a room — same rule as the tab bar it replaces). It is
+          a flex sibling of .app-body, so on desktop it docks to the
+          left of the content with no fixed-position overlap math.
+          Shown when !inRoom (not !room) so it stays usable mid-call,
+          like the tabs — goTo never drops the call. */}
+      {!inRoom && (
+        <IconRail
+          user={user}
+          view={view}
+          dmUnread={dmUnread}
+          notifUnread={notifUnread}
+          onNavigate={goTo}
+        />
+      )}
+      <div className="app-body">
       <header className="topbar">
         <span className="logo">🪐 Orbit</span>
         <span className="topbar-actions">
@@ -442,9 +459,10 @@ export default function App() {
             onRead={() => setRefreshTick((t) => t + 1)}
           />
         ) : (
-          <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} />
-        ))}
+          <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} onNavigate={handleNotifNavigate} />
+        )}
       </main>
+      </div>
 
       {room && !inRoom && (
         <MiniPlayer
