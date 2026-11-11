@@ -19,12 +19,38 @@
 //     Home empty state already covers that).
 // Placement is Home's job: top of Home on phones, and on desktop only
 // when there is no live hero (hasLiveHero hides it via CSS ≥900px).
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiJson } from '../api';
 import { initials } from '../orbLayout';
-import { starPosition, starState, starStatusText, starLabel, canJoin, outCount, visibleStars } from '../nightSky';
+import { starPosition, starState, starStatusText, starLabel, canJoin, outCount, visibleStars, ambientStars, ambientStarClass } from '../nightSky';
 import Avatar from './Avatar';
 import { Icon } from './icons';
+
+// Decorative, non-interactive background stars + soft nebula tint, so
+// the sky feels alive even with one or two friends. Positions are
+// deterministic (ambientStars), so the field never jumps on re-render.
+function AmbientSky({ stars }) {
+  return (
+    <div className="ambient-sky" aria-hidden="true">
+      <div className="ambient-nebula" />
+      {stars.map((s, i) => (
+        <span
+          key={i}
+          className={ambientStarClass(s)}
+          style={{
+            left: `${s.x}%`,
+            top: `${s.y}%`,
+            width: s.size,
+            height: s.size,
+            '--ao': s.opacity,
+            animationDelay: `${s.delay}s`,
+            animationDuration: `${s.duration}s`
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 
 export default function NightSky({ friends, loading, error, onJoin, onNavigate, onRetry, hasLiveHero }) {
   const [joining, setJoining] = useState(null);
@@ -77,6 +103,9 @@ export default function NightSky({ friends, loading, error, onJoin, onNavigate, 
 
   const out = outCount(friends || []);
   const { stars, overflow } = visibleStars(friends || []);
+  // Computed once per mount: ambientStars is deterministic, so this
+  // is only about not rebuilding the array on every presence refresh.
+  const ambient = useMemo(() => ambientStars(), []);
   const positions = Object.fromEntries(
     stars.map((f, i) => [f.id, starPosition(f, i)])
   );
@@ -101,6 +130,7 @@ export default function NightSky({ friends, loading, error, onJoin, onNavigate, 
 
       {loading && (
         <div className="night-sky-stage" aria-hidden="true">
+          <AmbientSky stars={ambient} />
           {[0, 1, 2].map((i) => (
             <span key={i} className="night-star-skeleton" style={{ left: `${22 + i * 26}%`, top: `${30 + (i % 2) * 28}%` }} />
           ))}
@@ -126,6 +156,7 @@ export default function NightSky({ friends, loading, error, onJoin, onNavigate, 
 
       {!loading && stars.length > 0 && (
         <div className="night-sky-stage">
+          <AmbientSky stars={ambient} />
           <div className="starfield" aria-hidden="true" />
           <div className="starfield-twinkle starfield-twinkle-a" aria-hidden="true" />
           <div className="starfield-twinkle starfield-twinkle-b" aria-hidden="true" />
