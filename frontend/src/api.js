@@ -73,6 +73,13 @@ const jsonPost = (url, body) =>
     body: JSON.stringify(body || {})
   });
 
+// --- Email verification ---
+export const verifyEmail = (token) =>
+  jsonPost('/api/auth/verify-email', { token });
+
+export const resendVerificationEmail = () =>
+  jsonPost('/api/auth/resend-verification', {});
+
 // --- Friends ---
 
 export const searchUsers = (q) =>

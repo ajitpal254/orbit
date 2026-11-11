@@ -13,16 +13,20 @@ const { startCleanupWorker } = require('./lib/fadingRooms');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const RoomInvite = require('./models/RoomInvite');
+const PushSubscription = require('./models/PushSubscription');
 const logger = require('./lib/logger');
 const { requestId, requestLog, requestPath } = require('./middleware/requestLog');
 const { securityHeaders } = require('./middleware/securityHeaders');
 // Resolve the message-encryption key at boot so a missing
 // DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
-// logs (not silently on the first encrypted message).
+// logs (not silently on the first encrypted message). Same for SMTP:
+// a missing SMTP_* setup logs a clear warning that new accounts will
+// stay unverified until verification email can be sent (audit M1).
 require('./lib/crypto').getKey();
 // Loud warning when the account TURN relay is not configured
 // (TURN_SECRET unset) — voice still works via STUN + fallbacks.
 require('./lib/turnCredentials').warnIfTurnSecretMissing(logger);
+require('./lib/emailVerification').logSmtpStatus();
 
 const app = express();
 app.disable('x-powered-by');
@@ -94,8 +98,20 @@ attachSocket(io);
 
 if (require.main === module) {
   mongoose.connect(MONGODB_URI)
-    .then(() => {
+    .then(async () => {
       logger.info('MongoDB connected');
+      // Push subscriptions are keyed by (user, endpoint) (audit M5):
+      // drop the pre-v0.5.1 endpoint-only unique index if it is still
+      // in the database, so two accounts on one device can both stay
+      // subscribed. Best-effort — a failure is logged, never fatal.
+      try {
+        const dropped = await PushSubscription.syncIndexes();
+        if (dropped && dropped.length) {
+          logger.info({ dropped }, 'Dropped obsolete push-subscription indexes');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Push-subscription index sync failed — the old endpoint-only index may still block a second account on one device');
+      }
       // Campfire cleanup worker: sweeps due campfires every 15s and
       // deletes them (persisted expiresAt + atomic claim — restart-safe,
       // safe with two workers). Runs once immediately so rooms whose

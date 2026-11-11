@@ -23,11 +23,13 @@ const { turnUrls, turnHandler } = require('../lib/turnCredentials');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
 const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
+const { isEmailVerified, sendVerificationEmail, verifyEmailToken } = require('../lib/emailVerification');
 const logger = require('../lib/logger');
 const { authMiddleware, parseCookies, rateLimitMiddleware, asyncHandler } = require('../middleware/auth');
 const { validateRoomInput, validateMessageInput, accentById } = require('../lib/rooms');
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
+const { addMember, removeMember, setMemberRole, transferOwnership } = require('../lib/membership');
 const { canDm, buildSummaries } = require('../lib/dms');
 const { notExpiredFilter, withExpiry } = require('../lib/fadingChat');
 const { aliveFilter, isVisible, keepRoom } = require('../lib/fadingRooms');
@@ -58,6 +60,17 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const SESSION_DAYS = 30;
 const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+
+// Email verification gate (audit M1): an unverified account cannot
+// be discovered, invite anyone, or create rooms until it verifies.
+// Login stays allowed so the user can reach the verify/resend flow,
+// and responding to inbound contact (accepting a friend request, an
+// invite, a knock) is not gated. Returns false after answering 403.
+const requireVerifiedEmail = (req, res) => {
+  if (isEmailVerified(req.user)) return true;
+  res.status(403).json({ error: 'Verify your email first — check your inbox, or resend the verification email from your profile' });
+  return false;
+};
 
 // --- PUBLIC CONFIG ---
 
@@ -114,12 +127,20 @@ router.post('/auth/register', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHand
   const user = new User({
     email: email.toLowerCase().trim(),
     name: (name || '').trim().slice(0, 60),
+    // New accounts start unverified until they prove the email
+    // (audit M1). Login still works — verification gates discovery,
+    // invites, and room creation, not sign-in.
+    emailVerified: false,
     passwordSalt: salt,
     passwordHash: hashPassword(password, salt)
   });
   await user.save();
-  req.log.info({ userId: String(user._id) }, 'User registered');
-  await issueSession(req, res, user);
+  // Best-effort: mail being down or unconfigured never fails
+  // registration — the account simply stays unverified (and the
+  // resend endpoint lets the user retry). Never log the token.
+  const verification = await sendVerificationEmail(user);
+  req.log.info({ userId: String(user._id), verificationEmailSent: verification.sent }, 'User registered');
+  await issueSession(req, res, user, { verificationEmailSent: verification.sent });
 }));
 
 router.post('/auth/login', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
@@ -133,7 +154,7 @@ router.post('/auth/login', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler
   await issueSession(req, res, user);
 }));
 
-async function issueSession(req, res, user) {
+async function issueSession(req, res, user, extra = {}) {
   const sessionToken = generateToken();
   const csrfToken = generateToken();
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
@@ -146,7 +167,8 @@ async function issueSession(req, res, user) {
     'csrfToken=' + csrfToken + '; Path=/; SameSite=Lax; Max-Age=' + SESSION_DAYS * 86400 + (secure ? '; Secure' : '')
   ]);
   res.json({
-    user: profileJson(user)
+    user: profileJson(user),
+    ...extra
   });
 }
 
@@ -164,6 +186,13 @@ router.post('/auth/logout', asyncHandler(async (req, res) => {
 // Body: { credential } (the JWT from Google Identity Services). The global
 // CSRF middleware applies: the frontend sends the x-csrf-token header,
 // exactly like password login. Rate-limited like password login.
+//
+// Linking (audit M1): when the request already carries a valid session
+// for the password account with this email, the Google identity is
+// linked to that account (the session is the proof of ownership).
+// An unauthenticated sign-in whose email already belongs to a password
+// account is REFUSED (409) — it never links into the account and no
+// second account is created for the same email.
 router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
   if (!getGoogleClientId()) {
     return res.status(503).json({ error: 'Google sign-in is not configured on this server' });
@@ -176,9 +205,69 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
     req.log.info({ err: err.message }, 'Google token verification failed');
     return res.status(401).json({ error: 'Google sign-in failed — please try again' });
   }
-  const user = await findOrCreateGoogleUser(identity);
+  // Best-effort read of the session cookie: a valid session as the
+  // account with this email authorizes linking. No session (or an
+  // expired one) just means an unauthenticated sign-in — it may
+  // still create a brand-new Google-only account, but may never
+  // link into an existing password account.
+  let currentUser = null;
+  try {
+    const token = parseCookies(req.headers.cookie).sessionToken;
+    if (token) {
+      const session = await Session.findOne({ tokenHash: hashToken(token) });
+      if (session && session.expiresAt >= new Date()) {
+        currentUser = await User.findById(session.userId);
+      }
+    }
+  } catch {
+    currentUser = null;
+  }
+  let user;
+  try {
+    user = await findOrCreateGoogleUser(identity, {
+      currentUserId: currentUser ? currentUser._id : null
+    });
+  } catch (err) {
+    if (err.code === 'GOOGLE_LINK_REQUIRES_SIGNIN') {
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
+    throw err;
+  }
   req.log.info({ userId: String(user._id), google: true }, 'User signed in with Google');
   await issueSession(req, res, user);
+}));
+
+// POST /api/auth/verify-email { token } — consume a verification
+// token (24h, single-use; see lib/emailVerification.js). Public: the
+// token itself is the credential, so no session is needed. The token
+// travels in the JSON body, never in a URL — the request log records
+// full URLs, so a GET ?token= link would write the token to the
+// logs. The emailed link is a #verify-email- hash the frontend
+// POSTs here. Rate-limited like login.
+router.post('/auth/verify-email', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  const { token } = req.body || {};
+  const user = await verifyEmailToken(token);
+  if (!user) {
+    return res.status(400).json({ error: 'That verification link is invalid or has expired — request a new one from your profile' });
+  }
+  req.log.info({ userId: String(user._id) }, 'Email verified');
+  res.json({ verified: true, user: profileJson(user) });
+}));
+
+// POST /api/auth/resend-verification — send a fresh verification
+// email to my own address. Authenticated (only I can ask for mail to
+// my address); rate-limited so it cannot be used to spam an inbox.
+// 503 when SMTP is not configured — the account stays unverified
+// rather than being silently auto-verified.
+router.post('/auth/resend-verification', authMiddleware, rateLimitMiddleware(5, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  if (isEmailVerified(req.user)) {
+    return res.json({ message: 'Your email is already verified', alreadyVerified: true });
+  }
+  const result = await sendVerificationEmail(req.user);
+  if (!result.sent) {
+    return res.status(503).json({ error: 'Email verification is not set up on this server yet — please try again later' });
+  }
+  res.json({ message: 'Verification email sent — check your inbox', sent: true });
 }));
 
 router.get('/auth/me', authMiddleware, asyncHandler(async (req, res) => {
@@ -224,8 +313,12 @@ router.get('/users/search', authMiddleware, friendLimit, asyncHandler(async (req
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   if (q.length < 2) return res.json([]);
   const pattern = new RegExp(escapeRegExp(q), 'i');
+  // Unverified accounts are invisible here (audit M1): the
+  // emailVerified: { $ne: false } filter also matches accounts with
+  // no field at all — the grandfathered pre-verification rows.
   const users = await User.find({
     _id: { $ne: req.user._id },
+    emailVerified: { $ne: false },
     $or: [{ name: pattern }, { email: pattern }]
   }).select('name email avatarPreset avatarImage').limit(10).lean();
   const ids = users.map((u) => u._id);
@@ -245,6 +338,8 @@ router.get('/users/search', authMiddleware, friendLimit, asyncHandler(async (req
 // self, on an existing pending request in either direction (accept the
 // incoming one instead), or on already-friends.
 router.post('/friends/request', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  // Unverified accounts cannot send invites (audit M1).
+  if (!requireVerifiedEmail(req, res)) return;
   const { userId } = req.body || {};
   if (!isObjectId(userId)) return res.status(400).json({ error: 'Invalid user' });
   if (String(userId) === String(req.user._id)) {
@@ -473,15 +568,6 @@ const freshRoomJson = async (roomId, meId) => {
   return roomJson(room, meId, profiles);
 };
 
-// Rewrite a room's member list from a normalized [{ userId, role }]
-// array. This also migrates legacy plain-ObjectId entries to subdocuments
-// as a side effect. Never $pull/$addToSet raw ids — those operators cannot
-// match both member shapes.
-const writeMembers = (roomId, members) =>
-  Room.updateOne({ _id: roomId }, {
-    $set: { members: members.map((m) => ({ user: m.userId, role: m.role })) }
-  });
-
 // Load a private room for a role action. Returns { room } or
 // { status, error } — 404 / 400 (not private) / 403 (not a member).
 const loadPrivateRoomFor = async (roomId, userId) => {
@@ -528,6 +614,8 @@ router.get('/rooms', authMiddleware, asyncHandler(async (req, res) => {
 }));
 
 router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
+  // Unverified accounts cannot create rooms (audit M1).
+  if (!requireVerifiedEmail(req, res)) return;
   const { ok, error, room } = validateRoomInput(req.body || {});
   if (!ok) return res.status(400).json({ error });
   // Topic is stored encrypted; validateRoomInput already checked the
@@ -612,6 +700,8 @@ const inviteJson = (invite, room, inviter) => ({
 });
 
 router.post('/rooms/:id/invite', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  // Unverified accounts cannot send invites (audit M1).
+  if (!requireVerifiedEmail(req, res)) return;
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!room.isPrivate) return res.status(400).json({ error: 'Only private rooms use invites' });
@@ -672,18 +762,40 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
   if (!isRoomMember(room, req.user._id)) {
     return res.status(403).json({ error: 'You are not a member of this room' });
   }
-  const members = normalizeMembers(room);
   // The owner of a non-empty private room cannot leave until ownership
   // is transferred — otherwise the room would be left ownerless. The
   // owner alone in the room may leave; the room is deleted then.
   if (!canLeave(room, req.user._id)) {
     return res.status(400).json({ error: 'Transfer ownership first — the room owner cannot leave a non-empty private room' });
   }
-  const remaining = members.filter((m) => m.userId !== String(req.user._id));
   setMutedInRoom(room._id, req.user._id, false);
-  if (remaining.length === 0) {
-    // Last member out — the private room (and its chat + invites) goes
-    // with them instead of lingering as an empty locked room.
+  // Atomic removal (audit M4): no read-then-$set of the member list.
+  // When the owner leaves, the removal is conditional on the room
+  // still having exactly one member — a member who joins between the
+  // canLeave check and this update cannot leave the room ownerless.
+  const isOwner = getRole(room, req.user._id) === 'owner';
+  const removed = await removeMember(Room, room._id, req.user._id, { soleMemberOnly: isOwner });
+  if (!removed.matchedCount) {
+    // Lost a race: re-read to tell "room gone" from "someone joined".
+    const fresh = await Room.findById(room._id).lean();
+    if (!fresh) return res.json({ message: 'Left the room — it was deleted as the last member left' });
+    if (isRoomMember(fresh, req.user._id)) {
+      return res.status(400).json({ error: 'Transfer ownership first — the room owner cannot leave a non-empty private room' });
+    }
+    return res.json({ message: 'Left the room' });
+  }
+  // Leaving takes my invite link with me: the link admits friends of
+  // its creator, and I am no longer in the room to vouch for them.
+  await InviteLink.deleteMany({ room: room._id, createdBy: req.user._id });
+  // Last member out — the private room (and its chat + invites) goes
+  // with them instead of lingering as an empty locked room. Re-read
+  // after the atomic removal: two members leaving at once both land
+  // here, and the delete is idempotent. NOTE: check the RAW members
+  // array, not normalizeMembers() — that helper re-adds the creator
+  // as owner by design, so it never reads empty after a sole-owner
+  // leave.
+  const fresh = await Room.findById(room._id).lean();
+  if (fresh && fresh.members.length === 0) {
     await Room.deleteOne({ _id: room._id });
     await Message.deleteMany({ roomId: room._id });
     await RoomInvite.deleteMany({ room: room._id });
@@ -692,10 +804,6 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
     clearMutedForRoom(room._id);
     return res.json({ message: 'Left the room — it was deleted as the last member left' });
   }
-  // Leaving takes my invite link with me: the link admits friends of
-  // its creator, and I am no longer in the room to vouch for them.
-  await InviteLink.deleteMany({ room: room._id, createdBy: req.user._id });
-  await writeMembers(room._id, remaining);
   res.json({ message: 'Left the room' });
 }));
 
@@ -717,10 +825,13 @@ router.post('/rooms/:id/members/:userId/promote', authMiddleware, friendLimit, a
   if (!canPromote(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'Only the room owner can promote members, and only members can be promoted' });
   }
-  const members = normalizeMembers(room).map((m) =>
-    m.userId === String(target._id) ? { ...m, role: 'moderator' } : m
-  );
-  await writeMembers(room._id, members);
+  // Atomic role change (audit M4): the update wins only while the
+  // target is still a plain member — a concurrent demote/kick/transfer
+  // makes it miss, and the caller retries instead of overwriting it.
+  const updated = await setMemberRole(Room, room._id, target._id, 'member', 'moderator');
+  if (!updated) {
+    return res.status(409).json({ error: 'That member changed just now — please retry' });
+  }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Member promoted to moderator');
   res.json(await freshRoomJson(room._id, req.user._id));
 }));
@@ -735,10 +846,11 @@ router.post('/rooms/:id/members/:userId/demote', authMiddleware, friendLimit, as
   if (!canDemote(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'Only the room owner can demote moderators' });
   }
-  const members = normalizeMembers(room).map((m) =>
-    m.userId === String(target._id) ? { ...m, role: 'member' } : m
-  );
-  await writeMembers(room._id, members);
+  // Atomic role change (audit M4) — see promote.
+  const updated = await setMemberRole(Room, room._id, target._id, 'moderator', 'member');
+  if (!updated) {
+    return res.status(409).json({ error: 'That member changed just now — please retry' });
+  }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Moderator demoted to member');
   res.json(await freshRoomJson(room._id, req.user._id));
 }));
@@ -756,8 +868,9 @@ router.post('/rooms/:id/members/:userId/kick', authMiddleware, friendLimit, asyn
   if (!canKick(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'You cannot kick that member' });
   }
-  const members = normalizeMembers(room).filter((m) => m.userId !== String(target._id));
-  await writeMembers(room._id, members);
+  // Atomic removal (audit M4): a concurrent join can no longer be
+  // lost, and the kick itself cannot be undone by a stale $set.
+  await removeMember(Room, room._id, target._id);
   await RoomInvite.deleteMany({ room: room._id, invitee: target._id });
   // A kicked member's invite link goes too — it admits friends of its
   // creator, and they are no longer in the room.
@@ -782,13 +895,13 @@ router.post('/rooms/:id/transfer', authMiddleware, friendLimit, asyncHandler(asy
   if (!canTransfer(room, req.user._id, target._id)) {
     return res.status(403).json({ error: 'Only the room owner can transfer ownership, and only to another member' });
   }
-  const members = normalizeMembers(room).map((m) => {
-    if (m.userId === String(target._id)) return { ...m, role: 'owner' };
-    if (m.userId === String(req.user._id)) return { ...m, role: 'moderator' };
-    return m;
-  });
-  await writeMembers(room._id, members);
-  await Room.updateOne({ _id: room._id }, { $set: { createdBy: target._id } });
+  // One atomic update (audit M4): createdBy moves and both roles flip
+  // together, gated on the expected current state. A concurrent
+  // transfer misses and the caller retries.
+  const updated = await transferOwnership(Room, room._id, req.user._id, target._id);
+  if (!updated) {
+    return res.status(409).json({ error: 'Ownership changed just now — please retry' });
+  }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Room ownership transferred');
   res.json(await freshRoomJson(room._id, req.user._id));
 }));
@@ -905,13 +1018,14 @@ router.post('/invites/:id/accept', authMiddleware, friendLimit, asyncHandler(asy
     await RoomInvite.deleteOne({ _id: invite._id });
     return res.status(403).json({ error: 'Room no longer exists' });
   }
-  // New members join as plain members (subdocument shape); the write
-  // also migrates any legacy plain-ObjectId entries.
-  const members = normalizeMembers(room);
-  if (!members.some((m) => m.userId === String(req.user._id))) {
-    members.push({ userId: String(req.user._id), role: 'member' });
+  // Atomic add (audit M4): new members join as plain members. A
+  // matchedCount of 0 just means "already a member" — the re-read
+  // below confirms the room is still there before answering.
+  await addMember(Room, room._id, req.user._id, 'member');
+  if (!await Room.exists({ _id: room._id })) {
+    await RoomInvite.deleteOne({ _id: invite._id });
+    return res.status(403).json({ error: 'Room no longer exists' });
   }
-  await writeMembers(room._id, members);
   invite.status = 'accepted';
   await invite.save();
   const inviter = await User.findById(invite.inviter);
@@ -1101,11 +1215,8 @@ router.post('/invite-links/join', authMiddleware, friendLimit, asyncHandler(asyn
     return res.status(403).json({ error: 'This invite link is for friends of the person who shared it — ask them to add you as a friend first' });
   }
   if (room.isPrivate) {
-    const members = normalizeMembers(room);
-    if (!members.some((m) => m.userId === String(req.user._id))) {
-      members.push({ userId: String(req.user._id), role: 'member' });
-      await writeMembers(room._id, members);
-    }
+    // Atomic add (audit M4); already a member is a no-op success.
+    await addMember(Room, room._id, req.user._id, 'member');
   }
   req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Joined room via invite link');
   res.json(await freshRoomJson(room._id, req.user._id));
@@ -1306,13 +1417,9 @@ router.post('/knocks/:id/admit', authMiddleware, friendLimit, asyncHandler(async
     { returnDocument: 'after' }
   );
   if (!claimed) return res.status(400).json({ error: 'This knock was already answered or has expired' });
-  // The knocker may have joined another way since knocking — only add
-  // them when they are still a non-member.
-  const members = normalizeMembers(room);
-  if (!members.some((m) => m.userId === String(knock.user))) {
-    members.push({ userId: String(knock.user), role: 'member' });
-    await writeMembers(room._id, members);
-  }
+  // The knocker may have joined another way since knocking — the
+  // atomic add is a no-op when they are already a member (audit M4).
+  await addMember(Room, room._id, knock.user, 'member');
   await clearKnockNotifications(knock, room);
   const knocker = await User.findById(knock.user);
   emitToUser(knock.user, 'knock-admitted', { roomId: String(room._id), roomName: room.name });
@@ -1523,8 +1630,9 @@ router.post('/notifications/read-all', authMiddleware, asyncHandler(async (req, 
 // --- WEB PUSH SUBSCRIPTIONS ---
 
 // A push subscription is { endpoint, keys: { p256dh, auth } } from the
-// browser's PushManager. The endpoint is globally unique — resubscribing
-// from the same browser updates the row instead of duplicating it.
+// browser's PushManager. Subscriptions are keyed by (user, endpoint)
+// (audit M5): two accounts on one device share one endpoint, and each
+// keeps its own row — subscribing as B never reassigns A's row.
 const isValidSubscription = (s) =>
   s && typeof s === 'object' &&
   typeof s.endpoint === 'string' && s.endpoint.startsWith('https://') &&
@@ -1538,8 +1646,11 @@ router.post('/push/subscribe', authMiddleware, friendLimit, asyncHandler(async (
     return res.status(400).json({ error: 'Invalid push subscription' });
   }
   await PushSubscription.findOneAndUpdate(
-    { endpoint: subscription.endpoint },
-    { user: req.user._id, keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } },
+    { user: req.user._id, endpoint: subscription.endpoint },
+    {
+      $set: { keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } },
+      $setOnInsert: { user: req.user._id, endpoint: subscription.endpoint }
+    },
     { upsert: true, returnDocument: 'after' }
   );
   res.json({ subscribed: true });
