@@ -693,6 +693,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
             />
             <button className="btn btn-primary" type="submit"><Icon name="send" size={15} /> Send</button>
           </form>
+          <p className="muted chat-fade-note">Messages disappear after 24 hours.</p>
         </div>
       )}
 
