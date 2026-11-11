@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { apiJson, getInvites, acceptInvite, declineInvite } from '../api';
+import { apiJson, getInvites, acceptInvite, declineInvite, getFriendsPresence } from '../api';
 import { getSocket } from '../socket';
 import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
 import { selectBusiestRoom } from '../desktop';
 import HeroCard from './HeroCard';
+import NightSky from './NightSky';
 import SidePanel from './SidePanel';
 import { Icon } from './icons';
 
@@ -24,6 +25,34 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
   const [isPrivate, setIsPrivate] = useState(false);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  // Friend presence, fetched ONCE here and shared by the night sky and
+  // the desktop side panel — one GET /api/friends/presence for both,
+  // never two. Only a successful fetch replaces the list, so a failed
+  // refresh (offline included) keeps the last-known sky and NightSky
+  // says so instead of flashing empty. `presenceError` is '' on success.
+  const [presence, setPresence] = useState(null);
+  const [presenceError, setPresenceError] = useState('');
+
+  const loadPresence = useCallback(async () => {
+    try {
+      setPresence(await getFriendsPresence());
+      setPresenceError('');
+    } catch (err) {
+      setPresenceError(err.message || 'Could not load presence');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPresence();
+    // Same 5s cadence SidePanel used to poll on its own.
+    const t = setInterval(loadPresence, 5000);
+    return () => clearInterval(t);
+  }, [loadPresence]);
+
+  // Socket pushes (friend request / room invite) bump refreshTick in App.
+  useEffect(() => {
+    if (refreshTick > 0) loadPresence();
+  }, [refreshTick, loadPresence]);
 
   const load = useCallback(async () => {
     try {
@@ -119,6 +148,20 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
       </button>
       </div>
 
+      {/* Night-sky home: top of Home on phones, and on desktop in
+          place of the hero when nobody is live (hasLiveHero hides it
+          via CSS ≥900px). The mobile-basics stories row also lands
+          here — the coordinator resolves that overlap at merge time. */}
+      <NightSky
+        friends={presence}
+        loading={presence === null && !presenceError}
+        error={presenceError}
+        onJoin={onJoin}
+        onNavigate={onNavigate}
+        onRetry={loadPresence}
+        hasLiveHero={!!heroRoom}
+      />
+
       {showCreate && (
         <form className="card create-card" onSubmit={createRoom}>
           <input
@@ -186,10 +229,12 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
         </div>
       )}
 
-      {/* Desktop 3-zone hero: the busiest live room (or the calm empty
-          state when nobody is live). Hidden below 900px in CSS, so the
-          phone home screen is untouched. */}
-      {!loading && (
+      {/* Desktop 3-zone hero: the busiest live room. Hidden below 900px
+          in CSS, so the phone home screen is untouched. When nobody is
+          live the night sky above takes its place — the empty hero
+          state is retired, since the sky already carries the quiet
+          moment and the header still has New room. */}
+      {!loading && heroRoom && (
         <HeroCard
           room={heroRoom}
           onJoin={onJoin}
@@ -271,7 +316,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
       {/* Desktop 3-zone right column: friends presence + activity.
           Rendered last so the ≥900px grid can place it in column 2
           spanning the rows; hidden below 900px in CSS. */}
-      <SidePanel refreshTick={refreshTick} onJoinRoom={onJoin} onNavigate={onNavigate} />
+      <SidePanel refreshTick={refreshTick} onJoinRoom={onJoin} onNavigate={onNavigate} friends={presence} />
     </div>
   );
 }

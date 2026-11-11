@@ -262,6 +262,139 @@ input::placeholder { color: var(--muted); }
 
 .room-list { display: flex; flex-direction: column; gap: 0.7rem; }
 
+/* --- Night-sky home: friends as stars instead of a list. Shown at
+   the top of Home on phones, and on desktop in place of the hero when
+   nobody is live (hasLiveHero hides it ≥900px, see below). Stars are
+   <button>s positioned by % from nightSky.js; the stage is the only
+   absolutely-positioned layer, so the header/sheet stay in flow. */
+.night-sky {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background:
+    radial-gradient(500px 200px at 50% 0%, rgba(139, 92, 246, 0.14), transparent),
+    radial-gradient(400px 180px at 85% 100%, rgba(217, 70, 239, 0.10), transparent),
+    rgba(255, 255, 255, 0.02);
+}
+.night-sky-head { padding: 1rem 1.2rem 0; }
+.night-sky-title { margin: 0; }
+.night-sky-sub { margin: 0.3rem 0 0; font-size: 0.88rem; }
+.night-sky-stage { position: relative; height: 168px; }
+.night-sky-stage .starfield,
+.night-sky-stage .starfield-twinkle { pointer-events: none; }
+.night-sky-note { margin: 0.4rem 1.2rem 0; font-size: 0.85rem; }
+.night-sky-error { padding: 0.6rem 1.2rem 1rem; }
+.night-sky-error p { margin: 0 0 0.4rem; }
+.night-sky-error-line { margin: 0.2rem 1.2rem 0.8rem; }
+.night-sky-more { margin: 0 1.2rem 0.9rem; }
+/* Loading skeleton: three dim dots that breathe where stars will be. */
+.night-star-skeleton {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, 0.10);
+  animation: blink 1.6s ease-in-out infinite;
+}
+.night-star {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font-body);
+  -webkit-tap-highlight-color: transparent;
+  z-index: 2;
+}
+/* Visible focus state — keyboard users Tab between stars. */
+.night-star:focus-visible {
+  outline: 2px solid #f0abfc;
+  outline-offset: 4px;
+  border-radius: 14px;
+}
+.night-star-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+/* Presence is carried by glow + ring + the status text under the name,
+   never by colour alone. In-room pulses (thicker ring + live-pulse);
+   online glows steadily; away is amber; offline is small, grey, dim. */
+.night-star--in-room .night-star-dot {
+  background: linear-gradient(135deg, #34d399, #22d3ee);
+  border: 2px solid rgba(52, 211, 153, 0.9);
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.65);
+  animation: night-pulse 2s ease-in-out infinite;
+}
+.night-star--online .night-star-dot {
+  background: linear-gradient(135deg, #34d399, #2dd4a7);
+  border: 2px solid rgba(52, 211, 153, 0.55);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.4);
+}
+.night-star--away .night-star-dot {
+  background: linear-gradient(135deg, #f59e0b, #fbbf24);
+  border: 2px solid rgba(245, 158, 11, 0.55);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.35);
+}
+.night-star--offline .night-star-dot {
+  background: linear-gradient(135deg, #475569, #64748b);
+  border: 1px solid rgba(100, 116, 139, 0.5);
+  opacity: 0.55;
+  transform: scale(0.82);
+}
+@keyframes night-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45), 0 0 14px rgba(52, 211, 153, 0.65); }
+  50% { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0), 0 0 14px rgba(52, 211, 153, 0.65); }
+}
+.night-star-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.night-star-status {
+  font-size: 0.68rem;
+  line-height: 1.2;
+  color: var(--muted);
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.night-star--offline .night-star-name { color: var(--muted); }
+/* Profile sheet: in-flow card under the stage (never overlapping a
+   star), with the friend's avatar, status and actions. */
+.night-sheet {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin: 0 1rem 1rem;
+  padding: 0.8rem 0.9rem;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+  animation: pop-in var(--dur-fast) var(--ease-spring) backwards;
+}
+.night-sheet-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+
 .room-card {
   width: 100%;
   text-align: left;
@@ -1717,6 +1850,12 @@ textarea {
   .hero-empty strong { font-size: 1.15rem; }
   .hero-empty p { margin: 0; font-size: 0.92rem; max-width: 420px; }
   .hero-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
+
+  /* Night-sky home on desktop: taller stage, and hidden entirely
+     while a live hero exists — the sky is the quiet-moment home, not
+     a second hero. (Phones have no hero, so the sky always shows.) */
+  .night-sky-stage { height: 216px; }
+  .night-sky--has-hero { display: none; }
 
   /* Home: greeting + New room button share a header row, and rooms
      become a 2-column grid (3 at very wide screens, below). */
