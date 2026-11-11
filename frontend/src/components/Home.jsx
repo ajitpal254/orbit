@@ -2,13 +2,16 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { apiJson, getInvites, acceptInvite, declineInvite } from '../api';
 import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
+import { selectBusiestRoom } from '../desktop';
+import HeroCard from './HeroCard';
+import SidePanel from './SidePanel';
 
 // Build version (Vite define from package.json, see vite.config.js).
 // Guarded so the file doesn't break if the define is ever missing.
 // Shared with the About section, which displays the same beta number.
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 
-export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
+export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigate }) {
   const [rooms, setRooms] = useState([]);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -152,6 +155,18 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
 
       {loading && <p className="muted">Finding rooms…</p>}
 
+      {/* Desktop 3-zone hero: the busiest live room (or the calm empty
+          state when nobody is live). Hidden below 900px in CSS, so the
+          phone home screen is untouched. */}
+      {!loading && (
+        <HeroCard
+          room={selectBusiestRoom(rooms)}
+          onJoin={onJoin}
+          onStartRoom={() => setShowCreate(true)}
+          onGoFriends={() => onNavigate && onNavigate({ view: 'friends' })}
+        />
+      )}
+
       {invites.length > 0 && (
         <section>
           <h3 className="section-title">✉️ Room invites</h3>
@@ -218,6 +233,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
       <button className="app-version app-version-btn" onClick={onOpenAbout}>
         Beta v{APP_VERSION} · About Orbit
       </button>
+
+      {/* Desktop 3-zone right column: friends presence + activity.
+          Rendered last so the ≥900px grid can place it in column 2
+          spanning the rows; hidden below 900px in CSS. */}
+      <SidePanel refreshTick={refreshTick} onJoinRoom={onJoin} onNavigate={onNavigate} />
     </div>
   );
 }

@@ -13,6 +13,7 @@ import Profile from './components/Profile';
 import About from './components/About';
 import Notifications from './components/Notifications';
 import Avatar from './components/Avatar';
+import IconRail from './components/IconRail';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
 
@@ -180,6 +181,15 @@ export default function App() {
     setView('messages');
   }, []);
 
+  // Desktop icon-rail navigation: leave the room first (the rail is
+  // only shown outside a room, like the tab bar it replaces — so this
+  // is a no-op in practice, but it keeps the rail safe to tap from
+  // anywhere).
+  const goTo = useCallback((nextView) => {
+    setRoom(null);
+    setView(nextView);
+  }, []);
+
   // Update toast: subscribe once; pwa.js replays the event if a new
   // version was already waiting before this mounted.
   useEffect(() => onUpdateAvailable(() => setUpdateAvailable(true)), []);
@@ -281,6 +291,20 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* Desktop 3-zone icon rail (hidden below 900px in CSS, and while
+          inside a room — same rule as the tab bar it replaces). It is
+          a flex sibling of .app-body, so on desktop it docks to the
+          left of the content with no fixed-position overlap math. */}
+      {!room && (
+        <IconRail
+          user={user}
+          view={view}
+          dmUnread={dmUnread}
+          notifUnread={notifUnread}
+          onNavigate={goTo}
+        />
+      )}
+      <div className="app-body">
       <header className="topbar">
         <span className="logo">🪐 Orbit</span>
         <span className="topbar-actions">
@@ -364,9 +388,10 @@ export default function App() {
             onRead={() => setRefreshTick((t) => t + 1)}
           />
         ) : (
-          <Home user={user} onJoin={setRoom} refreshTick={refreshTick} onOpenAbout={() => setView('about')} />
+          <Home user={user} onJoin={setRoom} refreshTick={refreshTick} onOpenAbout={() => setView('about')} onNavigate={handleNotifNavigate} />
         )}
       </main>
+      </div>
 
       {updateAvailable && (
         <UpdateToast onUpdate={() => applyUpdate()} onDismiss={() => setUpdateAvailable(false)} />
