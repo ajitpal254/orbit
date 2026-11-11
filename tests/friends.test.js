@@ -127,7 +127,8 @@ test('Room model: private fields default to public with no members', () => {
   const room = new Room({ name: 'Test', createdBy: ME });
   assert.equal(room.isPrivate, false);
   assert.deepEqual(room.members, []);
-  const priv = new Room({ name: 'Secret', createdBy: ME, isPrivate: true, members: [ME] });
+  const priv = new Room({ name: 'Secret', createdBy: ME, isPrivate: true, members: [{ user: ME, role: 'owner' }] });
   assert.equal(priv.isPrivate, true);
-  assert.equal(String(priv.members[0]), ME);
+  assert.equal(String(priv.members[0].user), ME);
+  assert.equal(priv.members[0].role, 'owner');
 });

@@ -90,6 +90,19 @@ export const inviteToRoom = (roomId, userId) => jsonPost(`/api/rooms/${roomId}/i
 
 export const leavePrivateRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/leave`);
 
+// --- Roles & moderation (private rooms) ---
+
+export const promoteMember = (roomId, userId) =>
+  jsonPost(`/api/rooms/${roomId}/members/${userId}/promote`);
+export const demoteMember = (roomId, userId) =>
+  jsonPost(`/api/rooms/${roomId}/members/${userId}/demote`);
+export const kickMember = (roomId, userId) =>
+  jsonPost(`/api/rooms/${roomId}/members/${userId}/kick`);
+export const transferOwnership = (roomId, userId) =>
+  jsonPost(`/api/rooms/${roomId}/transfer`, { userId });
+export const muteMember = (roomId, userId) =>
+  jsonPost(`/api/rooms/${roomId}/members/${userId}/mute`);
+
 // --- Direct messages ---
 
 export const getDms = () => apiJson('/api/dms');

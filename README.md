@@ -110,6 +110,18 @@ Render's free tier sleeps after ~1h idle, so the first request after a while tak
 - While the app boots, the React `components/Splash.jsx` takes over with staged status text — 0–8s "Connecting…", 8–25s "Waking up the server — free servers take a moment…", 25s+ "Still waking up…" plus a Retry button that re-runs the boot check.
 - The `/api/auth/me` boot check has a 20s timeout (AbortController) with up to 3 attempts and short backoff. If all fail, the app stops loading and shows the login screen with the error and a Retry button — it never spins forever. Orb animation is disabled under `prefers-reduced-motion`.
 
+## Roles & moderation (private rooms only)
+
+Private rooms have three roles, stored on the member list as subdocuments `{ user, role }` (`models/Room.js`). Rooms created before roles existed store plain ObjectIds — `lib/roles.js` normalizes both shapes (`normalizeMembers`, `getRole`), treats a plain id as `member` except the creator (`createdBy` is always `owner`), and every read — routes, socket, serialization — goes through it. Writes rebuild the list from the normalized array, which migrates legacy entries to subdocuments as a side effect. All Room reads use `.lean()`: Mongoose 9 hydrating a legacy room mangles plain-ObjectId members into `{ role: 'member', i0, i1, … }` with no `user` field — the id is lost — so hydrated docs are never trusted for membership.
+
+- **Owner 👑** — the room creator. Only the owner can promote a member to moderator, demote a moderator, transfer ownership, or delete the room. An owner cannot leave a non-empty private room until ownership is transferred (400 "transfer ownership first"); the last member out deletes the room as before. Transferring makes the old owner a moderator and updates `createdBy`, so delete permission follows ownership.
+- **Moderator 🛡️** — can kick members (not the owner, not other moderators) and server-mute members. Kicking removes the member, deletes their pending invites for the room, and forces their sockets out with a `room-kicked` event.
+- **Member** — no admin actions.
+- **Moderator mute is cooperative, not enforced.** Voice is P2P — the server cannot force a client to stop sending audio. The server records the mute per room (in-memory `roomId → Set(userId)` in `lib/socket.js`), tells the target's sockets via `moderator-muted` / `moderator-unmuted` (`POST /api/rooms/:id/members/:userId/mute` toggles), and the target's client honors it by muting itself (`RoomView.jsx` — which also broadcasts `mic-state`, so everyone else sees the 🔇 badge). A rejoining muted user is muted again on join (`room-state` carries `mutedByModerator: true`). **A modified client could ignore it** — the UI labels it "Muted by moderator" and never presents it as enforced. A restart clears the in-memory mute map; a moderator can re-mute.
+- Public rooms have no members list and no roles — the creator keeps delete-only as before.
+
+Routes (all `authMiddleware`, mutating ones rate-limited, `{error: string}` contract): `POST /api/rooms/:id/members/:userId/promote`, `.../demote`, `.../kick`, `POST /api/rooms/:id/transfer { userId }`, `POST /api/rooms/:id/members/:userId/mute` (answers `{ muted, userId, roomId }`). Each answers with the fresh room JSON, whose private-room `members` are now `{ id, name, role }`. Permission logic lives in `lib/roles.js` (`canPromote`, `canDemote`, `canKick`, `canMute`, `canTransfer`, `canLeave`) and is unit-tested in `tests/roles.test.js`.
+
 ## Security
 
 **Login — password or Google one-tap.** Password login is unchanged. If `GOOGLE_CLIENT_ID` is set, the login screen also shows a "Continue with Google" button (Google Identity Services). The browser sends Google's signed ID token to `POST /api/auth/google`, the server verifies it with `google-auth-library`, then finds the user by Google id, links it to an existing account with the same email, or creates a new Google-only account (random unusable password hash). The same session cookie is issued either way. If no client ID is configured, no Google button renders at all. **Google only ever sees the login event** — no chat, room, or voice data goes to Google.
@@ -148,7 +160,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 - **Mesh voice scales to ~2–6 people.** Every peer connects to every other peer; beyond that, CPU/bandwidth grows fast. The upgrade path is a LiveKit SFU — `voice.js` is isolated so the swap touches one module.
 - **TURN is best-effort by default.** The built-in static-auth Open Relay TURN works with no setup, but it is a free shared relay with no SLA. For reliable calls, add your own free Metered TURN credentials (`TURN_USERNAME` / `TURN_CREDENTIAL` on Render) — see "Voice connectivity (TURN)".
 - **PWA only on mobile** — no native app yet. Install from the browser; mic access works in the PWA.
-- **No roles or screen share yet** — rooms + voice + chat + friends + DMs only.
+- **No screen share yet** — rooms + voice + chat + friends + DMs + roles only.
 - **Presence is in-memory.** A server restart clears "who's in a room" (correct behavior — presence is ephemeral), but chat history and rooms persist in Mongo.
 - Tests cover pure logic (room validation, presence, orb layout, password helpers). Route/socket integration tests need MongoDB and were **not** run in the sandbox — smoke-tested via module loads + live `/api/health` instead.
 

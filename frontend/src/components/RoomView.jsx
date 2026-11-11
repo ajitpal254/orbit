@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, inviteToRoom, leavePrivateRoom } from '../api';
+import { apiJson, getFriends, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember } from '../api';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
@@ -27,6 +27,14 @@ export default function RoomView({ user, room, onLeave }) {
   const [invited, setInvited] = useState([]);
   const [inviteError, setInviteError] = useState('');
   const [leaving, setLeaving] = useState(false);
+  // Roles & moderation (private rooms): local copy of the member list so
+  // role actions refresh it without leaving the room; moderator-mute
+  // state for me; whether I was kicked out of this room.
+  const [members, setMembers] = useState(room.members || []);
+  const [memberError, setMemberError] = useState('');
+  const [modMuted, setModMuted] = useState(false);
+  const [modMutedBy, setModMutedBy] = useState('');
+  const [kicked, setKicked] = useState(false);
   const voiceRef = useRef(null);
   const chatEndRef = useRef(null);
   const chatOpenRef = useRef(false);
@@ -53,7 +61,7 @@ export default function RoomView({ user, room, onLeave }) {
     });
     voiceRef.current = voice;
 
-    const onRoomState = ({ occupants: others }) => {
+    const onRoomState = ({ occupants: others, mutedByModerator }) => {
       setOccupants((prev) => {
         const next = { ...prev };
         for (const o of others || []) {
@@ -61,6 +69,8 @@ export default function RoomView({ user, room, onLeave }) {
         }
         return next;
       });
+      // A moderator muted me before I (re)joined — start muted again.
+      if (mutedByModerator) applyModeratorMute(true, '');
     };
     const onUserJoined = ({ socketId, userId, name }) => {
       setOccupants((prev) => ({
@@ -104,12 +114,33 @@ export default function RoomView({ user, room, onLeave }) {
       });
       if (!chatOpenRef.current && msg.userId !== user.id) setUnread((u) => u + 1);
     };
+    // Moderator mute is cooperative (voice is P2P — the server cannot
+    // force a client silent): my client honors it by muting itself.
+    // setMuted broadcasts mic-state, so everyone else sees the 🔇 badge.
+    const onModeratorMuted = ({ roomId, by }) => {
+      if (roomId !== room.id) return;
+      applyModeratorMute(true, by || '');
+    };
+    const onModeratorUnmuted = ({ roomId }) => {
+      if (roomId !== room.id) return;
+      applyModeratorMute(false, '');
+    };
+    // Kicked by the owner/moderator: stop voice and show a notice
+    // instead of the room (the server already forced my sockets out).
+    const onRoomKicked = ({ roomId }) => {
+      if (roomId !== room.id) return;
+      voiceRef.current?.leave();
+      setKicked(true);
+    };
 
     socket.on('room-state', onRoomState);
     socket.on('user-joined', onUserJoined);
     socket.on('user-left', onUserLeft);
     socket.on('mic-state', onMicState);
     socket.on('chat-message', onChatMessage);
+    socket.on('moderator-muted', onModeratorMuted);
+    socket.on('moderator-unmuted', onModeratorUnmuted);
+    socket.on('room-kicked', onRoomKicked);
 
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
     voice.join();
@@ -121,9 +152,18 @@ export default function RoomView({ user, room, onLeave }) {
       socket.off('user-left', onUserLeft);
       socket.off('mic-state', onMicState);
       socket.off('chat-message', onChatMessage);
+      socket.off('moderator-muted', onModeratorMuted);
+      socket.off('moderator-unmuted', onModeratorUnmuted);
+      socket.off('room-kicked', onRoomKicked);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
+
+  // Keep the member list in sync when the parent hands a fresh room
+  // object (e.g. after a home-screen refresh).
+  useEffect(() => {
+    setMembers(room.members || []);
+  }, [room]);
 
   useEffect(() => {
     if (chatOpen && chatEndRef.current) {
@@ -131,7 +171,24 @@ export default function RoomView({ user, room, onLeave }) {
     }
   }, [messages, chatOpen]);
 
+  // Honor a moderator mute/unmute (or a rejoin with a mute already in
+  // place): mute the engine (which broadcasts mic-state so the room sees
+  // the 🔇 badge), mark my own orb, and remember who muted me.
+  const applyModeratorMute = useCallback((isMuted, by) => {
+    voiceRef.current?.setMuted(isMuted);
+    setModMuted(isMuted);
+    setModMutedBy(isMuted ? by : '');
+    setMuted(isMuted);
+    setOccupants((prev) => ({
+      ...prev,
+      self: { ...prev.self, muted: isMuted }
+    }));
+  }, []);
+
   const toggleMute = useCallback(() => {
+    // While a moderator has me muted, the button is disabled — but
+    // guard here too so nothing can unmute me from under them.
+    if (modMuted) return;
     const next = !muted;
     voiceRef.current?.setMuted(next);
     setOccupants((prev) => ({
@@ -140,7 +197,7 @@ export default function RoomView({ user, room, onLeave }) {
     }));
     setMuted(next);
     playMuteSound(next);
-  }, [muted]);
+  }, [muted, modMuted]);
 
   const toggleDeafen = useCallback(() => {
     const next = !deafened;
@@ -176,6 +233,34 @@ export default function RoomView({ user, room, onLeave }) {
     }
   };
 
+  // Role actions — each answers with the fresh room JSON; the member
+  // list refreshes from it. Errors surface under the members panel.
+  const runMemberAction = async (fn) => {
+    setMemberError('');
+    try {
+      const updated = await fn();
+      if (updated?.members) setMembers(updated.members);
+    } catch (err) {
+      setMemberError(err.message);
+    }
+  };
+
+  const myRole = (members.find((m) => m.id === user.id) || {}).role || null;
+  const isOwner = myRole === 'owner';
+  const isModerator = myRole === 'moderator';
+
+  const promote = (memberId) => runMemberAction(() => promoteMember(room.id, memberId));
+  const demote = (memberId) => runMemberAction(() => demoteMember(room.id, memberId));
+  const kick = (member) => {
+    if (!window.confirm(`Remove ${member.name || 'this member'} from "${room.name}"? They will need a new invite to come back.`)) return;
+    runMemberAction(() => kickMember(room.id, member.id));
+  };
+  const transfer = (member) => {
+    if (!window.confirm(`Make ${member.name || 'this member'} the owner of "${room.name}"? You will become a moderator.`)) return;
+    runMemberAction(() => transferOwnership(room.id, member.id));
+  };
+  const mute = (member) => runMemberAction(() => muteMember(room.id, member.id));
+
   const leaveMembership = async () => {
     if (!window.confirm(`Leave the private room "${room.name}"? You will need a new invite to come back.`)) return;
     setLeaving(true);
@@ -205,6 +290,18 @@ export default function RoomView({ user, room, onLeave }) {
     return (speaking.levels[person.socketId] || 0) > 0.25;
   };
 
+  if (kicked) {
+    return (
+      <div className="room-view">
+        <div className="card kicked-card">
+          <h2>You were removed from “{room.name}”</h2>
+          <p className="muted">The owner or a moderator kicked you out of this private room. You'll need a new invite to come back.</p>
+          <button className="btn btn-primary" onClick={onLeave}>Back to rooms</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="room-view">
       <div className="room-header">
@@ -226,7 +323,7 @@ export default function RoomView({ user, room, onLeave }) {
       {room.isPrivate && (
         <div className="members-panel card">
           <div className="members-head">
-            <strong>Members ({(room.members || []).length})</strong>
+            <strong>Members ({members.length})</strong>
             <span>
               <button className="btn btn-primary btn-small" onClick={openInvite}>
                 {showInvite ? '✕ Close' : '＋ Invite a friend'}
@@ -238,16 +335,44 @@ export default function RoomView({ user, room, onLeave }) {
             </span>
           </div>
           <div className="members-list">
-            {(room.members || []).map((m) => (
-              <span key={m.id} className="member-chip" title={m.name}>
-                {initials(m.name)} {m.name ? m.name.split(' ')[0] : ''}
-                {m.id === user.id ? ' (you)' : ''}
-              </span>
-            ))}
-            {(room.members || []).length === 0 && (
+            {members.map((m) => {
+              const isMe = m.id === user.id;
+              const label = m.role === 'owner' ? '👑 Owner' : m.role === 'moderator' ? '🛡️ Mod' : null;
+              return (
+                <div key={m.id} className="member-row">
+                  <span className="mini-orb person-orb">{initials(m.name)}</span>
+                  <span className="person-info">
+                    <strong>{m.name || 'Unnamed'}{isMe ? ' (you)' : ''}</strong>
+                    {label && <span className={`role-badge role-${m.role}`}>{label}</span>}
+                  </span>
+                  <span className="member-actions">
+                    {isOwner && !isMe && m.role === 'member' && (
+                      <button className="btn btn-text btn-small" onClick={() => promote(m.id)}>Promote</button>
+                    )}
+                    {isOwner && !isMe && m.role === 'moderator' && (
+                      <button className="btn btn-text btn-small" onClick={() => demote(m.id)}>Demote</button>
+                    )}
+                    {isOwner && !isMe && (
+                      <button className="btn btn-text btn-small" onClick={() => transfer(m)}>Make owner</button>
+                    )}
+                    {(isOwner || isModerator) && !isMe && m.role === 'member' && (
+                      <button className="btn btn-text btn-small" onClick={() => kick(m)}>Kick</button>
+                    )}
+                    {(isOwner || isModerator) && !isMe && m.role !== 'owner' && (
+                      <button className="btn btn-text btn-small" onClick={() => mute(m)}>Mute</button>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+            {members.length === 0 && (
               <span className="muted">No members listed.</span>
             )}
           </div>
+          {memberError && <p className="error">{memberError}</p>}
+          <p className="muted members-note">
+            Moderator mute is cooperative — a muted member's app mutes itself, and a modified client could ignore it.
+          </p>
           {showInvite && (
             <div className="invite-picker">
               {friends === null && <p className="muted">Loading friends…</p>}
@@ -257,7 +382,7 @@ export default function RoomView({ user, room, onLeave }) {
                 </p>
               )}
               {friends !== null && friends.map((f) => {
-                const alreadyMember = (room.members || []).some((m) => m.id === f.id);
+                const alreadyMember = members.some((m) => m.id === f.id);
                 const justInvited = invited.includes(f.id);
                 return (
                   <div key={f.id} className="person-row">
@@ -314,6 +439,9 @@ export default function RoomView({ user, room, onLeave }) {
                 {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
               </span>
               {person.muted && <span className="orb-muted">🔇</span>}
+              {person.isSelf && modMuted && (
+                <span className="orb-mod-muted">Muted by moderator{modMutedBy ? ` — ${modMutedBy}` : ''}</span>
+              )}
               {!person.isSelf && (
                 <span
                   className={`conn-dot conn-${connState[person.socketId] || 'new'}`}
@@ -390,7 +518,9 @@ export default function RoomView({ user, room, onLeave }) {
         <button
           className={`voice-btn ${muted ? 'off' : ''}`}
           onClick={toggleMute}
-          aria-label={muted ? 'Unmute' : 'Mute'}
+          disabled={modMuted}
+          title={modMuted ? 'Muted by moderator' : undefined}
+          aria-label={modMuted ? 'Muted by moderator' : muted ? 'Unmute' : 'Mute'}
         >
           {muted ? '🔇' : '🎙️'}
         </button>
@@ -409,6 +539,11 @@ export default function RoomView({ user, room, onLeave }) {
           📞
         </button>
       </div>
+      {modMuted && (
+        <p className="mod-muted-note">
+          🔇 Muted by moderator{modMutedBy ? ` (${modMutedBy})` : ''} — you can still hear everyone, but they can't hear you.
+        </p>
+      )}
     </div>
   );
 }

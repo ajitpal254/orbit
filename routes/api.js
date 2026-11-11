@@ -18,8 +18,9 @@ const logger = require('../lib/logger');
 const { authMiddleware, parseCookies, rateLimitMiddleware, asyncHandler } = require('../middleware/auth');
 const { validateRoomInput, validateMessageInput, accentById } = require('../lib/rooms');
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
+const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { canDm, buildSummaries } = require('../lib/dms');
-const { emitToUser } = require('../lib/socket');
+const { emitToUser, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
 const presence = require('../lib/presence');
 
 const router = express.Router();
@@ -292,11 +293,16 @@ router.delete('/friends/:userId', authMiddleware, friendLimit, asyncHandler(asyn
 // Room topics are stored AES-256-GCM encrypted; decrypt on read. If a
 // stored topic cannot be decrypted (wrong/lost key, corrupt data), show
 // nothing instead of failing the whole room list — and log it loudly.
-// Private rooms also carry their members (populated with names when the
-// query populated them) so the UI can show who belongs; public rooms
-// omit the list. Rooms created before private rooms existed have no
+// Private rooms also carry their members (each { id, name, role }) so the
+// UI can show who belongs and what they may do; public rooms omit the
+// list. Rooms created before private rooms existed have no
 // isPrivate/members and serialize as public.
-const roomJson = (room, meId) => {
+//
+// `names` is a Map(userId -> name) built by memberNamesFor: member names
+// are NOT resolved with populate, because legacy rooms store plain
+// ObjectIds that populate('members.user') cannot resolve. Callers pass
+// lean rooms (never hydrated docs — see lib/roles.js) plus the map.
+const roomJson = (room, meId, names = new Map()) => {
   const id = String(room._id);
   const occ = presence.occupants(id);
   let topic = '';
@@ -308,11 +314,11 @@ const roomJson = (room, meId) => {
     }
   }
   const isPrivate = !!room.isPrivate;
-  const members = (room.members || []).map((m) =>
-    m && typeof m === 'object' && m._id
-      ? { id: String(m._id), name: m.name || '' }
-      : { id: String(m), name: '' }
-  );
+  const members = normalizeMembers(room).map((m) => ({
+    id: m.userId,
+    name: names.get(m.userId) || '',
+    role: m.role
+  }));
   return {
     id,
     name: room.name,
@@ -329,18 +335,71 @@ const roomJson = (room, meId) => {
   };
 };
 
+// One User lookup for every member id across a set of lean rooms (new
+// subdocuments AND legacy plain ObjectIds alike).
+const memberNamesFor = async (rooms) => {
+  const ids = new Set();
+  for (const r of rooms || []) {
+    for (const m of normalizeMembers(r)) ids.add(m.userId);
+  }
+  const names = new Map();
+  if (ids.size === 0) return names;
+  const users = await User.find({ _id: { $in: [...ids] } }).select('name').lean();
+  for (const u of users) names.set(String(u._id), u.name || '');
+  return names;
+};
+
+// Re-read one room lean and serialize it with fresh member names — the
+// standard response for role actions that changed the member list.
+const freshRoomJson = async (roomId, meId) => {
+  const room = await Room.findById(roomId).lean();
+  if (!room) return null;
+  const names = await memberNamesFor([room]);
+  return roomJson(room, meId, names);
+};
+
+// Rewrite a room's member list from a normalized [{ userId, role }]
+// array. This also migrates legacy plain-ObjectId entries to subdocuments
+// as a side effect. Never $pull/$addToSet raw ids — those operators cannot
+// match both member shapes.
+const writeMembers = (roomId, members) =>
+  Room.updateOne({ _id: roomId }, {
+    $set: { members: members.map((m) => ({ user: m.userId, role: m.role })) }
+  });
+
+// Load a private room for a role action. Returns { room } or
+// { status, error } — 404 / 400 (not private) / 403 (not a member).
+const loadPrivateRoomFor = async (roomId, userId) => {
+  const room = await Room.findById(roomId).lean();
+  if (!room) return { status: 404, error: 'Room not found' };
+  if (!room.isPrivate) return { status: 400, error: 'Roles only apply to private rooms' };
+  if (!isRoomMember(room, userId)) return { status: 403, error: 'You are not a member of this room' };
+  return { room };
+};
+
+// Load the target user of a role action: 400 on a bad id, 404 when missing.
+const loadTargetUser = async (userId) => {
+  if (!isObjectId(userId)) return { status: 400, error: 'Invalid user' };
+  const target = await User.findById(userId);
+  if (!target) return { status: 404, error: 'User not found' };
+  return { target };
+};
+
 router.get('/rooms', authMiddleware, asyncHandler(async (req, res) => {
   // Public rooms for everyone, plus private rooms I belong to (member
   // or creator). Rooms without isPrivate (pre-private-rooms) match the
-  // $ne: true branch and stay public.
+  // $ne: true branch and stay public. Both member shapes are matched:
+  // 'members.user' for subdocuments, 'members' for legacy plain ids.
   const rooms = await Room.find({
     $or: [
       { isPrivate: { $ne: true } },
+      { 'members.user': req.user._id },
       { members: req.user._id },
       { createdBy: req.user._id }
     ]
-  }).sort({ updatedAt: -1 }).populate('members', 'name').lean();
-  const json = rooms.map((r) => roomJson(r, req.user._id));
+  }).sort({ updatedAt: -1 }).lean();
+  const names = await memberNamesFor(rooms);
+  const json = rooms.map((r) => roomJson(r, req.user._id, names));
   // Live rooms first, then the rest by recency.
   json.sort((a, b) => b.occupantCount - a.occupantCount || new Date(b.createdAt) - new Date(a.createdAt));
   res.json(json);
@@ -355,26 +414,26 @@ router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
     ...room,
     topic: encrypt(room.topic || ''),
     createdBy: req.user._id,
-    // A private room starts with its creator as the only member.
-    members: room.isPrivate ? [req.user._id] : []
+    // A private room starts with its creator as the only member, as owner.
+    members: room.isPrivate ? [{ user: req.user._id, role: 'owner' }] : []
   });
   await created.save();
-  await created.populate('members', 'name');
   req.log.info({ userId: String(req.user._id), roomId: String(created._id) }, 'Room created');
-  res.status(201).json(roomJson(created, req.user._id));
+  res.status(201).json(await freshRoomJson(created._id, req.user._id));
 }));
 
 router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
-  const room = await Room.findById(req.params.id).populate('members', 'name');
+  const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }
-  res.json(roomJson(room, req.user._id));
+  const names = await memberNamesFor([room]);
+  res.json(roomJson(room, req.user._id, names));
 }));
 
 router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
-  const room = await Room.findById(req.params.id);
+  const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (String(room.createdBy) !== String(req.user._id)) {
     return res.status(403).json({ error: 'Only the room creator can delete it' });
@@ -382,6 +441,7 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   await Room.deleteOne({ _id: room._id });
   await Message.deleteMany({ roomId: room._id });
   await RoomInvite.deleteMany({ room: room._id });
+  clearMutedForRoom(room._id);
   res.json({ message: 'Room deleted' });
 }));
 
@@ -397,7 +457,7 @@ const inviteJson = (invite, room, inviter) => ({
 });
 
 router.post('/rooms/:id/invite', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
-  const room = await Room.findById(req.params.id);
+  const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!room.isPrivate) return res.status(400).json({ error: 'Only private rooms use invites' });
   if (!isRoomMember(room, req.user._id)) {
@@ -441,23 +501,147 @@ router.post('/rooms/:id/invite', authMiddleware, friendLimit, asyncHandler(async
 }));
 
 router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) => {
-  const room = await Room.findById(req.params.id);
+  const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!room.isPrivate) return res.status(400).json({ error: 'Public rooms have nothing to leave' });
   if (!isRoomMember(room, req.user._id)) {
     return res.status(403).json({ error: 'You are not a member of this room' });
   }
-  await Room.updateOne({ _id: room._id }, { $pull: { members: req.user._id } });
-  const remaining = await Room.findById(room._id);
-  if (remaining && remaining.members.length === 0) {
+  const members = normalizeMembers(room);
+  // The owner of a non-empty private room cannot leave until ownership
+  // is transferred — otherwise the room would be left ownerless. The
+  // owner alone in the room may leave; the room is deleted then.
+  if (!canLeave(room, req.user._id)) {
+    return res.status(400).json({ error: 'Transfer ownership first — the room owner cannot leave a non-empty private room' });
+  }
+  const remaining = members.filter((m) => m.userId !== String(req.user._id));
+  setMutedInRoom(room._id, req.user._id, false);
+  if (remaining.length === 0) {
     // Last member out — the private room (and its chat + invites) goes
     // with them instead of lingering as an empty locked room.
     await Room.deleteOne({ _id: room._id });
     await Message.deleteMany({ roomId: room._id });
     await RoomInvite.deleteMany({ room: room._id });
+    clearMutedForRoom(room._id);
     return res.json({ message: 'Left the room — it was deleted as the last member left' });
   }
+  await writeMembers(room._id, remaining);
   res.json({ message: 'Left the room' });
+}));
+
+// --- ROLES & MODERATION (private rooms only) ---
+//
+// Roles live on the member list (lib/roles.js): owner / moderator /
+// member. The owner is Room.createdBy; every other check goes through
+// the can* predicates so legacy plain-ObjectId members behave the same
+// as subdocuments. Each route answers with the fresh room JSON so the
+// client can update its member list directly.
+
+// POST /api/rooms/:id/members/:userId/promote — owner only; a member
+// becomes a moderator. 400 when the target is not a plain member.
+router.post('/rooms/:id/members/:userId/promote', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadPrivateRoomFor(req.params.id, req.user._id);
+  if (error) return res.status(status).json({ error });
+  const { status: ts, error: terror, target } = await loadTargetUser(req.params.userId);
+  if (terror) return res.status(ts).json({ error: terror });
+  if (!canPromote(room, req.user._id, target._id)) {
+    return res.status(403).json({ error: 'Only the room owner can promote members, and only members can be promoted' });
+  }
+  const members = normalizeMembers(room).map((m) =>
+    m.userId === String(target._id) ? { ...m, role: 'moderator' } : m
+  );
+  await writeMembers(room._id, members);
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Member promoted to moderator');
+  res.json(await freshRoomJson(room._id, req.user._id));
+}));
+
+// POST /api/rooms/:id/members/:userId/demote — owner only; a moderator
+// goes back to member. 400 when the target is not a moderator.
+router.post('/rooms/:id/members/:userId/demote', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadPrivateRoomFor(req.params.id, req.user._id);
+  if (error) return res.status(status).json({ error });
+  const { status: ts, error: terror, target } = await loadTargetUser(req.params.userId);
+  if (terror) return res.status(ts).json({ error: terror });
+  if (!canDemote(room, req.user._id, target._id)) {
+    return res.status(403).json({ error: 'Only the room owner can demote moderators' });
+  }
+  const members = normalizeMembers(room).map((m) =>
+    m.userId === String(target._id) ? { ...m, role: 'member' } : m
+  );
+  await writeMembers(room._id, members);
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Moderator demoted to member');
+  res.json(await freshRoomJson(room._id, req.user._id));
+}));
+
+// POST /api/rooms/:id/members/:userId/kick — the owner can kick anyone
+// except themself; a moderator can kick members only (not the owner, not
+// other moderators). The kicked user is removed from members, loses any
+// pending invites for the room, and their sockets are forced out of the
+// room with a `room-kicked` event.
+router.post('/rooms/:id/members/:userId/kick', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadPrivateRoomFor(req.params.id, req.user._id);
+  if (error) return res.status(status).json({ error });
+  const { status: ts, error: terror, target } = await loadTargetUser(req.params.userId);
+  if (terror) return res.status(ts).json({ error: terror });
+  if (!canKick(room, req.user._id, target._id)) {
+    return res.status(403).json({ error: 'You cannot kick that member' });
+  }
+  const members = normalizeMembers(room).filter((m) => m.userId !== String(target._id));
+  await writeMembers(room._id, members);
+  await RoomInvite.deleteMany({ room: room._id, invitee: target._id });
+  setMutedInRoom(room._id, target._id, false);
+  kickSocketsFromRoom(target._id, room._id);
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Member kicked');
+  res.json(await freshRoomJson(room._id, req.user._id));
+}));
+
+// POST /api/rooms/:id/transfer { userId } — owner only; ownership moves
+// to another member (member or moderator). The old owner becomes a
+// moderator and createdBy follows the new owner, so room deletion moves
+// with ownership.
+router.post('/rooms/:id/transfer', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadPrivateRoomFor(req.params.id, req.user._id);
+  if (error) return res.status(status).json({ error });
+  const { userId } = req.body || {};
+  const { status: ts, error: terror, target } = await loadTargetUser(userId);
+  if (terror) return res.status(ts).json({ error: terror });
+  if (!canTransfer(room, req.user._id, target._id)) {
+    return res.status(403).json({ error: 'Only the room owner can transfer ownership, and only to another member' });
+  }
+  const members = normalizeMembers(room).map((m) => {
+    if (m.userId === String(target._id)) return { ...m, role: 'owner' };
+    if (m.userId === String(req.user._id)) return { ...m, role: 'moderator' };
+    return m;
+  });
+  await writeMembers(room._id, members);
+  await Room.updateOne({ _id: room._id }, { $set: { createdBy: target._id } });
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Room ownership transferred');
+  res.json(await freshRoomJson(room._id, req.user._id));
+}));
+
+// POST /api/rooms/:id/members/:userId/mute — owner or moderator; toggles
+// a cooperative server-mute for a member (never the owner). Voice is
+// P2P, so the server cannot force a client silent: it records the mute
+// and tells the target's sockets via `moderator-muted` /
+// `moderator-unmuted`, and the client honors it (see RoomView). The
+// muted state survives rejoin — join-room re-applies it. Response:
+// { muted, userId, roomId }.
+router.post('/rooms/:id/members/:userId/mute', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadPrivateRoomFor(req.params.id, req.user._id);
+  if (error) return res.status(status).json({ error });
+  const { status: ts, error: terror, target } = await loadTargetUser(req.params.userId);
+  if (terror) return res.status(ts).json({ error: terror });
+  if (!canMute(room, req.user._id, target._id)) {
+    return res.status(403).json({ error: 'Only the owner or a moderator can mute members, and never the owner' });
+  }
+  const muted = !isMutedInRoom(room._id, target._id);
+  setMutedInRoom(room._id, target._id, muted);
+  const by = req.user.name || 'A moderator';
+  emitToUser(target._id, muted ? 'moderator-muted' : 'moderator-unmuted', {
+    roomId: String(room._id), by
+  });
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id), muted }, 'Moderator mute toggled');
+  res.json({ muted, userId: String(target._id), roomId: String(room._id) });
 }));
 
 // --- ROOM CHAT ---
@@ -484,7 +668,7 @@ const messageJson = (m) => {
 };
 
 router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) => {
-  const room = await Room.findById(req.params.id);
+  const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
@@ -496,7 +680,7 @@ router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) 
 }));
 
 router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) => {
-  const room = await Room.findById(req.params.id);
+  const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
@@ -539,13 +723,19 @@ router.post('/invites/:id/accept', authMiddleware, friendLimit, asyncHandler(asy
   if (invite.status !== 'pending') {
     return res.status(400).json({ error: 'Invite already answered' });
   }
-  const room = await Room.findById(invite.room);
+  const room = await Room.findById(invite.room).lean();
   if (!room) {
     // The room is gone — drop the stale invite and say so.
     await RoomInvite.deleteOne({ _id: invite._id });
     return res.status(403).json({ error: 'Room no longer exists' });
   }
-  await Room.updateOne({ _id: room._id }, { $addToSet: { members: req.user._id } });
+  // New members join as plain members (subdocument shape); the write
+  // also migrates any legacy plain-ObjectId entries.
+  const members = normalizeMembers(room);
+  if (!members.some((m) => m.userId === String(req.user._id))) {
+    members.push({ userId: String(req.user._id), role: 'member' });
+  }
+  await writeMembers(room._id, members);
   invite.status = 'accepted';
   await invite.save();
   const inviter = await User.findById(invite.inviter);
@@ -563,7 +753,7 @@ router.post('/invites/:id/decline', authMiddleware, friendLimit, asyncHandler(as
   }
   invite.status = 'declined';
   await invite.save();
-  const room = await Room.findById(invite.room);
+  const room = await Room.findById(invite.room).lean();
   const inviter = await User.findById(invite.inviter);
   res.json(inviteJson(invite, room, inviter));
 }));

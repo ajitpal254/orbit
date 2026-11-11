@@ -16,8 +16,19 @@ const roomSchema = new mongoose.Schema({
   // auto-added to members on creation; public rooms ignore this list.
   // Rooms created before this field existed have no isPrivate/members
   // and behave as public.
+  //
+  // Roles live on the member entry: { user, role } with role 'owner' |
+  // 'moderator' | 'member' (see lib/roles.js). Rooms created before roles
+  // existed store plain ObjectIds instead — lib/roles.js normalizeMembers
+  // treats those as 'member' (creator: 'owner'), so old rooms keep
+  // working without a migration. `_id: false`: subdocuments need no own
+  // id, which also keeps $set-rewrites of the list predictable.
   isPrivate: { type: Boolean, default: false, index: true },
-  members: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }]
+  members: [{
+    _id: false,
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    role: { type: String, enum: ['owner', 'moderator', 'member'], default: 'member' }
+  }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Room', roomSchema);
