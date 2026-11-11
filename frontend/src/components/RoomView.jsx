@@ -6,7 +6,8 @@ import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import Avatar from './Avatar';
 
-export default function RoomView({ user, room, onLeave }) {
+export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef }) {
+  const { muted, deafened, modMuted, modMutedBy } = session;
   const [occupants, setOccupants] = useState(() => ({
     self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true }
   }));
@@ -15,8 +16,6 @@ export default function RoomView({ user, room, onLeave }) {
   const [iceState, setIceState] = useState({});
   const [candTypes, setCandTypes] = useState({});
   const [playBlocked, setPlayBlocked] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const [deafened, setDeafened] = useState(false);
   const [micError, setMicError] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -33,8 +32,6 @@ export default function RoomView({ user, room, onLeave }) {
   // state for me; whether I was kicked out of this room.
   const [members, setMembers] = useState(room.members || []);
   const [memberError, setMemberError] = useState('');
-  const [modMuted, setModMuted] = useState(false);
-  const [modMutedBy, setModMutedBy] = useState('');
   const [kicked, setKicked] = useState(false);
   // Orb tap popover + bounce: which orb's info card is open, and which
   // orb just got tapped (drives the one-shot .orb-tapped bounce).
@@ -86,6 +83,9 @@ export default function RoomView({ user, room, onLeave }) {
       onPlaybackBlocked: () => setPlayBlocked(true)
     });
     voiceRef.current = voice;
+    // App owns the session and needs the engine so the mini-player can
+    // toggle mute while this view is hidden; cleared on teardown below.
+    if (voiceEngineRef) voiceEngineRef.current = voice;
 
     const onRoomState = ({ occupants: others, mutedByModerator }) => {
       setOccupants((prev) => {
@@ -173,6 +173,7 @@ export default function RoomView({ user, room, onLeave }) {
 
     return () => {
       voice.leave();
+      if (voiceEngineRef) voiceEngineRef.current = null;
       socket.off('room-state', onRoomState);
       socket.off('user-joined', onUserJoined);
       socket.off('user-left', onUserLeft);
@@ -199,17 +200,13 @@ export default function RoomView({ user, room, onLeave }) {
 
   // Honor a moderator mute/unmute (or a rejoin with a mute already in
   // place): mute the engine (which broadcasts mic-state so the room sees
-  // the 🔇 badge), mark my own orb, and remember who muted me.
+  // the 🔇 badge) and record it in the App-owned session, so the
+  // mini-player agrees. My orb's 🔇 badge follows via the sync effect
+  // on session.muted below.
   const applyModeratorMute = useCallback((isMuted, by) => {
     voiceRef.current?.setMuted(isMuted);
-    setModMuted(isMuted);
-    setModMutedBy(isMuted ? by : '');
-    setMuted(isMuted);
-    setOccupants((prev) => ({
-      ...prev,
-      self: { ...prev.self, muted: isMuted }
-    }));
-  }, []);
+    dispatchSession({ type: 'set-mod-muted', muted: isMuted, by: by || '' });
+  }, [dispatchSession]);
 
   const toggleMute = useCallback(() => {
     // While a moderator has me muted, the button is disabled — but
@@ -217,20 +214,26 @@ export default function RoomView({ user, room, onLeave }) {
     if (modMuted) return;
     const next = !muted;
     voiceRef.current?.setMuted(next);
-    setOccupants((prev) => ({
-      ...prev,
-      self: { ...prev.self, muted: next }
-    }));
-    setMuted(next);
+    dispatchSession({ type: 'set-muted', muted: next });
     playMuteSound(next);
-  }, [muted, modMuted]);
+  }, [muted, modMuted, dispatchSession]);
 
   const toggleDeafen = useCallback(() => {
     const next = !deafened;
     voiceRef.current?.setDeafened(next);
-    setDeafened(next);
+    dispatchSession({ type: 'set-deafened', deafened: next });
     playDeafenSound(next);
-  }, [deafened]);
+  }, [deafened, dispatchSession]);
+
+  // The mute state lives in App (the mini-player shares it): mirror it
+  // onto my own orb so the 🔇 badge follows a mute toggled from the
+  // mini-player while this view was hidden.
+  useEffect(() => {
+    setOccupants((prev) => ({
+      ...prev,
+      self: { ...prev.self, muted }
+    }));
+  }, [muted]);
 
   // Tap an orb: quick bounce + toggle its info popover. The class is
   // removed and re-added on a later frame so a fast double-tap replays
