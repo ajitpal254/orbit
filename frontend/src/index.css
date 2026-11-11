@@ -1010,6 +1010,26 @@ input::placeholder { color: var(--muted); }
 
 /* Private room members + invite picker (RoomView) */
 .members-panel { margin-bottom: 0.8rem; padding: 0.85rem 1rem; }
+/* Members toggle (M1): the panel header is a button so phones can
+   collapse the list into one row. On desktop it looks exactly like
+   the old static "Members (N)" title — no chevron, default cursor —
+   and the collapse rules below only exist inside the ≤520px block,
+   so the desktop panel is always fully open. */
+.members-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: default;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.members-toggle .members-toggle-chev { display: none; }
+.members-toggle .members-toggle-chev .icon { width: 14px; height: 14px; }
 .members-head { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; }
 .members-head strong { font-size: 0.92rem; }
 .members-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.6rem; }
@@ -1090,6 +1110,26 @@ input::placeholder { color: var(--muted); }
   .members-head { flex-wrap: wrap; }
   .members-head strong { white-space: nowrap; }
   .members-head > span { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+
+  /* M1: the members panel collapses to its header row on phones, so
+     the orb stage gets the ~45% of the screen the list used to take.
+     The toggle's chevron points down when closed, up when open; the
+     list, note, invite picker and errors hide until the panel has
+     .members-panel--open. Invite / Leave live in the header row, so
+     they stay reachable — expand once and they are there. */
+  .members-toggle { cursor: pointer; }
+  .members-toggle .members-toggle-chev {
+    display: inline-flex;
+    transition: transform var(--dur-fast) var(--ease-out);
+    transform: rotate(-90deg); /* chevron-left turned down = expand */
+  }
+  .members-panel--open .members-toggle .members-toggle-chev { transform: rotate(90deg); /* up = collapse */ }
+  .members-panel:not(.members-panel--open) .members-list,
+  .members-panel:not(.members-panel--open) .members-note,
+  .members-panel:not(.members-panel--open) .invite-picker,
+  .members-panel:not(.members-panel--open) .error,
+  .members-panel:not(.members-panel--open) .members-head > span { display: none; }
+  .members-panel:not(.members-panel--open) { margin-bottom: 0.6rem; }
 }
 .invite-picker { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .invite-picker .person-row { background: rgba(255, 255, 255, 0.03); }
