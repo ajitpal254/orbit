@@ -917,6 +917,11 @@ input::placeholder { color: var(--muted); }
   transition: color var(--dur-fast);
 }
 .view-tabs button.active { background: transparent; color: #fff; border-color: transparent; }
+/* Bottom tab bar (M2) + Home header bell: phone-only. display:none
+   at every other width — tablets keep the top .view-tabs, desktop
+   keeps the icon rail, and the topbar bell stays put. The stories
+   row (M3) is phone-only the same way. */
+.mobile-tab-bar, .home-bell, .stories-row-wrap { display: none; }
 .btn-small { padding: 0.45rem 0.8rem; font-size: 0.85rem; border-radius: 10px; }
 
 /* PWA update prompt: appears when a new service-worker version is
@@ -1010,6 +1015,26 @@ input::placeholder { color: var(--muted); }
 
 /* Private room members + invite picker (RoomView) */
 .members-panel { margin-bottom: 0.8rem; padding: 0.85rem 1rem; }
+/* Members toggle (M1): the panel header is a button so phones can
+   collapse the list into one row. On desktop it looks exactly like
+   the old static "Members (N)" title — no chevron, default cursor —
+   and the collapse rules below only exist inside the ≤520px block,
+   so the desktop panel is always fully open. */
+.members-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: default;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.members-toggle .members-toggle-chev { display: none; }
+.members-toggle .members-toggle-chev .icon { width: 14px; height: 14px; }
 .members-head { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; }
 .members-head strong { font-size: 0.92rem; }
 .members-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.6rem; }
@@ -1069,19 +1094,149 @@ input::placeholder { color: var(--muted); }
   /* Mobile header: the sticky translucent topbar let the tab bar show
      through (and collide with the logo / Log out) when the page was
      scrolled even slightly. On mobile the topbar scrolls away with
-     the page on a solid background, and the tab bar sticks to the top
-     instead — two rows that can never overlap. Desktop is untouched. */
+     the page on a solid background. The top tab bar itself is gone
+     on phones (M2) — the floating bottom tab bar replaces it. */
   .topbar {
     position: static;
     background: var(--bg);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
-  .view-tabs {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    background: var(--bg);
+  /* M2: the top tab bar is gone on phones — the floating bottom tab
+     bar below replaces it — and the topbar bell moves into the Home
+     header (Home.jsx renders .home-bell there). */
+  .view-tabs { display: none; }
+  .topbar .bell-btn { display: none; }
+
+  /* M2: bottom tab bar — a floating glass pill fixed to the bottom
+     with safe-area padding. 3.5rem tall, 0.75rem above the gesture
+     bar, so its top edge sits at 4.25rem + safe-area. */
+  .mobile-tab-bar {
+    display: flex;
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    z-index: 30;
+    width: min(480px, calc(100vw - 2rem));
+    height: 3.5rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(18, 13, 36, 0.92);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  }
+  .mobile-tab {
+    flex: 1;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.1rem;
+    min-height: 44px;
+    background: none;
+    border: none;
+    border-radius: 999px;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .mobile-tab.active { background: var(--accent-dim); color: #fff; }
+  .mobile-tab-ico { line-height: 0; }
+  .mobile-tab-ico .icon { width: 22px; height: 22px; }
+  .mobile-tab-badge {
+    position: absolute;
+    top: 0.1rem;
+    right: calc(50% - 1.4rem);
+    min-width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    background: var(--accent-grad);
+    color: #fff;
+    font-size: 0.62rem;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+  }
+
+  /* M2 + M3: Home header on phones — greeting + bell share the top
+     row, the New room button takes its own full-width row below with
+     a 12px (0.75rem) gap from the greeting. */
+  .home-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.75rem; }
+  .home-head .greeting { flex: 1 1 0; min-width: 0; }
+  .home-bell { display: inline-flex; flex-shrink: 0; margin-top: 0.2rem; }
+  .home-head .btn-block { flex: 1 1 100%; }
+
+  /* M2: the tab bar owns the bottom of every phone view, so the main
+     column gets room for it. While a call runs in the background the
+     mini-player stacks directly above the tab bar — tab bar top edge
+     4.25rem + 0.75rem gap = 5rem — and the padding grows to clear
+     both. The update toast lifts above the stack too. */
+  .main { padding-bottom: calc(5.25rem + env(safe-area-inset-bottom)); }
+  .app--in-call .main { padding-bottom: calc(9.75rem + env(safe-area-inset-bottom)); }
+  .app--in-call .mini-player { bottom: calc(5rem + env(safe-area-inset-bottom)); }
+  .app--in-call .update-toast { bottom: calc(9.75rem + env(safe-area-inset-bottom)); }
+
+  /* M3: friends stories row — a horizontal scroll of online friends
+     at the top of Home. In-room friends get a glowing ring and tap
+     through to their room; online friends are shown, not tappable.
+     The glow is static (no animation), so prefers-reduced-motion
+     needs no special case. */
+  .stories-row-wrap { display: block; }
+  .stories-row {
+    display: flex;
+    gap: 0.9rem;
+    overflow-x: auto;
+    padding: 0.3rem 0.1rem 0.5rem;
+    scrollbar-width: none;
+  }
+  .stories-row::-webkit-scrollbar { display: none; }
+  .story {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+    width: 64px;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .story--online { cursor: default; }
+  .story-avatar.story-in-room {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #34d399, 0 0 14px rgba(52, 211, 153, 0.6);
+  }
+  .story-avatar:not(.story-in-room) {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px rgba(52, 211, 153, 0.4);
+  }
+  .story-name {
+    font-size: 0.7rem;
+    font-weight: 700;
+    max-width: 64px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+  }
+  .story-room {
+    font-size: 0.62rem;
+    color: #34d399;
+    font-weight: 700;
+    max-width: 64px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
   }
 
   /* Members header: the title stays on one line; the buttons wrap
@@ -1090,6 +1245,26 @@ input::placeholder { color: var(--muted); }
   .members-head { flex-wrap: wrap; }
   .members-head strong { white-space: nowrap; }
   .members-head > span { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+
+  /* M1: the members panel collapses to its header row on phones, so
+     the orb stage gets the ~45% of the screen the list used to take.
+     The toggle's chevron points down when closed, up when open; the
+     list, note, invite picker and errors hide until the panel has
+     .members-panel--open. Invite / Leave live in the header row, so
+     they stay reachable — expand once and they are there. */
+  .members-toggle { cursor: pointer; }
+  .members-toggle .members-toggle-chev {
+    display: inline-flex;
+    transition: transform var(--dur-fast) var(--ease-out);
+    transform: rotate(-90deg); /* chevron-left turned down = expand */
+  }
+  .members-panel--open .members-toggle .members-toggle-chev { transform: rotate(90deg); /* up = collapse */ }
+  .members-panel:not(.members-panel--open) .members-list,
+  .members-panel:not(.members-panel--open) .members-note,
+  .members-panel:not(.members-panel--open) .invite-picker,
+  .members-panel:not(.members-panel--open) .error,
+  .members-panel:not(.members-panel--open) .members-head > span { display: none; }
+  .members-panel:not(.members-panel--open) { margin-bottom: 0.6rem; }
 }
 .invite-picker { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .invite-picker .person-row { background: rgba(255, 255, 255, 0.03); }
