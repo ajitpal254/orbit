@@ -1724,7 +1724,12 @@ textarea {
   .home-head .greeting { flex: 1; min-width: 0; }
   .home-head .greeting h2 { font-size: 2rem; }
   .home-head .btn-block { width: auto; flex-shrink: 0; }
-  .room-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+  /* Room cards size to their container, not the viewport: at ≥1600px
+     the centre column is only ~930px once the rail and side panel are
+     subtracted, so the old fixed 4-column rule squeezed cards to
+     ~220px. auto-fill keeps cards ≥260px and never stretches a lone
+     card full-width (unlike auto-fit, which collapses empty tracks). */
+  .room-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.9rem; }
   /* The hero room is also in the Live-now list — hide its duplicate
      card on desktop, and hide the whole section when the hero is the
      only live room. Phones have no hero, so the list stays complete. */
@@ -1774,12 +1779,4 @@ textarea {
 @keyframes sheet-in-right {
   from { opacity: 0; transform: translateX(28px); }
   to { opacity: 1; transform: translateX(0); }
-}
-
-@media (min-width: 1200px) {
-  .room-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-@media (min-width: 1600px) {
-  .room-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
