@@ -1223,6 +1223,54 @@ input::placeholder { color: var(--muted); }
 .campfire-line .icon { width: 14px; height: 14px; flex-shrink: 0; }
 .campfire-line--kept { color: var(--muted); }
 
+/* Locked room + knocks: a private room opened by a non-member, and the
+   pending knocks in the members panel. The lock icon breathes gently;
+   the global prefers-reduced-motion rule stills it like everything else. */
+.locked-card { text-align: center; padding: 2rem 1.25rem; }
+.locked-card h2 { margin: 0.6rem 0 0.3rem; }
+.locked-card .btn { margin-top: 0.8rem; }
+.locked-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.locked-icon--pulse { animation: locked-pulse 2.4s ease-in-out infinite; }
+@keyframes locked-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.35); }
+  50% { box-shadow: 0 0 0 12px rgba(139, 92, 246, 0); }
+}
+.knock-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  margin: 0.8rem 0 0;
+}
+.knock-pending .icon { flex-shrink: 0; }
+
+/* Pending knocks in the members panel (owner/mods only). */
+.knocks-section { border-top: 1px solid var(--border); margin-top: 0.7rem; padding-top: 0.7rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.knocks-title { display: flex; align-items: center; gap: 0.35rem; margin: 0; font-size: 0.9rem; }
+.knock-row { background: rgba(139, 92, 246, 0.06); border-color: rgba(139, 92, 246, 0.35); }
+.knock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
 /* Room body: members panel + orb stage. A flex column at every width
    so the room-space keeps its flex:1 vertical fill on mobile exactly
    as before; on desktop (min-width: 900px at the end of this file)

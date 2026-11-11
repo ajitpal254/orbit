@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock } from '../api';
 import { buildInviteLinkUrl } from '../deepLink';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
@@ -7,6 +7,16 @@ import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import Avatar from './Avatar';
 import { Icon, SignalBars } from './icons';
+
+// Short relative age for a knock row ("just now", "5m ago", "3h ago") —
+// a knock expires after 24h, so the owner can see at a glance how
+// long one has been waiting.
+const knockAge = (iso) => {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+};
 
 export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef }) {
   const { muted, deafened, modMuted, modMutedBy } = session;
@@ -50,6 +60,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [members, setMembers] = useState(room.members || []);
   const [memberError, setMemberError] = useState('');
   const [kicked, setKicked] = useState(false);
+  // Knocks (private rooms): pending knocks for the owner/moderators to
+  // answer. Loaded only for owner/mods; quiet by default — the section
+  // only renders while someone is knocking.
+  const [knocks, setKnocks] = useState([]);
+  const [knockError, setKnockError] = useState('');
+  const [answeringKnock, setAnsweringKnock] = useState(null);
   // Orb tap popover + bounce: which orb's info card is open, and which
   // orb just got tapped (drives the one-shot .orb-tapped bounce).
   const [selectedOrb, setSelectedOrb] = useState(null);
@@ -414,6 +430,53 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const myRole = (members.find((m) => m.id === user.id) || {}).role || null;
   const isOwner = myRole === 'owner';
   const isModerator = myRole === 'moderator';
+  const canAnswerKnocks = isOwner || isModerator;
+
+  // Pending knocks for this room, for the members panel. A 403 (plain
+  // member) is expected and stays quiet — only owner/mods ever see it.
+  const loadKnocks = useCallback(async () => {
+    if (!room.isPrivate || !canAnswerKnocks) return;
+    try {
+      setKnocks(await getRoomKnocks(room.id));
+    } catch {
+      // Stay quiet: a failed refresh keeps the last-known list.
+    }
+  }, [room.id, room.isPrivate, canAnswerKnocks]);
+
+  // Refresh the knocks live when one arrives or is withdrawn, and when
+  // the role becomes known (members load after mount).
+  useEffect(() => { loadKnocks(); }, [loadKnocks]);
+  useEffect(() => {
+    const socket = getSocket();
+    const onKnock = ({ roomId } = {}) => {
+      if (roomId === room.id) loadKnocks();
+    };
+    socket.on('knock-received', onKnock);
+    socket.on('knock-withdrawn', onKnock);
+    return () => {
+      socket.off('knock-received', onKnock);
+      socket.off('knock-withdrawn', onKnock);
+    };
+  }, [room.id, loadKnocks]);
+
+  // Answer a knock: admit adds the knocker as a member (the response
+  // carries the fresh room JSON); decline just clears it. Either way
+  // the row leaves the panel at once — a failed answer reloads the
+  // list instead of guessing.
+  const answerKnock = async (knockId, admit) => {
+    setAnsweringKnock(knockId);
+    setKnockError('');
+    try {
+      const res = admit ? await admitKnock(knockId) : await declineKnock(knockId);
+      setKnocks((prev) => prev.filter((k) => k.id !== knockId));
+      if (admit && res.room?.members) setMembers(res.room.members);
+    } catch (err) {
+      setKnockError(err.message);
+      loadKnocks();
+    } finally {
+      setAnsweringKnock(null);
+    }
+  };
 
   const promote = (memberId) => runMemberAction(() => promoteMember(room.id, memberId));
   const demote = (memberId) => runMemberAction(() => demoteMember(room.id, memberId));
@@ -641,6 +704,11 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               <Icon name="users" size={15} /> Members ({members.length})
               <span className="members-toggle-chev" aria-hidden="true"><Icon name="chevron-left" size={14} /></span>
             </button>
+            {canAnswerKnocks && knocks.length > 0 && (
+              <span className="knock-badge" title={`${knocks.length} ${knocks.length === 1 ? 'person is' : 'people are'} knocking`}>
+                <Icon name="knock" size={12} /> {knocks.length}
+              </span>
+            )}
             <span>
               <button className="btn btn-primary btn-small" onClick={openInvite}>
                 {showInvite ? (<><Icon name="x" size={14} /> Close</>) : (<><Icon name="plus" size={14} /> Invite a friend</>)}
@@ -686,6 +754,37 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               <span className="muted">No members listed.</span>
             )}
           </div>
+          {canAnswerKnocks && knocks.length > 0 && (
+            <div className="knocks-section">
+              <h4 className="knocks-title"><Icon name="knock" size={15} /> Knocking ({knocks.length})</h4>
+              {knocks.map((k) => (
+                <div key={k.id} className="person-row knock-row">
+                  <Avatar user={k.user} size="sm" className="person-orb" />
+                  <span className="person-info">
+                    <strong>{k.user.name || 'Unnamed'}</strong>
+                    <span className="muted person-email">Knocked {knockAge(k.createdAt)} — wants to join</span>
+                  </span>
+                  <span className="row-actions">
+                    <button
+                      className="btn btn-primary btn-small"
+                      disabled={answeringKnock === k.id}
+                      onClick={() => answerKnock(k.id, true)}
+                    >
+                      Admit
+                    </button>
+                    <button
+                      className="btn btn-text btn-small"
+                      disabled={answeringKnock === k.id}
+                      onClick={() => answerKnock(k.id, false)}
+                    >
+                      Decline
+                    </button>
+                  </span>
+                </div>
+              ))}
+              {knockError && <p className="error">{knockError}</p>}
+            </div>
+          )}
           {memberError && <p className="error">{memberError}</p>}
           <p className="muted members-note">
             Moderator mute is cooperative — a muted member's app mutes itself, and a modified client could ignore it.

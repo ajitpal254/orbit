@@ -19,6 +19,7 @@ import Avatar from './components/Avatar';
 import IconRail from './components/IconRail';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
+import LockedRoom from './components/LockedRoom';
 import { Icon } from './components/icons';
 
 // Boot timeout per /api/auth/me attempt. Render's free tier sleeps when
@@ -39,6 +40,11 @@ export default function App() {
   // invite link must not pull the user out of a live call.
   const roomRef = useRef(null);
   roomRef.current = room;
+  // A private room the user is not a member of, opened from a link /
+  // deep link / push tap: the locked-room screen with a knock button,
+  // instead of a silent bounce to the rooms list. { id, name } — the
+  // locked stub the server returns with the private-room 403.
+  const [lockedRoom, setLockedRoom] = useState(null);
   // Whether the room view itself is on screen. The voice session is
   // keyed off `room`, not this flag: navigating to another view hides
   // the room (RoomView stays mounted, so the call keeps running) and
@@ -134,11 +140,20 @@ export default function App() {
     socket.on('room-invite', onNotify);
     socket.on('friend-accepted', onNotify);
     socket.on('dm-message', onNotify);
+    // Knock traffic: a knock on my room (answer it from the members
+    // panel), and the answer to my knock (admitted → the room appears
+    // in my list; declined → my pending state clears).
+    socket.on('knock-received', onNotify);
+    socket.on('knock-admitted', onNotify);
+    socket.on('knock-declined', onNotify);
     return () => {
       socket.off('friend-request', onNotify);
       socket.off('room-invite', onNotify);
       socket.off('friend-accepted', onNotify);
       socket.off('dm-message', onNotify);
+      socket.off('knock-received', onNotify);
+      socket.off('knock-admitted', onNotify);
+      socket.off('knock-declined', onNotify);
     };
   }, [user]);
 
@@ -184,6 +199,7 @@ export default function App() {
   // engine joins); leaving it ends the session. Navigating between
   // views never touches either — that is the whole point.
   const joinRoom = useCallback((r) => {
+    setLockedRoom(null);
     if (room?.id === r.id) {
       // Already in this room's session — just show the room again
       // instead of restarting the call timer and resetting mute.
@@ -199,6 +215,7 @@ export default function App() {
 
   const leaveRoom = useCallback(() => {
     setRoom(null);
+    setLockedRoom(null);
     setInRoom(false);
     dispatchSession({ type: 'leave' });
   }, []);
@@ -206,6 +223,7 @@ export default function App() {
   // Navigate to a view without dropping the call: the room view hides,
   // RoomView stays mounted, and the mini-player appears.
   const goTo = useCallback((v) => {
+    setLockedRoom(null);
     setView(v);
     setInRoom(false);
   }, []);
@@ -230,7 +248,17 @@ export default function App() {
         const room = await apiJson(`/api/rooms/${target.roomId}`);
         joinRoom(room);
         return;
-      } catch {
+      } catch (err) {
+        // A private room I am not a member of (a knock notification's
+        // room is one I own, so this is the invite/gone case — but a
+        // stale knock target can land here too): show the locked-room
+        // screen with its knock button instead of bouncing silently.
+        if (err.room) {
+          setLockedRoom(err.room);
+          setView('rooms');
+          setInRoom(false);
+          return;
+        }
         // Fall through to the rooms list below.
       }
     }
@@ -298,8 +326,14 @@ export default function App() {
         try {
           const room = await apiJson(`/api/rooms/${target.roomId}`);
           if (!cancelled) joinRoom(room);
-        } catch {
-          if (!cancelled) goTo('rooms');
+        } catch (err) {
+          // A private room I am not a member of: the locked-room
+          // screen (with its knock button), not a silent bounce.
+          if (!cancelled && err.room) {
+            setLockedRoom(err.room);
+            setView('rooms');
+            setInRoom(false);
+          } else if (!cancelled) goTo('rooms');
         }
         return;
       }
@@ -353,6 +387,7 @@ export default function App() {
     } catch {}
     disconnectSocket();
     setRoom(null);
+    setLockedRoom(null);
     setInRoom(false);
     dispatchSession({ type: 'leave' });
     setView('rooms');
@@ -498,6 +533,12 @@ export default function App() {
             onNavigate={handleNotifNavigate}
             onBack={() => goTo('rooms')}
             onRead={() => setRefreshTick((t) => t + 1)}
+          />
+        ) : lockedRoom ? (
+          <LockedRoom
+            room={lockedRoom}
+            onJoined={joinRoom}
+            onBack={() => setLockedRoom(null)}
           />
         ) : (
           <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} onNavigate={handleNotifNavigate} notifUnread={notifUnread} onOpenNotifications={() => goTo('notifications')} />

@@ -13,6 +13,7 @@ const ICONS = {
   friend_request: 'user-plus',
   friend_accepted: 'check-circle',
   room_invite: 'lock',
+  knock: 'knock',
   dm: 'chat',
   test: 'bell'
 };
@@ -59,7 +60,9 @@ export default function Notifications({ refreshTick, onNavigate, onBack, onRead 
       // marked read above, so staying on the list is the whole action.
       return;
     }
-    if (n.type === 'room_invite' && n.room) {
+    if ((n.type === 'room_invite' || n.type === 'knock') && n.room) {
+      // An invite opens the room to join; a knock opens the room so
+      // the owner/moderators can answer it from the members panel.
       onNavigate({ view: 'rooms', roomId: n.room.id });
     } else if (n.type === 'dm' && n.actor) {
       onNavigate({ view: 'messages', dmUser: n.actor });
@@ -99,7 +102,7 @@ export default function Notifications({ refreshTick, onNavigate, onBack, onRead 
       {!loading && items.length === 0 && (
         <div className="card empty-state">
           <span className="empty-icon"><Icon name="bell" size={26} /></span>
-          <p className="muted">Nothing here yet — friend requests, room invites and DMs will show up here.</p>
+          <p className="muted">Nothing here yet — friend requests, room invites, knocks and DMs will show up here.</p>
         </div>
       )}
 

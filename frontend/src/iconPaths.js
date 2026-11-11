@@ -106,6 +106,13 @@ export const ICON_PATHS = {
     { el: 'rect', x: 3, y: 11, width: 18, height: 11, rx: 2 },
     { el: 'path', d: 'M7 11V7a5 5 0 0 1 10 0v4' }
   ],
+  // Knock: a door with two knock marks — asking to be let in.
+  knock: [
+    { el: 'rect', x: 8, y: 3, width: 11, height: 18, rx: 1 },
+    { el: 'circle', cx: 16, cy: 12, r: 0.8 },
+    { el: 'line', x1: 2, y1: 8, x2: 4.5, y2: 8 },
+    { el: 'line', x1: 2, y1: 12, x2: 4.5, y2: 12 }
+  ],
   globe: [
     { el: 'circle', cx: 12, cy: 12, r: 10 },
     { el: 'line', x1: 2, y1: 12, x2: 22, y2: 12 },
