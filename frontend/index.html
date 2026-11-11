@@ -5,8 +5,57 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0a0618" />
     <title>Orbit — voice rooms for friends</title>
+    <style>
+      /* Pre-JS splash screen: self-contained (no external assets) so it
+         paints instantly, even while the JS bundle is still downloading
+         or the server is waking from a cold start. React fades this out
+         and removes it once mounted (main.jsx); the React <Splash />
+         component in App.jsx reuses the same classes for the loading
+         branch. Keep the two in sync. */
+      html, body { margin: 0; background: #0a0618; }
+      #splash {
+        min-height: 100vh;
+        min-height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.1rem;
+        background: #0a0618;
+        background-image: radial-gradient(800px 380px at 50% -120px, rgba(139, 92, 246, 0.16), transparent);
+        color: #f4f7fb;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
+        transition: opacity 0.45s ease;
+      }
+      #splash.splash-hide { opacity: 0; }
+      .splash-orbs { display: flex; align-items: center; gap: 0.9rem; height: 56px; }
+      .splash-orb {
+        border-radius: 50%;
+        box-shadow: 0 0 28px rgba(0, 0, 0, 0.5), inset 0 -6px 14px rgba(0, 0, 0, 0.25), inset 0 5px 10px rgba(255, 255, 255, 0.25);
+        animation: splash-float 2.4s ease-in-out infinite;
+      }
+      .splash-orb-a { width: 34px; height: 34px; background: linear-gradient(135deg, #8b5cf6, #d946ef); animation-delay: 0s; }
+      .splash-orb-b { width: 52px; height: 52px; background: linear-gradient(135deg, #d946ef, #f43f5e); animation-delay: 0.35s; }
+      .splash-orb-c { width: 34px; height: 34px; background: linear-gradient(135deg, #34d399, #22d3ee); animation-delay: 0.7s; }
+      @keyframes splash-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+      .splash-wordmark { font-size: 1.9rem; font-weight: 800; letter-spacing: -0.03em; margin: 0; }
+      .splash-status { margin: 0; color: #8b96ab; font-size: 0.92rem; }
+      @media (prefers-reduced-motion: reduce) {
+        .splash-orb { animation: none; }
+        #splash { transition: none; }
+      }
+    </style>
   </head>
   <body>
+    <div id="splash">
+      <div class="splash-orbs" aria-hidden="true">
+        <span class="splash-orb splash-orb-a"></span>
+        <span class="splash-orb splash-orb-b"></span>
+        <span class="splash-orb splash-orb-c"></span>
+      </div>
+      <p class="splash-wordmark">🪐 Orbit</p>
+      <p class="splash-status">Connecting…</p>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

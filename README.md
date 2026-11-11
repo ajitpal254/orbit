@@ -20,6 +20,8 @@ Same family as Budget-Manager and Calorie-Tracker:
 4. Text chat per room: persisted in Mongo **AES-256-GCM encrypted at rest**, live via socket.io, bottom-sheet panel with unread badge.
 5. PWA: installable, mobile-responsive, offline shell.
 6. Friends & private rooms: add friends by name/email, send/accept/decline requests, and create private rooms that only members can see or join — invite friends from inside the room. See "Friends & private rooms" below.
+7. Direct messages: 1:1 chat with accepted friends only, with a conversation list, unread badges, and live delivery. See "Direct messages" below.
+8. Animated splash screen: branded loading screen (floating orbs) that shows before JS loads and while the app boots; the status text explains a Render free-tier cold start ("Waking up the server…") and a Retry button appears if the server still hasn't answered — the boot check times out after 20s and retries up to 3 times instead of spinning forever.
 
 ## Project layout
 
@@ -89,6 +91,25 @@ Public rooms work exactly as before — anyone can see and join them. Friends un
 - **Live notifications** — `friend-request`, `room-invite`, and `friend-accepted` are pushed to the recipient's connected socket(s) via a small in-memory userId → socket map in `lib/socket.js`; the app plays the join chime and refreshes the Friends tab / invites list. Offline users see everything on their next load.
 - **Rules, in one place** — the visibility/invite predicates live in `lib/friends.js` (`areFriends`, `friendshipStatus`, `canSeeRoom`, `canInvite`, `findPendingInvite`) and are unit-tested in `tests/friends.test.js` without MongoDB. Route/socket integration tests need MongoDB and were **not** run in the sandbox — smoke-tested via module loads + live `/api/health` instead.
 
+## Direct messages
+
+1:1 chat with accepted friends — strangers and pending requests can't message you:
+
+- **Messages tab** — one entry per accepted friend, sorted by last-message recency (friends with no messages go last, by name). Each row shows an avatar, a last-message preview ("You: …" for your own), a time, and an unread badge. A total-unread badge sits on the tab itself.
+- **Thread view** — tap a conversation (or "Message" on a friend's row) to open the thread: bubbles, mine right in the accent gradient, theirs left on card background, auto-scroll to the newest message.
+- **Live delivery** — sending broadcasts a `dm-message` push to the recipient's connected socket(s) (same join chime as a room invite); their list and badge update without a refresh. Opening a thread marks their messages to you as read.
+- **Friends-only, enforced server-side** — `GET /api/dms/:userId` and `POST /api/dms/:userId` both 403 unless an accepted friendship exists; the client is never trusted. Text is validated with the same `validateMessageInput` as room chat (max 1000 chars) and stored **AES-256-GCM encrypted** exactly like room messages (`models/DirectMessage.js`, `read` flag for unread counts).
+- **Rules, in one place** — the DM predicates live in `lib/dms.js` (`canDm`, `unreadFor`, `lastMessageFor`, `buildSummaries`, reusing `lib/friends.js` — no duplicated friendship logic) and are unit-tested in `tests/dms.test.js` without MongoDB. Route integration tests need MongoDB and were **not** run in the sandbox.
+
+## Splash screen & cold starts
+
+Render's free tier sleeps after ~1h idle, so the first request after a while takes 30–60s while the server wakes. The app used to show a bare "Loading…" with no timeout through that — it looked stuck, but wasn't. Now:
+
+- `frontend/index.html` carries an inline `#splash` (self-contained `<style>`, no external assets): 🪐 Orbit wordmark, three animated orbs, "Connecting…". It paints before any JS loads, and the PWA serves it from cache too.
+- `main.jsx` fades it out and removes it once React has painted its first frame (idempotent, StrictMode-safe).
+- While the app boots, the React `components/Splash.jsx` takes over with staged status text — 0–8s "Connecting…", 8–25s "Waking up the server — free servers take a moment…", 25s+ "Still waking up…" plus a Retry button that re-runs the boot check.
+- The `/api/auth/me` boot check has a 20s timeout (AbortController) with up to 3 attempts and short backoff. If all fail, the app stops loading and shows the login screen with the error and a Retry button — it never spins forever. Orb animation is disabled under `prefers-reduced-motion`.
+
 ## Security
 
 **Login — password or Google one-tap.** Password login is unchanged. If `GOOGLE_CLIENT_ID` is set, the login screen also shows a "Continue with Google" button (Google Identity Services). The browser sends Google's signed ID token to `POST /api/auth/google`, the server verifies it with `google-auth-library`, then finds the user by Google id, links it to an existing account with the same email, or creates a new Google-only account (random unusable password hash). The same session cookie is issued either way. If no client ID is configured, no Google button renders at all. **Google only ever sees the login event** — no chat, room, or voice data goes to Google.
@@ -112,7 +133,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 | Data | Protection |
 |---|---|
-| Chat messages, room topics | AES-256-GCM at rest (MongoDB) |
+| Chat messages, room topics, DMs | AES-256-GCM at rest (MongoDB) |
 | Voice | DTLS-SRTP peer-to-peer; the server never receives media |
 | Passwords | PBKDF2-SHA512, 310k iterations (hashed, never encrypted) |
 | Session tokens | SHA-256 hashed in DB, httpOnly cookies |
@@ -127,7 +148,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 - **Mesh voice scales to ~2–6 people.** Every peer connects to every other peer; beyond that, CPU/bandwidth grows fast. The upgrade path is a LiveKit SFU — `voice.js` is isolated so the swap touches one module.
 - **TURN is best-effort by default.** The built-in static-auth Open Relay TURN works with no setup, but it is a free shared relay with no SLA. For reliable calls, add your own free Metered TURN credentials (`TURN_USERNAME` / `TURN_CREDENTIAL` on Render) — see "Voice connectivity (TURN)".
 - **PWA only on mobile** — no native app yet. Install from the browser; mic access works in the PWA.
-- **No DMs, roles, or screen share yet** — rooms + voice + chat + friends only. Friends and private rooms are in (see "Friends & private rooms").
+- **No roles or screen share yet** — rooms + voice + chat + friends + DMs only.
 - **Presence is in-memory.** A server restart clears "who's in a room" (correct behavior — presence is ephemeral), but chat history and rooms persist in Mongo.
 - Tests cover pure logic (room validation, presence, orb layout, password helpers). Route/socket integration tests need MongoDB and were **not** run in the sandbox — smoke-tested via module loads + live `/api/health` instead.
 

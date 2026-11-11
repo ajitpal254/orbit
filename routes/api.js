@@ -10,6 +10,7 @@ const Room = require('../models/Room');
 const Message = require('../models/Message');
 const Friendship = require('../models/Friendship');
 const RoomInvite = require('../models/RoomInvite');
+const DirectMessage = require('../models/DirectMessage');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
 const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
@@ -17,6 +18,7 @@ const logger = require('../lib/logger');
 const { authMiddleware, parseCookies, rateLimitMiddleware, asyncHandler } = require('../middleware/auth');
 const { validateRoomInput, validateMessageInput, accentById } = require('../lib/rooms');
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
+const { canDm, buildSummaries } = require('../lib/dms');
 const { emitToUser } = require('../lib/socket');
 const presence = require('../lib/presence');
 
@@ -564,6 +566,113 @@ router.post('/invites/:id/decline', authMiddleware, friendLimit, asyncHandler(as
   const room = await Room.findById(invite.room);
   const inviter = await User.findById(invite.inviter);
   res.json(inviteJson(invite, room, inviter));
+}));
+
+// --- DIRECT MESSAGES (FRIENDS ONLY) ---
+
+// DM text is stored AES-256-GCM encrypted, exactly like room messages.
+// Decrypt on read; a message that cannot be decrypted shows a
+// placeholder instead of breaking the thread — and logs loudly.
+const decryptDmText = (m) => {
+  try {
+    return decrypt(m.text);
+  } catch (err) {
+    logger.warn({ messageId: String(m._id) }, 'Stored DM could not be decrypted — check DATA_ENCRYPTION_KEY');
+    return '[This message could not be decrypted]';
+  }
+};
+
+const dmJson = (m, senderName) => ({
+  id: String(m._id),
+  senderId: String(m.sender),
+  recipientId: String(m.recipient),
+  senderName: senderName || '',
+  text: decryptDmText(m),
+  read: !!m.read,
+  createdAt: m.createdAt
+});
+
+// The other side of an accepted friendship, from my point of view.
+const acceptedFriendRows = (meId, otherId) => Friendship.find({
+  $or: [
+    { requester: meId, recipient: otherId },
+    { requester: otherId, recipient: meId }
+  ]
+}).lean();
+
+// GET /api/dms — one entry per accepted friend: last message (decrypted)
+// + unread count. Sorted by last-message recency; friends with no
+// messages go last, by name.
+router.get('/dms', authMiddleware, asyncHandler(async (req, res) => {
+  const rows = await Friendship.find({
+    status: 'accepted',
+    $or: [{ requester: req.user._id }, { recipient: req.user._id }]
+  }).lean();
+  const friendIds = [...new Set(rows.map((r) => otherUserId(r, req.user._id)))];
+  const friends = await User.find({ _id: { $in: friendIds } }).select('name email').lean();
+  // All DMs involving me, newest first (capped — the summary only needs
+  // the latest per friend; threads fetch the rest).
+  const dms = await DirectMessage.find({
+    $or: [{ sender: req.user._id }, { recipient: req.user._id }]
+  }).sort({ createdAt: -1 }).limit(1000).lean();
+  const plain = dms.map((m) => ({ ...m, text: decryptDmText(m) }));
+  res.json(buildSummaries(friends.map(userJson), plain, req.user._id));
+}));
+
+// GET /api/dms/:userId — the thread with that friend, latest 50,
+// oldest first. 403 unless an accepted friend. Opening the thread marks
+// their messages to me as read.
+router.get('/dms/:userId', authMiddleware, asyncHandler(async (req, res) => {
+  const { userId } = req.params;
+  if (!isObjectId(userId)) return res.status(400).json({ error: 'Invalid user' });
+  const other = await User.findById(userId);
+  if (!other) return res.status(404).json({ error: 'User not found' });
+  const friendRows = await acceptedFriendRows(req.user._id, other._id);
+  if (!canDm(friendRows, req.user._id, other._id)) {
+    return res.status(403).json({ error: 'Direct messages are for friends only' });
+  }
+  await DirectMessage.updateMany(
+    { sender: other._id, recipient: req.user._id, read: false },
+    { read: true }
+  );
+  const messages = await DirectMessage.find({
+    $or: [
+      { sender: req.user._id, recipient: other._id },
+      { sender: other._id, recipient: req.user._id }
+    ]
+  }).sort({ createdAt: -1 }).limit(50).lean();
+  const names = new Map([
+    [String(req.user._id), req.user.name],
+    [String(other._id), other.name]
+  ]);
+  res.json(messages.reverse().map((m) => dmJson(m, names.get(String(m.sender)))));
+}));
+
+// POST /api/dms/:userId { text } — send a DM. 403 unless an accepted
+// friend; text validated like room messages; stored encrypted; the
+// recipient gets a live `dm-message` push with the plaintext payload.
+router.post('/dms/:userId', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { userId } = req.params;
+  if (!isObjectId(userId)) return res.status(400).json({ error: 'Invalid user' });
+  const other = await User.findById(userId);
+  if (!other) return res.status(404).json({ error: 'User not found' });
+  const friendRows = await acceptedFriendRows(req.user._id, other._id);
+  if (!canDm(friendRows, req.user._id, other._id)) {
+    return res.status(403).json({ error: 'Direct messages are for friends only' });
+  }
+  const { ok, error, text } = validateMessageInput(req.body || {});
+  if (!ok) return res.status(400).json({ error });
+  const msg = await DirectMessage.create({
+    sender: req.user._id,
+    recipient: other._id,
+    // Stored encrypted; the push below sends the plaintext to the
+    // recipient over their own TLS/WSS connection — that is correct.
+    text: encrypt(text)
+  });
+  const payload = dmJson(msg, req.user.name);
+  emitToUser(other._id, 'dm-message', payload);
+  req.log.info({ userId: String(req.user._id), recipientId: String(other._id) }, 'DM sent');
+  res.status(201).json(payload);
 }));
 
 module.exports = router;

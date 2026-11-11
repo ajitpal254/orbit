@@ -598,3 +598,92 @@ input::placeholder { color: var(--muted); }
 }
 .chat-input input { margin: 0; flex: 1; }
 .chat-input .btn { padding: 0.7rem 1rem; }
+
+/* Splash screen — same look as the pre-JS #splash in index.html.
+   The static splash is faded out by main.jsx once React mounts; this
+   React version covers the loading branch (auth check) in App.jsx. */
+.splash {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.1rem;
+  padding: 1.25rem;
+  text-align: center;
+}
+.splash.splash-hide { opacity: 0; transition: opacity 0.45s ease; }
+.splash-orbs { display: flex; align-items: center; gap: 0.9rem; height: 56px; }
+.splash-orb {
+  border-radius: 50%;
+  box-shadow: 0 0 28px rgba(0, 0, 0, 0.5), inset 0 -6px 14px rgba(0, 0, 0, 0.25), inset 0 5px 10px rgba(255, 255, 255, 0.25);
+  animation: splash-float 2.4s ease-in-out infinite;
+}
+.splash-orb-a { width: 34px; height: 34px; background: linear-gradient(135deg, #8b5cf6, #d946ef); animation-delay: 0s; }
+.splash-orb-b { width: 52px; height: 52px; background: linear-gradient(135deg, #d946ef, #f43f5e); animation-delay: 0.35s; }
+.splash-orb-c { width: 34px; height: 34px; background: linear-gradient(135deg, #34d399, #22d3ee); animation-delay: 0.7s; }
+@keyframes splash-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+.splash-wordmark { font-size: 1.9rem; font-weight: 800; letter-spacing: -0.03em; margin: 0; }
+.splash-status { margin: 0; color: var(--muted); font-size: 0.92rem; }
+@media (prefers-reduced-motion: reduce) {
+  .splash-orb { animation: none; }
+  .splash.splash-hide { transition: none; }
+}
+
+/* Direct messages */
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  margin-left: 0.35rem;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  vertical-align: middle;
+}
+.dm-row { width: 100%; text-align: left; cursor: pointer; font-family: inherit; color: var(--text); transition: transform 0.15s, border-color 0.15s; }
+.dm-row:hover { transform: translateY(-1px); border-color: var(--accent); }
+.dm-preview {
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dm-preview.unread { color: var(--text); font-weight: 700; }
+.dm-side { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3rem; flex-shrink: 0; }
+.dm-time { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+.dm-badge {
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+}
+.dm-thread { display: flex; flex-direction: column; gap: 0.8rem; }
+.dm-thread-head { display: flex; align-items: center; gap: 0.6rem; }
+.dm-thread-head .person-info { flex: 1; }
+.dm-messages {
+  flex: 1;
+  min-height: 40vh;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.2rem 0.1rem;
+}
+.dm-input { display: flex; gap: 0.5rem; }
+.dm-input input { margin: 0; flex: 1; }

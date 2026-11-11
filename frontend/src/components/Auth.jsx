@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { apiJson } from '../api';
 import { getGoogleClientId, shouldShowGoogleButton, loadGoogleScript, renderGoogleButton } from '../googleSignIn';
 
-export default function Auth({ onAuth }) {
+export default function Auth({ onAuth, notice, onRetry }) {
   const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -77,6 +77,16 @@ export default function Auth({ onAuth }) {
         <div className="auth-orb"><span>🪐</span></div>
         <h1>Orbit</h1>
         <p className="muted">Voice rooms for your people. Drop in, talk, drift out.</p>
+        {notice && (
+          <div>
+            <p className="error">{notice}</p>
+            {onRetry && (
+              <button className="btn btn-primary btn-small" onClick={onRetry}>
+                Retry
+              </button>
+            )}
+          </div>
+        )}
         <div className="auth-tabs">
           <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>Log in</button>
           <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>Sign up</button>

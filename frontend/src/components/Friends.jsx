@@ -8,7 +8,7 @@ import {
 } from '../api';
 import { initials } from '../orbLayout';
 
-export default function Friends({ refreshTick }) {
+export default function Friends({ refreshTick, onMessage }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -96,7 +96,17 @@ export default function Friends({ refreshTick }) {
                 busy={busy === u.id}
                 action={
                   u.friendship === 'friends' ? (
-                    <span className="muted">Friends ✓</span>
+                    <span className="row-actions">
+                      {onMessage && (
+                        <button
+                          className="btn btn-primary btn-small"
+                          onClick={() => onMessage(u)}
+                        >
+                          Message
+                        </button>
+                      )}
+                      <span className="muted">Friends ✓</span>
+                    </span>
                   ) : u.friendship === 'pending-sent' ? (
                     <span className="muted">Requested ✓</span>
                   ) : u.friendship === 'pending-received' ? (
@@ -181,17 +191,27 @@ export default function Friends({ refreshTick }) {
                 person={u}
                 busy={busy === u.id}
                 action={
-                  <button
-                    className="btn btn-text btn-small"
-                    disabled={busy === u.id}
-                    onClick={() => {
-                      if (window.confirm(`Remove ${u.name || u.email} as a friend?`)) {
-                        act(u.id, () => removeFriend(u.id));
-                      }
-                    }}
-                  >
-                    Remove
-                  </button>
+                  <span className="row-actions">
+                    {onMessage && (
+                      <button
+                        className="btn btn-primary btn-small"
+                        onClick={() => onMessage(u)}
+                      >
+                        Message
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-text btn-small"
+                      disabled={busy === u.id}
+                      onClick={() => {
+                        if (window.confirm(`Remove ${u.name || u.email} as a friend?`)) {
+                          act(u.id, () => removeFriend(u.id));
+                        }
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </span>
                 }
               />
             ))}

@@ -1,51 +1,123 @@
-import React, { useEffect, useState } from 'react';
-import { apiFetch, apiJson } from './api';
+import React, { useEffect, useState, useCallback } from 'react';
+import { apiFetch, apiJson, getDms } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound } from './sounds';
 import Auth from './components/Auth';
 import Home from './components/Home';
 import RoomView from './components/RoomView';
 import Friends from './components/Friends';
+import DirectMessages from './components/DirectMessages';
+import Splash from './components/Splash';
+
+// Boot timeout per /api/auth/me attempt. Render's free tier sleeps when
+// idle, so a cold start can take 30–60s — the attempts below ride that
+// out, and the splash screen explains the wait instead of spinning
+// silently forever.
+const BOOT_TIMEOUT_MS = 20000;
+const BOOT_ATTEMPTS = 3;
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState('');
+  const [bootKey, setBootKey] = useState(0); // bump to re-run the boot check
   const [room, setRoom] = useState(null);
-  const [view, setView] = useState('rooms'); // 'rooms' | 'friends'
-  // Bumped whenever a friend request / room invite arrives over the
-  // socket, so Home (invites) and Friends (requests) refresh live.
+  const [view, setView] = useState('rooms'); // 'rooms' | 'friends' | 'messages'
+  // Bumped whenever a friend request / room invite / DM arrives over the
+  // socket, so Home (invites), Friends (requests) and Messages refresh live.
   const [refreshTick, setRefreshTick] = useState(0);
+  // Friend whose DM thread should open (set by Friends "Message").
+  const [dmUser, setDmUser] = useState(null);
+  const [dmUnread, setDmUnread] = useState(0);
 
+  // Bootstrap the CSRF cookie so login/register POSTs pass the
+  // double-submit check, then check for an existing session.
+  // (Calorie-Tracker lesson: without this fetch, first signup 403s.)
+  // The /api/auth/me check has a timeout and retries: without them a
+  // slow cold start left the app on "Loading…" forever.
   useEffect(() => {
-    // Bootstrap the CSRF cookie so login/register POSTs pass the
-    // double-submit check, then check for an existing session.
-    // (Calorie-Tracker lesson: without this fetch, first signup 403s.)
     apiFetch('/api/auth/csrf-token').catch(() => {});
-    apiFetch('/api/auth/me')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setUser(d ? d.user : null))
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const boot = async () => {
+      for (let attempt = 0; attempt < BOOT_ATTEMPTS; attempt += 1) {
+        const ctrl = new AbortController();
+        const timer = window.setTimeout(() => ctrl.abort(), BOOT_TIMEOUT_MS);
+        try {
+          const r = await apiFetch('/api/auth/me', { signal: ctrl.signal });
+          const d = r.ok ? await r.json().catch(() => null) : null;
+          if (!cancelled) {
+            setUser(d ? d.user : null);
+            setBootError('');
+          }
+          return;
+        } catch {
+          // Timed out or unreachable — retry below (unless out of attempts).
+        } finally {
+          window.clearTimeout(timer);
+        }
+        if (attempt < BOOT_ATTEMPTS - 1) {
+          await new Promise((res) => window.setTimeout(res, 1000 * (attempt + 1)));
+        }
+      }
+      if (!cancelled) {
+        setUser(null);
+        setBootError('Could not reach the server — it may still be waking up. Check your connection and try again.');
+      }
+    };
+    boot().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [bootKey]);
+
+  const retryBoot = useCallback(() => {
+    setBootError('');
+    setLoading(true);
+    setBootKey((k) => k + 1);
   }, []);
 
   useEffect(() => {
     if (!user) return;
     const socket = getSocket();
     const onNotify = () => {
-      // Same chime as someone joining a room — a friend request or a
-      // room invite is worth the same nudge.
+      // Same chime as someone joining a room — a friend request, a room
+      // invite, or a DM is worth the same nudge.
       playJoinSound();
       setRefreshTick((t) => t + 1);
     };
     socket.on('friend-request', onNotify);
     socket.on('room-invite', onNotify);
     socket.on('friend-accepted', onNotify);
+    socket.on('dm-message', onNotify);
     return () => {
       socket.off('friend-request', onNotify);
       socket.off('room-invite', onNotify);
       socket.off('friend-accepted', onNotify);
+      socket.off('dm-message', onNotify);
     };
   }, [user]);
+
+  // Total unread DMs, for the Messages tab badge. Refreshed on the same
+  // tick as the lists, so opening a thread clears its badge live.
+  useEffect(() => {
+    if (!user) {
+      setDmUnread(0);
+      return;
+    }
+    let cancelled = false;
+    getDms()
+      .then((list) => {
+        if (cancelled) return;
+        setDmUnread((list || []).reduce((n, c) => n + (c.unreadCount || 0), 0));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [user, refreshTick]);
+
+  const openDm = useCallback((friend) => {
+    setDmUser(friend);
+    setView('messages');
+  }, []);
 
   const logout = async () => {
     try {
@@ -54,18 +126,17 @@ export default function App() {
     disconnectSocket();
     setRoom(null);
     setView('rooms');
+    setDmUser(null);
+    setDmUnread(0);
     setUser(null);
   };
 
   if (loading) {
-    return (
-      <div className="auth-wrap">
-        <p className="muted">Loading…</p>
-      </div>
-    );
+    // Remount the splash per boot attempt so its elapsed timer restarts.
+    return <Splash key={bootKey} onRetry={retryBoot} />;
   }
 
-  if (!user) return <Auth onAuth={setUser} />;
+  if (!user) return <Auth onAuth={setUser} notice={bootError} onRetry={bootError ? retryBoot : undefined} />;
 
   return (
     <div className="app">
@@ -88,6 +159,13 @@ export default function App() {
           >
             Friends
           </button>
+          <button
+            className={view === 'messages' ? 'active' : ''}
+            onClick={() => setView('messages')}
+          >
+            Messages
+            {dmUnread > 0 && <span className="tab-badge">{dmUnread}</span>}
+          </button>
         </nav>
       )}
 
@@ -95,7 +173,15 @@ export default function App() {
         {room ? (
           <RoomView key={room.id} user={user} room={room} onLeave={() => setRoom(null)} />
         ) : view === 'friends' ? (
-          <Friends refreshTick={refreshTick} />
+          <Friends refreshTick={refreshTick} onMessage={openDm} />
+        ) : view === 'messages' ? (
+          <DirectMessages
+            user={user}
+            refreshTick={refreshTick}
+            dmUser={dmUser}
+            clearDmUser={() => setDmUser(null)}
+            onMessagesRead={() => setRefreshTick((t) => t + 1)}
+          />
         ) : (
           <Home user={user} onJoin={setRoom} refreshTick={refreshTick} />
         )}

@@ -89,3 +89,12 @@ export const declineInvite = (inviteId) => jsonPost(`/api/invites/${inviteId}/de
 export const inviteToRoom = (roomId, userId) => jsonPost(`/api/rooms/${roomId}/invite`, { userId });
 
 export const leavePrivateRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/leave`);
+
+// --- Direct messages ---
+
+export const getDms = () => apiJson('/api/dms');
+
+export const getDmThread = (userId) => apiJson(`/api/dms/${userId}`);
+
+export const sendDm = (userId, text) =>
+  jsonPost(`/api/dms/${userId}`, { text });
