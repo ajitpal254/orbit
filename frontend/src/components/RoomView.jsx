@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom } from '../api';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
@@ -43,6 +43,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   // orb just got tapped (drives the one-shot .orb-tapped bounce).
   const [selectedOrb, setSelectedOrb] = useState(null);
   const [tapOrbId, setTapOrbId] = useState(null);
+  // Campfires (fading rooms): whether this room was kept permanent,
+  // whether it faded under us, and the keep request state.
+  const [kept, setKept] = useState(false);
+  const [faded, setFaded] = useState(false);
+  const [keepBusy, setKeepBusy] = useState(false);
+  const [keepError, setKeepError] = useState('');
   // "Connection details" popover: the per-peer ICE/debug line lives
   // here instead of always-on under the orbs (see below).
   const [showConnDetails, setShowConnDetails] = useState(false);
@@ -167,6 +173,14 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       voiceRef.current?.leave();
       setKicked(true);
     };
+    // This campfire faded while I was still showing it: only possible
+    // when my socket died without a leave (presence emptied, the
+    // worker closed the room). Stop voice and show a notice.
+    const onRoomClosed = ({ roomId }) => {
+      if (roomId !== room.id) return;
+      voiceRef.current?.leave();
+      setFaded(true);
+    };
 
     socket.on('room-state', onRoomState);
     socket.on('user-joined', onUserJoined);
@@ -176,6 +190,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     socket.on('moderator-muted', onModeratorMuted);
     socket.on('moderator-unmuted', onModeratorUnmuted);
     socket.on('room-kicked', onRoomKicked);
+    socket.on('room-closed', onRoomClosed);
 
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
     voice.join();
@@ -191,6 +206,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       socket.off('moderator-muted', onModeratorMuted);
       socket.off('moderator-unmuted', onModeratorUnmuted);
       socket.off('room-kicked', onRoomKicked);
+      socket.off('room-closed', onRoomClosed);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
@@ -200,6 +216,14 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   useEffect(() => {
     setMembers(room.members || []);
   }, [room]);
+
+  // A new room resets the campfire state — RoomView stays mounted
+  // when App swaps rooms, so this cannot live in the mount effect.
+  useEffect(() => {
+    setKept(false);
+    setFaded(false);
+    setKeepError('');
+  }, [room.id]);
 
   useEffect(() => {
     if (chatOpen && chatEndRef.current) {
@@ -333,6 +357,23 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   };
   const mute = (member) => runMemberAction(() => muteMember(room.id, member.id));
 
+  // Campfire "Keep this room": make this room permanent. The server
+  // answers 410 if the room already faded (lost the race to cleanup);
+  // the button hides on success and the room list refreshes live from
+  // the server's rooms-changed push.
+  const keepThisRoom = async () => {
+    setKeepError('');
+    setKeepBusy(true);
+    try {
+      await keepRoom(room.id);
+      setKept(true);
+    } catch (err) {
+      setKeepError(err.message);
+    } finally {
+      setKeepBusy(false);
+    }
+  };
+
   const leaveMembership = async () => {
     if (!window.confirm(`Leave the private room "${room.name}"? You will need a new invite to come back.`)) return;
     setLeaving(true);
@@ -401,6 +442,18 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     );
   }
 
+  if (faded) {
+    return (
+      <div className="room-view">
+        <div className="card kicked-card">
+          <h2>This campfire faded</h2>
+          <p className="muted">“{room.name}” closed 1 minute after the last person left. Campfires are temporary — create a new one anytime.</p>
+          <button className="btn btn-primary" onClick={onLeave}>Back to rooms</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="room-view" style={{ '--room-from': accent.from, '--room-to': accent.to }}>
       <div className="room-header">
@@ -416,6 +469,27 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           <span className="count-dot" /> {people.length} here
         </span>
       </div>
+
+      {/* Campfire state: everyone in the room sees that it fades; the
+          owner (creator, or the role-owner after a transfer) can keep
+          it permanent. No countdown — the playbook states the 1-minute
+          rule, it does not ask for a ticking timer. */}
+      {room.ephemeral && !kept && (
+        <p className="campfire-line">
+          <Icon name="flame" size={14} /> Campfire — closes 1 min after everyone leaves.
+          {(String(room.createdBy) === String(user.id) || isOwner) && (
+            <button className="btn btn-text btn-small" disabled={keepBusy} onClick={keepThisRoom}>
+              {keepBusy ? 'Keeping…' : 'Keep this room'}
+            </button>
+          )}
+        </p>
+      )}
+      {room.ephemeral && kept && (
+        <p className="campfire-line campfire-line--kept">
+          <Icon name="flame" size={14} /> Kept — this room won’t fade.
+        </p>
+      )}
+      {keepError && <p className="mic-error">{keepError}</p>}
 
       {micError && <p className="mic-error">{micError}</p>}
 

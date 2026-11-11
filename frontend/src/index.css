@@ -1175,6 +1175,17 @@ input::placeholder { color: var(--muted); }
 .lock-badge { font-size: 0.85em; }
 .room-private-line { margin: 0.55rem 0 0; color: var(--muted); font-size: 0.8rem; font-weight: 700; }
 
+/* Campfires (fading rooms): static amber accents only — no animation,
+   so prefers-reduced-motion needs nothing new here. */
+.campfire-badge { display: inline-flex; align-items: center; gap: 0.2rem; font-size: 0.8em; font-weight: 700; color: #fbbf24; margin-right: 0.35rem; vertical-align: 0.05em; }
+.campfire-badge .icon { width: 12px; height: 12px; }
+.campfire-toggle { display: flex; align-items: center; gap: 0.55rem; margin: 0.55rem 0 0.2rem; font-size: 0.9rem; font-weight: 700; color: var(--text); cursor: pointer; }
+.campfire-toggle input { accent-color: #f59e0b; width: 17px; height: 17px; flex-shrink: 0; }
+.campfire-toggle span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.campfire-line { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0.6rem 0.2rem 0; color: #fbbf24; font-size: 0.86rem; font-weight: 600; }
+.campfire-line .icon { width: 14px; height: 14px; flex-shrink: 0; }
+.campfire-line--kept { color: var(--muted); }
+
 /* Room body: members panel + orb stage. A flex column at every width
    so the room-space keeps its flex:1 vertical fill on mobile exactly
    as before; on desktop (min-width: 900px at the end of this file)
