@@ -9,6 +9,7 @@ export default function RoomView({ user, room, onLeave }) {
     self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true }
   }));
   const [speaking, setSpeaking] = useState({ selfSpeaking: false, levels: {} });
+  const [connState, setConnState] = useState({});
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [micError, setMicError] = useState('');
@@ -30,7 +31,9 @@ export default function RoomView({ user, room, onLeave }) {
       roomId: room.id,
       selfId: user.id,
       onSpeaking: (s) => setSpeaking(s),
-      onMicError: (msg) => setMicError(msg)
+      onMicError: (msg) => setMicError(msg),
+      onConnectionState: (socketId, state) =>
+        setConnState((prev) => ({ ...prev, [socketId]: state }))
     });
     voiceRef.current = voice;
 
@@ -51,6 +54,11 @@ export default function RoomView({ user, room, onLeave }) {
     };
     const onUserLeft = ({ socketId }) => {
       setOccupants((prev) => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
+      setConnState((prev) => {
         const next = { ...prev };
         delete next[socketId];
         return next;
@@ -183,6 +191,12 @@ export default function RoomView({ user, room, onLeave }) {
                 {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
               </span>
               {person.muted && <span className="orb-muted">🔇</span>}
+              {!person.isSelf && (
+                <span
+                  className={`conn-dot conn-${connState[person.socketId] || 'new'}`}
+                  title={`Voice: ${connState[person.socketId] || 'connecting…'}`}
+                />
+              )}
             </div>
           );
         })}
