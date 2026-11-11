@@ -22,6 +22,8 @@ Same family as Budget-Manager and Calorie-Tracker:
 6. Friends & private rooms: add friends by name/email, send/accept/decline requests, and create private rooms that only members can see or join — invite friends from inside the room. See "Friends & private rooms" below.
 7. Direct messages: 1:1 chat with accepted friends only, with a conversation list, unread badges, and live delivery. See "Direct messages" below.
 8. Animated splash screen: branded loading screen (floating orbs) that shows before JS loads and while the app boots; the status text explains a Render free-tier cold start ("Waking up the server…") and a Retry button appears if the server still hasn't answered — the boot check times out after 20s and retries up to 3 times instead of spinning forever.
+9. About & Profile: the app is **Beta v0.1.0** — the About view says so plainly (beta test, not a full release) with the feature set, known limits, and what's next. Profile lets you set a name, a short bio, and an avatar: one of 8 animated gradient presets, or your own photo (downscaled on-device to 256px). See "About, Profile & notifications" below.
+10. Notifications: a persistent in-app center (bell + unread badge) for friend requests, accepted requests, room invites, and DMs — plus optional Web Push when VAPID keys are configured. See "About, Profile & notifications" below.
 
 ## Project layout
 
@@ -35,7 +37,7 @@ lib/friends.js       Pure friendship / private-room predicates
 lib/passwords.js     PBKDF2 + token helpers
 lib/logger.js        pino
 middleware/          auth (sessions/CSRF/rate limit), requestLog
-models/              User, Session, Room, Message, Friendship, RoomInvite
+models/              User, Session, Room, Message, Friendship, RoomInvite, Notification, PushSubscription
 frontend/src/
   voice.js           Mesh WebRTC engine (the only WebRTC module)
   orbLayout.js       Deterministic spatial orb positions
@@ -63,7 +65,7 @@ Ajit creates the service himself — **Web Service** (not Static Site):
 |---|---|
 | Build command | `npm install` |
 | Start command | `node server.js` |
-| Env vars | `MONGODB_URI` (Atlas, db `orbit`), `DATA_ENCRYPTION_KEY` (see Security — required in production), `GOOGLE_CLIENT_ID` (optional — enables the Google button), `TURN_USERNAME` + `TURN_CREDENTIAL` (optional — see Voice connectivity below) |
+| Env vars | `MONGODB_URI` (Atlas, db `orbit`), `DATA_ENCRYPTION_KEY` (see Security — required in production), `GOOGLE_CLIENT_ID` (optional — enables the Google button), `TURN_USERNAME` + `TURN_CREDENTIAL` (optional — see Voice connectivity below), `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` (optional — enables web push, see Notifications below) |
 
 Render sets `PORT` and `NODE_ENV` itself. **Important:** the frontend is served from the committed `public/` folder — Render never rebuilds it, so any UI change needs `npm run build` in `frontend/` + committing `public/` first.
 
@@ -121,6 +123,22 @@ Private rooms have three roles, stored on the member list as subdocuments `{ use
 - Public rooms have no members list and no roles — the creator keeps delete-only as before.
 
 Routes (all `authMiddleware`, mutating ones rate-limited, `{error: string}` contract): `POST /api/rooms/:id/members/:userId/promote`, `.../demote`, `.../kick`, `POST /api/rooms/:id/transfer { userId }`, `POST /api/rooms/:id/members/:userId/mute` (answers `{ muted, userId, roomId }`). Each answers with the fresh room JSON, whose private-room `members` are now `{ id, name, role }`. Permission logic lives in `lib/roles.js` (`canPromote`, `canDemote`, `canKick`, `canMute`, `canTransfer`, `canLeave`) and is unit-tested in `tests/roles.test.js`.
+
+## About, Profile & notifications
+
+**Orbit is Beta v0.1.0** — a beta test, not a full release. The version comes from `frontend/package.json` via the `__APP_VERSION__` Vite define (`frontend/vite.config.js`), so a version bump is one edit. The Home footer shows "Beta v0.1.0" (tap it for About) and the About view states the beta status plainly, lists what's in, the known limits, and what's next (screen share, then LiveKit when rooms pass ~6 people).
+
+**Profile** (topbar avatar button): display name, a bio (max 140 chars), and an avatar — either one of 8 **animated gradient presets** (Nova, Aurora, Ember, Tide, Comet, Bloom, Sol, Nebula; pure CSS motion, no external images) or your own photo. Photos are downscaled in the browser (canvas, 256×256 JPEG ~0.8) before upload and stored as a data URL on the user (`avatarImage`, server cap 200KB); choosing a preset clears a photo and vice versa. The preset list is defined twice — `lib/avatars.js` (backend validation) and `frontend/src/avatars.js` — and `tests/avatars.test.mjs` asserts they stay identical. One shared `Avatar` component renders the photo, preset orb, or initials everywhere a person appears: Profile, members panel, Friends rows, DM list/thread, and inside the room orb when a photo is set (otherwise initials, as before). Profile fields are public data shown to friends and members — not encrypted. Routes: `PATCH /api/users/me` (validated in `lib/profile.js`, `{error}` contract), `GET /api/users/avatars?ids=` (bounded avatar lookup for room occupants), `GET /api/auth/me` returns the full profile.
+
+**Notifications** (topbar 🔔 bell + unread badge): a persistent center backed by `models/Notification.js` — one row per event, newest first. Created server-side where the events already happen: friend request sent, friend request accepted, room invite sent, DM sent (`lib/notifications.js` `recordNotification`). Dedup: at most one **unread** row per (user, type, actor, room) — a repeat event bumps the existing row's `updatedAt` instead of duplicating, so ten DMs from one friend are one unread row. Tapping a row marks it read and jumps to the right place (Friends tab, the invited room, or the DM thread). Live updates reuse the existing socket pushes (`friend-request` / `room-invite` / `friend-accepted` / `dm-message` bump a refresh tick in `App.jsx`, which re-fetches the list and the bell count). Routes: `GET /api/notifications` (answers `{ notifications, unreadCount }`, paginated), `POST /api/notifications/:id/read`, `POST /api/notifications/read-all`.
+
+**Web push (optional, needs VAPID keys).** The in-app center works fully without it. When a notification is recorded, the server also sends a Web Push (best-effort — a failure never breaks the request that triggered it) to the user's subscriptions (`models/PushSubscription.js`, `lib/push.js`). Setup:
+
+1. Generate a keypair: `node -e "console.log(require('web-push').generateVAPIDKeys())"`
+2. Add to Render env vars: `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` (optional `VAPID_SUBJECT`, default `mailto:orbit@example.com`). **Never commit the private key.**
+3. The public key is exposed via `GET /api/config` as `vapidPublicKey`; the Profile screen has a "Push notifications" toggle that subscribes through the existing service worker. If the keys are not set, the toggle says "Push is not set up yet" and does nothing — the bell still works.
+
+Push subscriptions that come back 410/404 from the push service are deleted on send, so dead browsers don't accumulate. Tapping a push notification opens the app (deep-link navigation from a push click would need a custom service worker — the generated Workbox SW doesn't have one — so the in-app center is where navigation happens).
 
 ## Security
 

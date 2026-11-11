@@ -6,7 +6,7 @@ import {
   searchUsers, getFriends, sendFriendRequest,
   acceptFriendRequest, declineFriendRequest, removeFriend
 } from '../api';
-import { initials } from '../orbLayout';
+import Avatar from './Avatar';
 
 export default function Friends({ refreshTick, onMessage }) {
   const [query, setQuery] = useState('');
@@ -231,7 +231,7 @@ function PersonRow({ person, action, busy, index }) {
       className={`person-row stagger-in ${busy ? 'busy' : ''}`}
       style={{ animationDelay: `${(index || 0) * 40}ms` }}
     >
-      <span className="mini-orb person-orb">{initials(person.name || person.email)}</span>
+      <Avatar user={person} size="sm" className="person-orb" />
       <span className="person-info">
         <strong>{person.name || 'Unnamed'}</strong>
         <span className="muted person-email">{person.email}</span>

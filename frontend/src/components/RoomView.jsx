@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember } from '../api';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
 import { orbPositions, initials, orbHue } from '../orbLayout';
+import Avatar from './Avatar';
 
 export default function RoomView({ user, room, onLeave }) {
   const [occupants, setOccupants] = useState(() => ({
@@ -320,6 +321,31 @@ export default function RoomView({ user, room, onLeave }) {
   const positions = orbPositions(people, spaceSize);
   const posById = Object.fromEntries(positions.map((p) => [p.id, p]));
 
+  // Avatar data for the other occupants (presence rows carry only id +
+  // name). Self comes from App's user prop. Fetched once per membership
+  // change — rooms are small, so one bounded call covers everyone.
+  const [occupantAvatars, setOccupantAvatars] = useState({});
+  const occupantIds = people
+    .map((p) => p.userId)
+    .filter((id) => id && id !== user.id)
+    .sort()
+    .join(',');
+  useEffect(() => {
+    if (!occupantIds) return undefined;
+    let cancelled = false;
+    getUserAvatars(occupantIds.split(','))
+      .then((list) => {
+        if (cancelled) return;
+        setOccupantAvatars((prev) => {
+          const next = { ...prev };
+          for (const a of list || []) next[a.id] = a;
+          return next;
+        });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [occupantIds]);
+
   const isSpeaking = (person) => {
     if (person.isSelf) return speaking.selfSpeaking;
     return (speaking.levels[person.socketId] || 0) > 0.25;
@@ -377,7 +403,7 @@ export default function RoomView({ user, room, onLeave }) {
               const label = m.role === 'owner' ? '👑 Owner' : m.role === 'moderator' ? '🛡️ Mod' : null;
               return (
                 <div key={m.id} className="member-row stagger-in" style={{ animationDelay: `${i * 40}ms` }}>
-                  <span className="mini-orb person-orb">{initials(m.name)}</span>
+                  <Avatar user={m} size="sm" className="person-orb" />
                   <span className="person-info">
                     <strong>{m.name || 'Unnamed'}{isMe ? ' (you)' : ''}</strong>
                     {label && <span className={`role-badge role-${m.role}`}>{label}</span>}
@@ -423,7 +449,7 @@ export default function RoomView({ user, room, onLeave }) {
                 const justInvited = invited.includes(f.id);
                 return (
                   <div key={f.id} className="person-row stagger-in" style={{ animationDelay: `${i * 40}ms` }}>
-                    <span className="mini-orb person-orb">{initials(f.name || f.email)}</span>
+                    <Avatar user={f} size="sm" className="person-orb" />
                     <span className="person-info">
                       <strong>{f.name || 'Unnamed'}</strong>
                       <span className="muted person-email">{f.email}</span>
@@ -468,6 +494,12 @@ export default function RoomView({ user, room, onLeave }) {
           const py = (pos.y / 100) * spaceSize.height;
           const role = person.isSelf ? myRole : roleOf(person.userId);
           const selected = selectedOrb === person.socketId;
+          // Photo in the orb when the person has one (self from App's
+          // user, others from the occupant avatar lookup); otherwise
+          // initials over the room accent, as before. A photo skips the
+          // hue-rotate so it is not tinted.
+          const personAvatar = person.isSelf ? user : occupantAvatars[person.userId];
+          const photo = personAvatar?.avatarImage || '';
           return (
             <div
               key={person.socketId}
@@ -493,12 +525,14 @@ export default function RoomView({ user, room, onLeave }) {
               >
                 <div
                   className={`orb ${speakingNow ? 'speaking' : ''} ${person.muted ? 'is-muted' : ''} ${tapOrbId === person.socketId ? 'orb-tapped' : ''}`}
-                  style={{
-                    background: `linear-gradient(135deg, ${accent.from}, ${accent.to})`,
-                    filter: `hue-rotate(${orbHue(person.userId)}deg)`
-                  }}
+                  style={photo
+                    ? { backgroundImage: `url(${photo})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                    : {
+                        background: `linear-gradient(135deg, ${accent.from}, ${accent.to})`,
+                        filter: `hue-rotate(${orbHue(person.userId)}deg)`
+                      }}
                 >
-                  <span className="orb-initials">{initials(person.name)}</span>
+                  {!photo && <span className="orb-initials">{initials(person.name)}</span>}
                   <span className="orb-name">
                     {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
                   </span>

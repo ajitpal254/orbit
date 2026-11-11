@@ -5,7 +5,7 @@
 // lists and badges update live; opening a thread marks it read.
 import React, { useEffect, useRef, useState } from 'react';
 import { getDms, getDmThread, sendDm } from '../api';
-import { initials } from '../orbLayout';
+import Avatar from './Avatar';
 
 const timeOf = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -32,7 +32,10 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
   // A friend picked from the Friends tab ("Message") opens their thread.
   useEffect(() => {
     if (!dmUser) return;
-    setSelected({ userId: dmUser.id, name: dmUser.name, email: dmUser.email });
+    setSelected({
+      userId: dmUser.id, name: dmUser.name, email: dmUser.email,
+      avatarPreset: dmUser.avatarPreset, avatarImage: dmUser.avatarImage
+    });
     clearDmUser();
   }, [dmUser, clearDmUser]);
 
@@ -85,7 +88,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
       <div className="view view-anim dm-thread">
         <div className="dm-thread-head">
           <button className="btn btn-text" onClick={() => setSelected(null)}>← Messages</button>
-          <span className="mini-orb person-orb">{initials(selected.name || selected.email)}</span>
+          <Avatar user={selected} size="sm" className="person-orb" />
           <span className="person-info">
             <strong>{selected.name || 'Unnamed'}</strong>
             <span className="muted person-email">{selected.email}</span>
@@ -142,9 +145,12 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
               key={c.userId}
               className="person-row dm-row stagger-in"
               style={{ animationDelay: `${i * 40}ms` }}
-              onClick={() => setSelected({ userId: c.userId, name: c.name, email: c.email })}
+              onClick={() => setSelected({
+                userId: c.userId, name: c.name, email: c.email,
+                avatarPreset: c.avatarPreset, avatarImage: c.avatarImage
+              })}
             >
-              <span className="mini-orb person-orb">{initials(c.name || c.email)}</span>
+              <Avatar user={c} size="sm" className="person-orb" />
               <span className="person-info">
                 <strong>{c.name || 'Unnamed'}</strong>
                 <span className={`dm-preview ${c.unreadCount > 0 ? 'unread' : ''}`}>

@@ -11,6 +11,11 @@ const Message = require('../models/Message');
 const Friendship = require('../models/Friendship');
 const RoomInvite = require('../models/RoomInvite');
 const DirectMessage = require('../models/DirectMessage');
+const Notification = require('../models/Notification');
+const PushSubscription = require('../models/PushSubscription');
+const { validateProfileUpdate, profileJson } = require('../lib/profile');
+const { notificationJson, recordNotification } = require('../lib/notifications');
+const { getVapidPublicKey } = require('../lib/push');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
 const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
@@ -31,7 +36,13 @@ const router = express.Router();
 const friendLimit = rateLimitMiddleware(30, 15 * 60 * 1000);
 
 const isObjectId = (v) => mongoose.Types.ObjectId.isValid(v);
-const userJson = (u) => ({ id: String(u._id), name: u.name, email: u.email });
+// Public user shape for lists (friends, search, DMs, invites): name +
+// avatar. The avatar image is a small client-downscaled data URL
+// (≤200KB, usually ~10–30KB), so carrying it in list rows is fine.
+const userJson = (u) => ({
+  id: String(u._id), name: u.name, email: u.email,
+  avatarPreset: u.avatarPreset || null, avatarImage: u.avatarImage || ''
+});
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const SESSION_DAYS = 30;
@@ -59,7 +70,7 @@ router.get('/config', (req, res) => {
           credential: process.env.TURN_CREDENTIAL
         }
       : null;
-  res.json({ googleClientId: getGoogleClientId(), turn });
+  res.json({ googleClientId: getGoogleClientId(), turn, vapidPublicKey: getVapidPublicKey() });
 });
 
 // --- AUTH ---
@@ -121,7 +132,7 @@ async function issueSession(req, res, user) {
     'csrfToken=' + csrfToken + '; Path=/; SameSite=Lax; Max-Age=' + SESSION_DAYS * 86400 + (secure ? '; Secure' : '')
   ]);
   res.json({
-    user: { id: user._id, email: user.email, name: user.name }
+    user: profileJson(user)
   });
 }
 
@@ -157,8 +168,35 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
 }));
 
 router.get('/auth/me', authMiddleware, asyncHandler(async (req, res) => {
-  const u = req.user;
-  res.json({ user: { id: u._id, email: u.email, name: u.name } });
+  res.json({ user: profileJson(req.user) });
+}));
+
+// --- PROFILE ---
+
+// PATCH /api/users/me { name?, bio?, avatarPreset?, avatarImage? } —
+// edit my public profile. Validation lives in lib/profile.js; only the
+// sanitized fields are $set, so a stray field in the body is ignored.
+router.patch('/users/me', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { ok, error, updates } = validateProfileUpdate(req.body || {});
+  if (!ok) return res.status(400).json({ error });
+  await User.updateOne({ _id: req.user._id }, { $set: updates });
+  const fresh = await User.findById(req.user._id).lean();
+  res.json({ user: profileJson(fresh) });
+}));
+
+// GET /api/users/avatars?ids=a,b,c — avatar data for a bounded set of
+// users (room occupants, whose presence rows carry only id + name).
+// Max 20 ids; each entry is { id, name, avatarPreset, avatarImage }.
+router.get('/users/avatars', authMiddleware, asyncHandler(async (req, res) => {
+  const raw = typeof req.query.ids === 'string' ? req.query.ids : '';
+  const ids = [...new Set(raw.split(',').map((s) => s.trim()).filter(isObjectId))].slice(0, 20);
+  if (ids.length === 0) return res.json([]);
+  const users = await User.find({ _id: { $in: ids } })
+    .select('name avatarPreset avatarImage').lean();
+  res.json(users.map((u) => ({
+    id: String(u._id), name: u.name || '',
+    avatarPreset: u.avatarPreset || null, avatarImage: u.avatarImage || ''
+  })));
 }));
 
 // --- USERS & FRIENDS ---
@@ -175,7 +213,7 @@ router.get('/users/search', authMiddleware, friendLimit, asyncHandler(async (req
   const users = await User.find({
     _id: { $ne: req.user._id },
     $or: [{ name: pattern }, { email: pattern }]
-  }).select('name email').limit(10).lean();
+  }).select('name email avatarPreset avatarImage').limit(10).lean();
   const ids = users.map((u) => u._id);
   const rows = await Friendship.find({
     $or: [
@@ -218,6 +256,11 @@ router.post('/friends/request', authMiddleware, friendLimit, asyncHandler(async 
   emitToUser(target._id, 'friend-request', {
     from: userJson(req.user), friendshipId: String(friendship._id)
   });
+  // Persistent notification (deduped per actor) + best-effort web push.
+  await recordNotification({
+    userId: target._id, type: 'friend_request',
+    actorId: req.user._id, actorName: req.user.name
+  });
   req.log.info({ userId: String(req.user._id), targetId: String(target._id) }, 'Friend request sent');
   res.status(201).json({ id: String(friendship._id), user: userJson(target), status: 'pending' });
 }));
@@ -235,6 +278,10 @@ router.post('/friends/accept', authMiddleware, friendLimit, asyncHandler(async (
   await friendship.save();
   const requester = await User.findById(userId);
   emitToUser(userId, 'friend-accepted', { by: userJson(req.user) });
+  await recordNotification({
+    userId, type: 'friend_accepted',
+    actorId: req.user._id, actorName: req.user.name
+  });
   res.json({ id: String(friendship._id), user: requester ? userJson(requester) : null, status: 'accepted' });
 }));
 
@@ -257,7 +304,7 @@ router.get('/friends', authMiddleware, asyncHandler(async (req, res) => {
     $or: [{ requester: req.user._id }, { recipient: req.user._id }]
   }).lean();
   const otherIds = [...new Set(rows.map((r) => otherUserId(r, req.user._id)))];
-  const users = await User.find({ _id: { $in: otherIds } }).select('name email').lean();
+  const users = await User.find({ _id: { $in: otherIds } }).select('name email avatarPreset avatarImage').lean();
   const byId = new Map(users.map((u) => [String(u._id), u]));
   const pick = (r) => {
     const u = byId.get(otherUserId(r, req.user._id));
@@ -298,11 +345,12 @@ router.delete('/friends/:userId', authMiddleware, friendLimit, asyncHandler(asyn
 // list. Rooms created before private rooms existed have no
 // isPrivate/members and serialize as public.
 //
-// `names` is a Map(userId -> name) built by memberNamesFor: member names
-// are NOT resolved with populate, because legacy rooms store plain
-// ObjectIds that populate('members.user') cannot resolve. Callers pass
-// lean rooms (never hydrated docs — see lib/roles.js) plus the map.
-const roomJson = (room, meId, names = new Map()) => {
+// `profiles` is a Map(userId -> { name, avatarPreset, avatarImage })
+// built by memberProfilesFor: member profiles are NOT resolved with
+// populate, because legacy rooms store plain ObjectIds that
+// populate('members.user') cannot resolve. Callers pass lean rooms
+// (never hydrated docs — see lib/roles.js) plus the map.
+const roomJson = (room, meId, profiles = new Map()) => {
   const id = String(room._id);
   const occ = presence.occupants(id);
   let topic = '';
@@ -314,11 +362,16 @@ const roomJson = (room, meId, names = new Map()) => {
     }
   }
   const isPrivate = !!room.isPrivate;
-  const members = normalizeMembers(room).map((m) => ({
-    id: m.userId,
-    name: names.get(m.userId) || '',
-    role: m.role
-  }));
+  const members = normalizeMembers(room).map((m) => {
+    const p = profiles.get(m.userId) || {};
+    return {
+      id: m.userId,
+      name: p.name || '',
+      role: m.role,
+      avatarPreset: p.avatarPreset || null,
+      avatarImage: p.avatarImage || ''
+    };
+  });
   return {
     id,
     name: room.name,
@@ -336,26 +389,34 @@ const roomJson = (room, meId, names = new Map()) => {
 };
 
 // One User lookup for every member id across a set of lean rooms (new
-// subdocuments AND legacy plain ObjectIds alike).
-const memberNamesFor = async (rooms) => {
+// subdocuments AND legacy plain ObjectIds alike). Returns a Map of
+// userId -> { name, avatarPreset, avatarImage } for the members panel.
+const memberProfilesFor = async (rooms) => {
   const ids = new Set();
   for (const r of rooms || []) {
     for (const m of normalizeMembers(r)) ids.add(m.userId);
   }
-  const names = new Map();
-  if (ids.size === 0) return names;
-  const users = await User.find({ _id: { $in: [...ids] } }).select('name').lean();
-  for (const u of users) names.set(String(u._id), u.name || '');
-  return names;
+  const profiles = new Map();
+  if (ids.size === 0) return profiles;
+  const users = await User.find({ _id: { $in: [...ids] } })
+    .select('name avatarPreset avatarImage').lean();
+  for (const u of users) {
+    profiles.set(String(u._id), {
+      name: u.name || '',
+      avatarPreset: u.avatarPreset || null,
+      avatarImage: u.avatarImage || ''
+    });
+  }
+  return profiles;
 };
 
-// Re-read one room lean and serialize it with fresh member names — the
-// standard response for role actions that changed the member list.
+// Re-read one room lean and serialize it with fresh member profiles —
+// the standard response for role actions that changed the member list.
 const freshRoomJson = async (roomId, meId) => {
   const room = await Room.findById(roomId).lean();
   if (!room) return null;
-  const names = await memberNamesFor([room]);
-  return roomJson(room, meId, names);
+  const profiles = await memberProfilesFor([room]);
+  return roomJson(room, meId, profiles);
 };
 
 // Rewrite a room's member list from a normalized [{ userId, role }]
@@ -398,8 +459,8 @@ router.get('/rooms', authMiddleware, asyncHandler(async (req, res) => {
       { createdBy: req.user._id }
     ]
   }).sort({ updatedAt: -1 }).lean();
-  const names = await memberNamesFor(rooms);
-  const json = rooms.map((r) => roomJson(r, req.user._id, names));
+  const profiles = await memberProfilesFor(rooms);
+  const json = rooms.map((r) => roomJson(r, req.user._id, profiles));
   // Live rooms first, then the rest by recency.
   json.sort((a, b) => b.occupantCount - a.occupantCount || new Date(b.createdAt) - new Date(a.createdAt));
   res.json(json);
@@ -428,7 +489,7 @@ router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }
-  const names = await memberNamesFor([room]);
+  const profiles = await memberProfilesFor([room]);
   res.json(roomJson(room, req.user._id, names));
 }));
 
@@ -490,12 +551,22 @@ router.post('/rooms/:id/invite', authMiddleware, friendLimit, asyncHandler(async
     existing.inviter = req.user._id;
     await existing.save();
     emitToUser(invitee._id, 'room-invite', { invite: inviteJson(existing, room, req.user) });
+    await recordNotification({
+      userId: invitee._id, type: 'room_invite',
+      actorId: req.user._id, actorName: req.user.name,
+      roomId: room._id, roomName: room.name
+    });
     return res.json(inviteJson(existing, room, req.user));
   }
   const invite = await RoomInvite.create({
     room: room._id, inviter: req.user._id, invitee: invitee._id, status: 'pending'
   });
   emitToUser(invitee._id, 'room-invite', { invite: inviteJson(invite, room, req.user) });
+  await recordNotification({
+    userId: invitee._id, type: 'room_invite',
+    actorId: req.user._id, actorName: req.user.name,
+    roomId: room._id, roomName: room.name
+  });
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), inviteeId: String(invitee._id) }, 'Room invite sent');
   res.status(201).json(inviteJson(invite, room, req.user));
 }));
@@ -799,7 +870,7 @@ router.get('/dms', authMiddleware, asyncHandler(async (req, res) => {
     $or: [{ requester: req.user._id }, { recipient: req.user._id }]
   }).lean();
   const friendIds = [...new Set(rows.map((r) => otherUserId(r, req.user._id)))];
-  const friends = await User.find({ _id: { $in: friendIds } }).select('name email').lean();
+  const friends = await User.find({ _id: { $in: friendIds } }).select('name email avatarPreset avatarImage').lean();
   // All DMs involving me, newest first (capped — the summary only needs
   // the latest per friend; threads fetch the rest).
   const dms = await DirectMessage.find({
@@ -861,8 +932,104 @@ router.post('/dms/:userId', authMiddleware, friendLimit, asyncHandler(async (req
   });
   const payload = dmJson(msg, req.user.name);
   emitToUser(other._id, 'dm-message', payload);
+  // One unread DM notification per sender (deduped) + best-effort push.
+  await recordNotification({
+    userId: other._id, type: 'dm',
+    actorId: req.user._id, actorName: req.user.name
+  });
   req.log.info({ userId: String(req.user._id), recipientId: String(other._id) }, 'DM sent');
   res.status(201).json(payload);
+}));
+
+// --- NOTIFICATIONS (IN-APP CENTER) ---
+
+// Batch-resolve the actors + rooms for a page of notifications so the
+// serializer can show names without N+1 queries.
+const notificationRefsFor = async (list) => {
+  const actorIds = [...new Set(list.map((n) => String(n.actor)))];
+  const roomIds = [...new Set(list.map((n) => n.room).filter(Boolean).map(String))];
+  const actors = await User.find({ _id: { $in: actorIds } })
+    .select('name avatarPreset avatarImage').lean();
+  const rooms = roomIds.length
+    ? await Room.find({ _id: { $in: roomIds } }).select('name').lean()
+    : [];
+  return {
+    actors: new Map(actors.map((u) => [String(u._id), u])),
+    rooms: new Map(rooms.map((r) => [String(r._id), r]))
+  };
+};
+
+// GET /api/notifications?limit=&offset= — my notifications, newest
+// first (updatedAt: a bumped unread row sorts as new). Always includes
+// unreadCount so the bell badge can refresh from the same call.
+router.get('/notifications', authMiddleware, asyncHandler(async (req, res) => {
+  const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 30));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const [list, unreadCount] = await Promise.all([
+    Notification.find({ user: req.user._id })
+      .sort({ updatedAt: -1, createdAt: -1 }).skip(offset).limit(limit).lean(),
+    Notification.countDocuments({ user: req.user._id, read: false })
+  ]);
+  const { actors, rooms } = await notificationRefsFor(list);
+  res.json({
+    notifications: list.map((n) =>
+      notificationJson(n, actors.get(String(n.actor)), n.room ? rooms.get(String(n.room)) : null)),
+    unreadCount
+  });
+}));
+
+// POST /api/notifications/:id/read — mark one of MY notifications read.
+// 404 when it is not mine (or does not exist) — no cross-user reads.
+router.post('/notifications/:id/read', authMiddleware, asyncHandler(async (req, res) => {
+  const n = await Notification.findOne({ _id: req.params.id, user: req.user._id });
+  if (!n) return res.status(404).json({ error: 'Notification not found' });
+  if (!n.read) {
+    n.read = true;
+    await n.save();
+  }
+  res.json({ id: String(n._id), read: true });
+}));
+
+// POST /api/notifications/read-all — mark all of mine read.
+router.post('/notifications/read-all', authMiddleware, asyncHandler(async (req, res) => {
+  await Notification.updateMany(
+    { user: req.user._id, read: false },
+    { read: true }
+  );
+  res.json({ message: 'All notifications marked as read' });
+}));
+
+// --- WEB PUSH SUBSCRIPTIONS ---
+
+// A push subscription is { endpoint, keys: { p256dh, auth } } from the
+// browser's PushManager. The endpoint is globally unique — resubscribing
+// from the same browser updates the row instead of duplicating it.
+const isValidSubscription = (s) =>
+  s && typeof s === 'object' &&
+  typeof s.endpoint === 'string' && s.endpoint.startsWith('https://') &&
+  s.keys && typeof s.keys === 'object' &&
+  typeof s.keys.p256dh === 'string' && s.keys.p256dh.length > 0 &&
+  typeof s.keys.auth === 'string' && s.keys.auth.length > 0;
+
+router.post('/push/subscribe', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { subscription } = req.body || {};
+  if (!isValidSubscription(subscription)) {
+    return res.status(400).json({ error: 'Invalid push subscription' });
+  }
+  await PushSubscription.findOneAndUpdate(
+    { endpoint: subscription.endpoint },
+    { user: req.user._id, keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } },
+    { upsert: true, new: true }
+  );
+  res.json({ subscribed: true });
+}));
+
+router.post('/push/unsubscribe', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { endpoint } = req.body || {};
+  if (typeof endpoint === 'string' && endpoint) {
+    await PushSubscription.deleteOne({ endpoint, user: req.user._id });
+  }
+  res.json({ subscribed: false });
 }));
 
 module.exports = router;

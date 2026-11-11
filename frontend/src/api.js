@@ -103,6 +103,29 @@ export const transferOwnership = (roomId, userId) =>
 export const muteMember = (roomId, userId) =>
   jsonPost(`/api/rooms/${roomId}/members/${userId}/mute`);
 
+// --- Profile ---
+
+export const updateProfile = (body) =>
+  apiJson('/api/users/me', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+
+export const getUserAvatars = (ids) =>
+  apiJson(`/api/users/avatars?ids=${encodeURIComponent((ids || []).join(','))}`);
+
+// --- Notifications ---
+
+export const getNotifications = (limit = 30, offset = 0) =>
+  apiJson(`/api/notifications?limit=${limit}&offset=${offset}`);
+
+export const markNotificationRead = (id) =>
+  jsonPost(`/api/notifications/${id}/read`);
+
+export const markAllNotificationsRead = () =>
+  jsonPost('/api/notifications/read-all');
+
 // --- Direct messages ---
 
 export const getDms = () => apiJson('/api/dms');

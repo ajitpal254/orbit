@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useLayoutEffect, useRef } from 'react';
-import { apiFetch, apiJson, getDms } from './api';
+import { apiFetch, apiJson, getDms, getNotifications } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound } from './sounds';
 import { onUpdateAvailable, applyUpdate } from './pwa';
@@ -8,6 +8,10 @@ import Home from './components/Home';
 import RoomView from './components/RoomView';
 import Friends from './components/Friends';
 import DirectMessages from './components/DirectMessages';
+import Profile from './components/Profile';
+import About from './components/About';
+import Notifications from './components/Notifications';
+import Avatar from './components/Avatar';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
 
@@ -24,13 +28,16 @@ export default function App() {
   const [bootError, setBootError] = useState('');
   const [bootKey, setBootKey] = useState(0); // bump to re-run the boot check
   const [room, setRoom] = useState(null);
-  const [view, setView] = useState('rooms'); // 'rooms' | 'friends' | 'messages'
+  const [view, setView] = useState('rooms'); // 'rooms' | 'friends' | 'messages' | 'profile' | 'about' | 'notifications'
   // Bumped whenever a friend request / room invite / DM arrives over the
   // socket, so Home (invites), Friends (requests) and Messages refresh live.
   const [refreshTick, setRefreshTick] = useState(0);
   // Friend whose DM thread should open (set by Friends "Message").
   const [dmUser, setDmUser] = useState(null);
   const [dmUnread, setDmUnread] = useState(0);
+  // Unread notification count, for the bell badge. Refreshed on the
+  // same tick as the lists, so marking one read clears the badge live.
+  const [notifUnread, setNotifUnread] = useState(0);
   // A new app version is waiting in the service worker (see pwa.js).
   // Shown as a toast; the app never auto-reloads for it.
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -124,6 +131,49 @@ export default function App() {
     return () => { cancelled = true; };
   }, [user, refreshTick]);
 
+  // Unread notifications, for the bell badge in the topbar.
+  useEffect(() => {
+    if (!user) {
+      setNotifUnread(0);
+      return;
+    }
+    let cancelled = false;
+    getNotifications(1, 0)
+      .then((d) => {
+        if (!cancelled) setNotifUnread(d.unreadCount || 0);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [user, refreshTick]);
+
+  // A notification row was tapped: jump to the right place. A room
+  // invite opens that room directly (falling back to the rooms list
+  // when the room is gone or no longer visible); a DM opens the
+  // thread; everything else lands on the Friends tab.
+  const handleNotifNavigate = useCallback(async (target) => {
+    if (target.view === 'rooms' && target.roomId) {
+      try {
+        const room = await apiJson(`/api/rooms/${target.roomId}`);
+        setRoom(room);
+        return;
+      } catch {
+        // Fall through to the rooms list below.
+      }
+    }
+    if (target.view === 'messages' && target.dmUser) {
+      setDmUser({
+        id: target.dmUser.id,
+        name: target.dmUser.name,
+        email: target.dmUser.email,
+        avatarPreset: target.dmUser.avatarPreset,
+        avatarImage: target.dmUser.avatarImage
+      });
+      setView('messages');
+      return;
+    }
+    setView(target.view === 'friends' ? 'friends' : 'rooms');
+  }, []);
+
   const openDm = useCallback((friend) => {
     setDmUser(friend);
     setView('messages');
@@ -163,6 +213,7 @@ export default function App() {
     setView('rooms');
     setDmUser(null);
     setDmUnread(0);
+    setNotifUnread(0);
     setUser(null);
   };
 
@@ -186,10 +237,30 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <span className="logo">🪐 Orbit</span>
-        <button className="btn btn-text" onClick={logout}>Log out</button>
+        <span className="topbar-actions">
+          <button
+            className="icon-btn bell-btn"
+            onClick={() => setView('notifications')}
+            aria-label={`Notifications${notifUnread > 0 ? `, ${notifUnread} unread` : ''}`}
+          >
+            🔔
+            {notifUnread > 0 && (
+              <span className="bell-badge">{notifUnread > 9 ? '9+' : notifUnread}</span>
+            )}
+          </button>
+          <button
+            className="topbar-avatar"
+            onClick={() => setView('profile')}
+            aria-label="Profile"
+            title="Profile"
+          >
+            <Avatar user={user} size="sm" />
+          </button>
+          <button className="btn btn-text" onClick={logout}>Log out</button>
+        </span>
       </header>
 
-      {!room && (
+      {!room && (view === 'rooms' || view === 'friends' || view === 'messages') && (
         <nav
           className="view-tabs"
           aria-label="Sections"
@@ -235,8 +306,19 @@ export default function App() {
             clearDmUser={() => setDmUser(null)}
             onMessagesRead={() => setRefreshTick((t) => t + 1)}
           />
+        ) : view === 'profile' ? (
+          <Profile user={user} onSaved={setUser} onOpenAbout={() => setView('about')} />
+        ) : view === 'about' ? (
+          <About onBack={() => setView('rooms')} />
+        ) : view === 'notifications' ? (
+          <Notifications
+            refreshTick={refreshTick}
+            onNavigate={handleNotifNavigate}
+            onBack={() => setView('rooms')}
+            onRead={() => setRefreshTick((t) => t + 1)}
+          />
         ) : (
-          <Home user={user} onJoin={setRoom} refreshTick={refreshTick} />
+          <Home user={user} onJoin={setRoom} refreshTick={refreshTick} onOpenAbout={() => setView('about')} />
         )}
       </main>
 

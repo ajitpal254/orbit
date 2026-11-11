@@ -8,7 +8,7 @@ import { initials } from '../orbLayout';
 // Shared with the About section, which displays the same beta number.
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 
-export default function Home({ user, onJoin, refreshTick }) {
+export default function Home({ user, onJoin, refreshTick, onOpenAbout }) {
   const [rooms, setRooms] = useState([]);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -213,7 +213,9 @@ export default function Home({ user, onJoin, refreshTick }) {
         </section>
       )}
 
-      <p className="app-version">Beta v{APP_VERSION}</p>
+      <button className="app-version app-version-btn" onClick={onOpenAbout}>
+        Beta v{APP_VERSION} · About Orbit
+      </button>
     </div>
   );
 }
