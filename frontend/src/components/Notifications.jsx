@@ -6,12 +6,15 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { getNotifications, markNotificationRead, markAllNotificationsRead } from '../api';
 import Avatar from './Avatar';
+import { Icon } from './icons';
 
+// Notification type -> icon name (the set in components/icons.jsx).
 const ICONS = {
-  friend_request: '👋',
-  friend_accepted: '✅',
-  room_invite: '🔒',
-  dm: '💬'
+  friend_request: 'user-plus',
+  friend_accepted: 'check-circle',
+  room_invite: 'lock',
+  dm: 'chat',
+  test: 'bell'
 };
 
 const timeAgo = (iso) => {
@@ -78,10 +81,10 @@ export default function Notifications({ refreshTick, onNavigate, onBack, onRead 
 
   return (
     <div className="view view-anim">
-      <button className="btn btn-text back-btn" onClick={onBack}>← Back</button>
+      <button className="btn btn-text back-btn" onClick={onBack}><Icon name="chevron-left" size={16} /> Back</button>
       <div className="greeting">
         <p className="date-line">Stay in the loop</p>
-        <h2>Notifications 🔔</h2>
+        <h2><Icon name="bell" size={22} /> Notifications</h2>
         <p className="muted">
           {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up.'}
         </p>
@@ -95,7 +98,7 @@ export default function Notifications({ refreshTick, onNavigate, onBack, onRead 
 
       {!loading && items.length === 0 && (
         <div className="card empty-state">
-          <span className="big-emoji">🔔</span>
+          <span className="empty-icon"><Icon name="bell" size={26} /></span>
           <p className="muted">Nothing here yet — friend requests, room invites and DMs will show up here.</p>
         </div>
       )}
@@ -108,7 +111,7 @@ export default function Notifications({ refreshTick, onNavigate, onBack, onRead 
             style={{ animationDelay: `${i * 40}ms` }}
             onClick={() => open(n)}
           >
-            <span className="notif-icon">{ICONS[n.type] || '🔔'}</span>
+            <span className="notif-icon"><Icon name={ICONS[n.type] || 'bell'} size={20} /></span>
             <Avatar user={n.actor || {}} size="sm" />
             <span className="person-info">
               <span className="notif-text">{n.text}</span>

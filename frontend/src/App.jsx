@@ -15,6 +15,7 @@ import Notifications from './components/Notifications';
 import Avatar from './components/Avatar';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
+import { Icon } from './components/icons';
 
 // Boot timeout per /api/auth/me attempt. Render's free tier sleeps when
 // idle, so a cold start can take 30–60s — the attempts below ride that
@@ -282,14 +283,14 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="logo">🪐 Orbit</span>
+        <span className="logo"><Icon name="planet" size={20} /> Orbit</span>
         <span className="topbar-actions">
           <button
             className="icon-btn bell-btn"
             onClick={() => setView('notifications')}
             aria-label={`Notifications${notifUnread > 0 ? `, ${notifUnread} unread` : ''}`}
           >
-            🔔
+            <Icon name="bell" />
             {notifUnread > 0 && (
               <span className="bell-badge">{notifUnread > 9 ? '9+' : notifUnread}</span>
             )}

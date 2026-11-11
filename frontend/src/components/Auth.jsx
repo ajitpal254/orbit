@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { apiJson } from '../api';
 import { getGoogleClientId, shouldShowGoogleButton, loadGoogleScript, renderGoogleButton } from '../googleSignIn';
+import { Icon } from './icons';
 
 export default function Auth({ onAuth, notice, onRetry }) {
   const [mode, setMode] = useState('login');
@@ -74,7 +75,7 @@ export default function Auth({ onAuth, notice, onRetry }) {
   return (
     <div className="auth-wrap">
       <div className="card auth-card">
-        <div className="auth-orb"><span>🪐</span></div>
+        <div className="auth-orb"><Icon name="planet" size={34} /></div>
         <h1>Orbit</h1>
         <p className="muted">Voice rooms for your people. Drop in, talk, drift out.</p>
         {notice && (

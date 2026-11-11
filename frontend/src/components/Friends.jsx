@@ -7,6 +7,7 @@ import {
   acceptFriendRequest, declineFriendRequest, removeFriend
 } from '../api';
 import Avatar from './Avatar';
+import { Icon } from './icons';
 
 export default function Friends({ refreshTick, onMessage }) {
   const [query, setQuery] = useState('');
@@ -72,16 +73,19 @@ export default function Friends({ refreshTick, onMessage }) {
     <div className="view view-anim">
       <div className="greeting">
         <p className="date-line">Your people</p>
-        <h2>Friends 👋</h2>
+        <h2>Friends</h2>
         <p className="muted">Add friends to invite them to private rooms.</p>
       </div>
 
-      <input
-        placeholder="Search by name or email…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        autoComplete="off"
-      />
+      <div className="search-wrap">
+        <Icon name="search" size={16} />
+        <input
+          placeholder="Search by name or email…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          autoComplete="off"
+        />
+      </div>
       {searching && <p className="muted">Searching…</p>}
       {error && <p className="error">{error}</p>}
 
@@ -106,10 +110,10 @@ export default function Friends({ refreshTick, onMessage }) {
                           Message
                         </button>
                       )}
-                      <span className="muted">Friends ✓</span>
+                      <span className="muted"><Icon name="check" size={13} /> Friends</span>
                     </span>
                   ) : u.friendship === 'pending-sent' ? (
-                    <span className="muted">Requested ✓</span>
+                    <span className="muted"><Icon name="check" size={13} /> Requested</span>
                   ) : u.friendship === 'pending-received' ? (
                     <button
                       className="btn btn-primary btn-small"
@@ -173,7 +177,7 @@ export default function Friends({ refreshTick, onMessage }) {
           <h3 className="section-title">Requests you sent</h3>
           <div className="people-list">
             {pendingSent.map((u, i) => (
-              <PersonRow key={u.id} person={u} index={i} action={<span className="muted">Requested ✓</span>} />
+              <PersonRow key={u.id} person={u} index={i} action={<span className="muted"><Icon name="check" size={13} /> Requested</span>} />
             ))}
           </div>
         </section>

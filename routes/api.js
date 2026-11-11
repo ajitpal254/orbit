@@ -25,7 +25,7 @@ const { validateRoomInput, validateMessageInput, accentById } = require('../lib/
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { canDm, buildSummaries } = require('../lib/dms');
-const { emitToUser, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
+const { emitToUser, emitRoomsChanged, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
 const presence = require('../lib/presence');
 
 const router = express.Router();
@@ -480,6 +480,7 @@ router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
   });
   await created.save();
   req.log.info({ userId: String(req.user._id), roomId: String(created._id) }, 'Room created');
+  emitRoomsChanged(created._id); // home screens pick the new room up live
   res.status(201).json(await freshRoomJson(created._id, req.user._id));
 }));
 
@@ -503,6 +504,7 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   await Message.deleteMany({ roomId: room._id });
   await RoomInvite.deleteMany({ room: room._id });
   clearMutedForRoom(room._id);
+  emitRoomsChanged(room._id); // home screens drop the deleted room live
   res.json({ message: 'Room deleted' });
 }));
 
