@@ -461,7 +461,7 @@ export default function App() {
           />
         ) : (
           <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} onNavigate={handleNotifNavigate} />
-        )}
+        ))}
       </main>
       </div>
 
