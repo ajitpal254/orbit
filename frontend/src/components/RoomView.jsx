@@ -5,6 +5,7 @@ import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import Avatar from './Avatar';
+import { Icon, SignalBars } from './icons';
 
 export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef }) {
   const { muted, deafened, modMuted, modMutedBy } = session;
@@ -37,6 +38,9 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   // orb just got tapped (drives the one-shot .orb-tapped bounce).
   const [selectedOrb, setSelectedOrb] = useState(null);
   const [tapOrbId, setTapOrbId] = useState(null);
+  // "Connection details" popover: the per-peer ICE/debug line lives
+  // here instead of always-on under the orbs (see below).
+  const [showConnDetails, setShowConnDetails] = useState(false);
   const tapTimerRef = useRef(null);
   const voiceRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -142,7 +146,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     };
     // Moderator mute is cooperative (voice is P2P — the server cannot
     // force a client silent): my client honors it by muting itself.
-    // setMuted broadcasts mic-state, so everyone else sees the 🔇 badge.
+    // setMuted broadcasts mic-state, so everyone else sees the mic-off badge.
     const onModeratorMuted = ({ roomId, by }) => {
       if (roomId !== room.id) return;
       applyModeratorMute(true, by || '');
@@ -200,9 +204,9 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
 
   // Honor a moderator mute/unmute (or a rejoin with a mute already in
   // place): mute the engine (which broadcasts mic-state so the room sees
-  // the 🔇 badge) and record it in the App-owned session, so the
-  // mini-player agrees. My orb's 🔇 badge follows via the sync effect
-  // on session.muted below.
+  // the mic-off badge), mark my own orb, and record it in the App-owned
+  // session, so the mini-player agrees. My orb's mic-off badge follows
+  // via the sync effect on session.muted below.
   const applyModeratorMute = useCallback((isMuted, by) => {
     voiceRef.current?.setMuted(isMuted);
     dispatchSession({ type: 'set-mod-muted', muted: isMuted, by: by || '' });
@@ -249,6 +253,30 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     setChatOpen((v) => !v);
     setUnread(0);
   };
+
+  // Keyboard shortcuts (desktop only): M mute, D deafen, C chat,
+  // Esc closes the chat sheet / invite picker / connection popover /
+  // orb popover. Ignored while typing (input, textarea,
+  // contenteditable) or with a modifier held.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'm') { toggleMute(); return; }
+      if (key === 'd') { toggleDeafen(); return; }
+      if (key === 'c') { openChat(); return; }
+      if (e.key === 'Escape') {
+        if (chatOpen) setChatOpen(false);
+        else if (showInvite) setShowInvite(false);
+        else if (showConnDetails) setShowConnDetails(false);
+        else if (selectedOrb) setSelectedOrb(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showConnDetails, selectedOrb]);
 
   const openInvite = async () => {
     setShowInvite((v) => !v);
@@ -369,12 +397,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   }
 
   return (
-    <div className="room-view">
+    <div className="room-view" style={{ '--room-from': accent.from, '--room-to': accent.to }}>
       <div className="room-header">
-        <button className="btn btn-text" onClick={onLeave}>← Rooms</button>
+        <button className="btn btn-text" onClick={onLeave}><Icon name="chevron-left" size={16} /> Rooms</button>
         <div className="room-title">
           <strong>
-            {room.isPrivate && <span className="lock-badge" title="Private room">🔒 </span>}
+            {room.isPrivate && <span className="lock-badge" title="Private room"><Icon name="lock" size={12} /> </span>}
             {room.name}
           </strong>
           {room.topic && <span className="muted">{room.topic}</span>}
@@ -396,7 +424,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
             <strong>Members ({members.length})</strong>
             <span>
               <button className="btn btn-primary btn-small" onClick={openInvite}>
-                {showInvite ? '✕ Close' : '＋ Invite a friend'}
+                {showInvite ? (<><Icon name="x" size={14} /> Close</>) : (<><Icon name="plus" size={14} /> Invite a friend</>)}
               </button>
               {' '}
               <button className="btn btn-text btn-small" disabled={leaving} onClick={leaveMembership}>
@@ -407,7 +435,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           <div className="members-list">
             {members.map((m, i) => {
               const isMe = m.id === user.id;
-              const label = m.role === 'owner' ? '👑 Owner' : m.role === 'moderator' ? '🛡️ Mod' : null;
+              const label = m.role === 'owner' ? (<><Icon name="crown" size={11} /> Owner</>) : m.role === 'moderator' ? (<><Icon name="shield" size={11} /> Mod</>) : null;
               return (
                 <div key={m.id} className="member-row stagger-in" style={{ animationDelay: `${i * 40}ms` }}>
                   <Avatar user={m} size="sm" className="person-orb" />
@@ -462,9 +490,9 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
                       <span className="muted person-email">{f.email}</span>
                     </span>
                     {alreadyMember ? (
-                      <span className="muted">Member ✓</span>
+                      <span className="muted"><Icon name="check" size={13} /> Member</span>
                     ) : justInvited ? (
-                      <span className="muted">Invited ✓</span>
+                      <span className="muted"><Icon name="check" size={13} /> Invited</span>
                     ) : (
                       <button className="btn btn-primary btn-small" onClick={() => inviteFriend(f.id)}>
                         Invite
@@ -544,15 +572,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
                   <span className="orb-name">
                     {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
                   </span>
-                  {person.muted && <span className="orb-muted">🔇</span>}
+                  {person.muted && <span className="orb-muted"><Icon name="mic-off" size={13} /></span>}
                   {person.isSelf && modMuted && (
-                    <span className="orb-mod-muted">Muted by moderator{modMutedBy ? ` — ${modMutedBy}` : ''}</span>
+                    <span className="orb-mod-muted"><Icon name="mic-off" size={12} /> Muted by moderator{modMutedBy ? ` — ${modMutedBy}` : ''}</span>
                   )}
                   {!person.isSelf && (
-                    <span
-                      className={`conn-dot conn-${connState[person.socketId] || 'new'}`}
-                      title={`Voice: ${connState[person.socketId] || 'connecting…'}`}
-                    />
+                    <SignalBars state={connState[person.socketId] || 'new'} />
                   )}
                 </div>
               </div>
@@ -561,9 +586,9 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
                   <span>
                     {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
                   </span>
-                  {role === 'owner' && <span className="role-badge role-owner">👑 Owner</span>}
-                  {role === 'moderator' && <span className="role-badge role-mod">🛡️ Mod</span>}
-                  {person.muted && <span>🔇 Muted</span>}
+                  {role === 'owner' && <span className="role-badge role-owner"><Icon name="crown" size={11} /> Owner</span>}
+                  {role === 'moderator' && <span className="role-badge role-mod"><Icon name="shield" size={11} /> Mod</span>}
+                  {person.muted && <span><Icon name="mic-off" size={13} /> Muted</span>}
                 </div>
               )}
             </div>
@@ -580,19 +605,39 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         <p className="room-hint">You're alone in here — friends join from the home screen.</p>
       )}
 
+      {/* The per-peer connection / ICE text used to sit here as an
+          always-on debug line. It now lives behind a "Connection
+          details" popover; each orb carries a small signal-bars icon
+          instead (see SignalBars). */}
       {people.length > 1 && (
-        <div className="voice-status">
-          {people
-            .filter((p) => !p.isSelf)
-            .map((p) => (
-              <span key={p.socketId}>
-                {p.name.split(' ')[0]}: {connState[p.socketId] || '—'} /{' '}
-                {iceState[p.socketId] || '—'}
-                {candTypes[p.socketId] ? ` (${candTypes[p.socketId]})` : ''}
-              </span>
-            ))}
+        <div className="conn-details">
+          <button
+            className="conn-details-btn"
+            onClick={() => setShowConnDetails((v) => !v)}
+            aria-expanded={showConnDetails}
+          >
+            Connection details
+          </button>
+          {showConnDetails && (
+            <div className="conn-popover" role="dialog" aria-label="Connection details">
+              {people
+                .filter((p) => !p.isSelf)
+                .map((p) => (
+                  <div key={p.socketId} className="conn-popover-row">
+                    <span>{p.name.split(' ')[0]}</span>
+                    <span>
+                      {connState[p.socketId] || '—'} / {iceState[p.socketId] || '—'}
+                      {candTypes[p.socketId] ? ` (${candTypes[p.socketId]})` : ''}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
       )}
+      <p className="shortcuts-hint">
+        <kbd>M</kbd> mute · <kbd>D</kbd> deafen · <kbd>C</kbd> chat · <kbd>Esc</kbd> close
+      </p>
       {playBlocked && (
         <button
           className="btn btn-primary sound-btn"
@@ -601,7 +646,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
             setPlayBlocked(!ok);
           }}
         >
-          🔊 Tap to enable sound
+          <Icon name="volume" size={16} /> Tap to enable sound
         </button>
       )}
 
@@ -609,11 +654,11 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         <div className="chat-sheet">
           <div className="chat-head">
             <strong>Chat — {room.name}</strong>
-            <button className="btn btn-text" onClick={() => setChatOpen(false)}>✕</button>
+            <button className="btn btn-text" onClick={() => setChatOpen(false)} aria-label="Close chat"><Icon name="x" size={16} /></button>
           </div>
           <div className="chat-messages">
             {messages.length === 0 && (
-              <p className="muted chat-empty">No messages yet. Say hi 👋</p>
+              <p className="muted chat-empty">No messages yet. Say hi</p>
             )}
             {messages.map((m) => (
               <div key={m.id} className={`chat-msg ${m.userId === user.id ? 'mine' : ''}`}>
@@ -633,7 +678,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               onChange={(e) => setDraft(e.target.value)}
               maxLength={1000}
             />
-            <button className="btn btn-primary" type="submit">Send</button>
+            <button className="btn btn-primary" type="submit"><Icon name="send" size={15} /> Send</button>
           </form>
         </div>
       )}
@@ -643,29 +688,30 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           className={`voice-btn ${muted ? 'off' : ''}`}
           onClick={toggleMute}
           disabled={modMuted}
-          title={modMuted ? 'Muted by moderator' : undefined}
+          title={modMuted ? 'Muted by moderator' : 'Mute (M)'}
           aria-label={modMuted ? 'Muted by moderator' : muted ? 'Unmute' : 'Mute'}
         >
-          <span key={muted ? 'off' : 'on'} className="voice-ico">{muted ? '🔇' : '🎙️'}</span>
+          <span key={muted ? 'off' : 'on'} className="voice-ico"><Icon name={muted ? 'mic-off' : 'mic'} size={26} /></span>
         </button>
         <button
           className={`voice-btn ${deafened ? 'off' : ''}`}
           onClick={toggleDeafen}
+          title="Deafen (D)"
           aria-label={deafened ? 'Undeafen' : 'Deafen'}
         >
-          <span key={deafened ? 'off' : 'on'} className="voice-ico">{deafened ? '🔕' : '🔊'}</span>
+          <span key={deafened ? 'off' : 'on'} className="voice-ico"><Icon name={deafened ? 'headphones-off' : 'headphones'} size={26} /></span>
         </button>
-        <button className="voice-btn" onClick={openChat} aria-label="Chat">
-          💬
+        <button className="voice-btn" onClick={openChat} title="Chat (C)" aria-label="Chat">
+          <Icon name="chat" size={26} />
           {unread > 0 && <span className="unread-badge">{unread}</span>}
         </button>
-        <button className="voice-btn leave" onClick={onLeave} aria-label="Leave room">
-          📞
+        <button className="voice-btn leave" onClick={onLeave} title="Leave room" aria-label="Leave room">
+          <Icon name="phone" size={26} />
         </button>
       </div>
       {modMuted && (
         <p className="mod-muted-note">
-          🔇 Muted by moderator{modMutedBy ? ` (${modMutedBy})` : ''} — you can still hear everyone, but they can't hear you.
+          <Icon name="mic-off" size={12} /> Muted by moderator{modMutedBy ? ` (${modMutedBy})` : ''} — you can still hear everyone, but they can't hear you.
         </p>
       )}
       </div>

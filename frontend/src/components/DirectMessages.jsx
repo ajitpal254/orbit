@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getDms, getDmThread, sendDm } from '../api';
 import Avatar from './Avatar';
+import { Icon } from './icons';
 
 const timeOf = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -87,7 +88,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
     return (
       <div className="view view-anim dm-thread">
         <div className="dm-thread-head">
-          <button className="btn btn-text" onClick={() => setSelected(null)}>← Messages</button>
+          <button className="btn btn-text" onClick={() => setSelected(null)}><Icon name="chevron-left" size={16} /> Messages</button>
           <Avatar user={selected} size="sm" className="person-orb" />
           <span className="person-info">
             <strong>{selected.name || 'Unnamed'}</strong>
@@ -97,7 +98,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
 
         <div className="dm-messages">
           {messages.length === 0 && (
-            <p className="muted chat-empty">No messages yet. Say hi 👋</p>
+            <p className="muted chat-empty">No messages yet. Say hi</p>
           )}
           {messages.map((m) => (
             <div key={m.id} className={`chat-msg ${m.senderId === user.id ? 'mine' : ''}`}>
@@ -117,7 +118,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
             onChange={(e) => setDraft(e.target.value)}
             maxLength={1000}
           />
-          <button className="btn btn-primary" type="submit" disabled={sending}>Send</button>
+          <button className="btn btn-primary" type="submit" disabled={sending}><Icon name="send" size={15} /> Send</button>
         </form>
       </div>
     );
@@ -127,13 +128,13 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
     <div className="view view-anim">
       <div className="greeting">
         <p className="date-line">Private chats</p>
-        <h2>Messages 💬</h2>
+        <h2><Icon name="chat" size={22} /> Messages</h2>
         <p className="muted">Direct messages with your friends.</p>
       </div>
 
       {conversations.length === 0 ? (
         <div className="card empty-state">
-          <span className="big-emoji">💬</span>
+          <span className="empty-icon"><Icon name="chat" size={26} /></span>
           <p className="muted">
             No conversations yet — add a friend, then tap Message on their row.
           </p>

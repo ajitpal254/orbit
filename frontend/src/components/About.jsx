@@ -2,6 +2,7 @@
 // not) finished yet. The app is in beta — the version line says so
 // plainly instead of pretending to be a 1.0 release.
 import React from 'react';
+import { Icon } from './icons';
 
 // Build version (Vite define from package.json, see vite.config.js).
 // Guarded so the file doesn't break if the define is ever missing.
@@ -11,11 +12,11 @@ const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 export default function About({ onBack }) {
   return (
     <div className="view view-anim about-view">
-      <button className="btn btn-text back-btn" onClick={onBack}>← Back</button>
+      <button className="btn btn-text back-btn" onClick={onBack}><Icon name="chevron-left" size={16} /> Back</button>
 
       <div className="card about-card">
         <div className="about-head">
-          <span className="about-logo">🪐</span>
+          <span className="about-logo"><Icon name="planet" size={34} /></span>
           <div>
             <h2>Orbit</h2>
             <span className="beta-badge">Beta v{APP_VERSION}</span>
@@ -35,12 +36,12 @@ export default function About({ onBack }) {
       <div className="card">
         <h3 className="section-title">What&rsquo;s in</h3>
         <ul className="about-list">
-          <li>🎙️ Voice rooms — mesh voice with live speaking glow</li>
-          <li>👥 Friends — requests, private rooms, room invites</li>
-          <li>💬 Direct messages between friends</li>
-          <li>👑 Roles &amp; moderation — owner, moderator, member</li>
-          <li>🔔 Notifications — in-app center, plus web push when set up</li>
-          <li>🖼️ Profiles — bio and an animated avatar or your own photo</li>
+          <li><Icon name="mic" size={15} /> Voice rooms — mesh voice with live speaking glow</li>
+          <li><Icon name="users" size={15} /> Friends — requests, private rooms, room invites</li>
+          <li><Icon name="chat" size={15} /> Direct messages between friends</li>
+          <li><Icon name="crown" size={15} /> Roles &amp; moderation — owner, moderator, member</li>
+          <li><Icon name="bell" size={15} /> Notifications — in-app center, plus web push when set up</li>
+          <li><Icon name="image" size={15} /> Profiles — bio and an animated avatar or your own photo</li>
         </ul>
       </div>
 

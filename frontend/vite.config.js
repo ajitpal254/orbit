@@ -45,8 +45,10 @@ export default defineConfig({
         // so without this NOTHING would be precached. js/css/html covers
         // index.html + the hashed assets; the icons + webmanifest come
         // via includeAssets below (additionalManifestEntries), so they
-        // are deliberately not in this list (no duplicates).
-        globPatterns: ['**/*.{js,css,html}']
+        // are deliberately not in this list (no duplicates). woff2 is
+        // here too: the self-hosted @fontsource fonts must work offline
+        // like everything else.
+        globPatterns: ['**/*.{js,css,html,woff2}']
       },
       includeAssets: ['icon-192.png', 'icon-512.png'],
       manifest: {

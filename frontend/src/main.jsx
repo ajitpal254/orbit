@@ -2,6 +2,17 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+// Self-hosted fonts (no Google Fonts CDN — the PWA must stay
+// offline-friendly). Space Grotesk = display/headings/wordmark,
+// Inter = body. Only the weights the app uses, latin subset only
+// (the app is English/Hinglish — Latin script), so the precache stays
+// small; woff2 files are precached via vite.config.js globPatterns.
+import '@fontsource/space-grotesk/latin-500.css';
+import '@fontsource/space-grotesk/latin-700.css';
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-500.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/latin-700.css';
 import { initPWA } from './pwa';
 
 // Register the service worker (manual — vite.config injectRegister is
