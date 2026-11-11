@@ -4,7 +4,7 @@
 // boot / hashchange.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDeepLinkHash } from '../frontend/src/deepLink.js';
+import { parseDeepLinkHash, buildInviteLinkUrl } from '../frontend/src/deepLink.js';
 
 test('parseDeepLinkHash maps plain views', () => {
   assert.deepEqual(parseDeepLinkHash('#friends'), { view: 'friends' });
@@ -26,6 +26,26 @@ test('parseDeepLinkHash maps room and DM targets', () => {
   );
 });
 
+test('parseDeepLinkHash maps invite links to a room join', () => {
+  const token = 'A'.repeat(32);
+  assert.deepEqual(
+    parseDeepLinkHash(`#invite-${token}`),
+    { view: 'rooms', inviteToken: token }
+  );
+  // The leading # is optional, like the other hashes.
+  assert.deepEqual(
+    parseDeepLinkHash(`invite-${token}`),
+    { view: 'rooms', inviteToken: token }
+  );
+  // A malformed token still parses — the server is the authority on
+  // token shape, and App shows its friendly error instead of silently
+  // ignoring a link somebody shared.
+  assert.deepEqual(
+    parseDeepLinkHash('#invite-not-a-real-token'),
+    { view: 'rooms', inviteToken: 'not-a-real-token' }
+  );
+});
+
 test('parseDeepLinkHash rejects anything it does not know', () => {
   assert.equal(parseDeepLinkHash(''), null);
   assert.equal(parseDeepLinkHash('#'), null);
@@ -33,6 +53,26 @@ test('parseDeepLinkHash rejects anything it does not know', () => {
   assert.equal(parseDeepLinkHash('#room-'), null);
   assert.equal(parseDeepLinkHash('#dm-'), null);
   assert.equal(parseDeepLinkHash('#room'), null);
+  assert.equal(parseDeepLinkHash('#invite-'), null);
+  assert.equal(parseDeepLinkHash('#invite'), null);
   assert.equal(parseDeepLinkHash(null), null);
   assert.equal(parseDeepLinkHash(undefined), null);
+});
+
+test('buildInviteLinkUrl puts the token in the hash, never the path', () => {
+  const token = 'B'.repeat(32);
+  assert.equal(
+    buildInviteLinkUrl('https://orbit-3lzs.onrender.com', token),
+    `https://orbit-3lzs.onrender.com/#invite-${token}`
+  );
+  // A trailing slash on the origin does not double up.
+  assert.equal(
+    buildInviteLinkUrl('https://example.com/', token),
+    `https://example.com/#invite-${token}`
+  );
+  // Round trip: a built URL parses back to the same token.
+  assert.deepEqual(
+    parseDeepLinkHash(new URL(buildInviteLinkUrl('https://example.com', token)).hash),
+    { view: 'rooms', inviteToken: token }
+  );
 });

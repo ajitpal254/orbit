@@ -93,6 +93,18 @@ export const leavePrivateRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/leave
 // --- Campfires (fading rooms) ---
 export const keepRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/keep`);
 
+// --- Invite links (shareable join links) ---
+
+export const createInviteLink = (roomId) => jsonPost(`/api/rooms/${roomId}/invite-link`);
+
+export const getInviteLink = (roomId) => apiJson(`/api/rooms/${roomId}/invite-link`);
+
+export const revokeInviteLink = (roomId) =>
+  apiJson(`/api/rooms/${roomId}/invite-link`, { method: 'DELETE' });
+
+export const joinViaInviteLink = (token) =>
+  jsonPost(`/api/invite-links/${encodeURIComponent(token)}/join`);
+
 // --- Roles & moderation (private rooms) ---
 
 export const promoteMember = (roomId, userId) =>

@@ -10,6 +10,8 @@ const Room = require('../models/Room');
 const Message = require('../models/Message');
 const Friendship = require('../models/Friendship');
 const RoomInvite = require('../models/RoomInvite');
+const InviteLink = require('../models/InviteLink');
+const { generateInviteToken, isValidInviteToken, expiryForRoom, isLinkExpired, canCreateInviteLink, canRevokeInviteLink, canJoinViaLink } = require('../lib/inviteLinks');
 const DirectMessage = require('../models/DirectMessage');
 const Notification = require('../models/Notification');
 const PushSubscription = require('../models/PushSubscription');
@@ -577,6 +579,7 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   await Room.deleteOne({ _id: room._id });
   await Message.deleteMany({ roomId: room._id });
   await RoomInvite.deleteMany({ room: room._id });
+  await InviteLink.deleteMany({ room: room._id });
   clearMutedForRoom(room._id);
   emitRoomsChanged(room._id); // home screens drop the deleted room live
   res.json({ message: 'Room deleted' });
@@ -669,9 +672,13 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
     await Room.deleteOne({ _id: room._id });
     await Message.deleteMany({ roomId: room._id });
     await RoomInvite.deleteMany({ room: room._id });
+    await InviteLink.deleteMany({ room: room._id });
     clearMutedForRoom(room._id);
     return res.json({ message: 'Left the room — it was deleted as the last member left' });
   }
+  // Leaving takes my invite link with me: the link admits friends of
+  // its creator, and I am no longer in the room to vouch for them.
+  await InviteLink.deleteMany({ room: room._id, createdBy: req.user._id });
   await writeMembers(room._id, remaining);
   res.json({ message: 'Left the room' });
 }));
@@ -736,6 +743,9 @@ router.post('/rooms/:id/members/:userId/kick', authMiddleware, friendLimit, asyn
   const members = normalizeMembers(room).filter((m) => m.userId !== String(target._id));
   await writeMembers(room._id, members);
   await RoomInvite.deleteMany({ room: room._id, invitee: target._id });
+  // A kicked member's invite link goes too — it admits friends of its
+  // creator, and they are no longer in the room.
+  await InviteLink.deleteMany({ room: room._id, createdBy: target._id });
   setMutedInRoom(room._id, target._id, false);
   kickSocketsFromRoom(target._id, room._id);
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Member kicked');
@@ -905,6 +915,178 @@ router.post('/invites/:id/decline', authMiddleware, friendLimit, asyncHandler(as
   const room = await Room.findById(invite.room).lean();
   const inviter = await User.findById(invite.inviter);
   res.json(inviteJson(invite, room, inviter));
+}));
+
+// --- INVITE LINKS (SHAREABLE JOIN LINKS) ---
+//
+// Playbook: "Invite links — Join without searching. Expiring for
+// private rooms." One active link per room; the raw token is returned
+// to its authorized viewers (they need it to build the shareable URL)
+// and is never logged. See lib/inviteLinks.js for the rules: private
+// links expire after 7 days, public links never expire; a private-room
+// link admits only accepted friends of the link creator (the same
+// rule as room invites); revocation is the link creator or the room
+// owner — moderators cannot revoke.
+//
+// The link itself is `/#invite-<token>` (a hash, so the token never
+// travels in an HTTP request line or server log — the frontend reads
+// the hash and POSTs the token in the body to /invite-links/:token/join).
+
+// Serialize a link for an authorized viewer, with the raw token the
+// client needs to build the shareable URL.
+const inviteLinkJson = (link, token, creatorName) => ({
+  roomId: String(link.room),
+  token,
+  expiresAt: link.expiresAt || null,
+  createdBy: { id: String(link.createdBy), name: creatorName || '' },
+  createdAt: link.createdAt
+});
+
+// The stored token ciphertext, decrypted for an authorized viewer.
+// Null when it cannot be decrypted (lost/rotated key) — the caller
+// treats that link as unusable and replaces it on next create.
+const decryptLinkToken = (link) => {
+  try {
+    return decrypt(link.token);
+  } catch {
+    return null;
+  }
+};
+
+// POST /api/rooms/:id/invite-link — create the room's link, or return
+// the existing active one (idempotent, like the pending room-invite
+// flow). Private rooms: members only. Public rooms: any signed-in user.
+router.post('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!canCreateInviteLink(room, req.user._id)) {
+    return res.status(403).json({ error: 'Only room members can create an invite link' });
+  }
+  let existing = await InviteLink.findOne({ room: room._id });
+  if (existing) {
+    if (!isLinkExpired(existing)) {
+      const token = decryptLinkToken(existing);
+      if (token) {
+        const creator = await User.findById(existing.createdBy).select('name').lean();
+        return res.json(inviteLinkJson(existing, token, creator ? creator.name : ''));
+      }
+      // Unreadable stored token (lost key) — drop the dead link and
+      // make a fresh one below.
+    }
+    await InviteLink.deleteOne({ _id: existing._id });
+    existing = null;
+  }
+  const token = generateInviteToken();
+  let link;
+  try {
+    link = await InviteLink.create({
+      room: room._id,
+      createdBy: req.user._id,
+      tokenHash: hashToken(token),
+      token: encrypt(token),
+      expiresAt: expiryForRoom(room)
+    });
+  } catch (err) {
+    // Lost a race with another create for the same room (unique index
+    // on room) — return the winner's link instead of failing.
+    if (err && err.code === 11000) {
+      const winner = await InviteLink.findOne({ room: room._id });
+      if (winner && !isLinkExpired(winner)) {
+        const winnerToken = decryptLinkToken(winner);
+        if (winnerToken) {
+          const creator = await User.findById(winner.createdBy).select('name').lean();
+          return res.json(inviteLinkJson(winner, winnerToken, creator ? creator.name : ''));
+        }
+      }
+    }
+    throw err;
+  }
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Invite link created');
+  res.status(201).json(inviteLinkJson(link, token, req.user.name));
+}));
+
+// GET /api/rooms/:id/invite-link — my room's active link, if any.
+// { link: null } when there is none (or it expired / is unreadable) —
+// 200, not 404, so the UI treats "no link yet" as a normal state.
+router.get('/rooms/:id/invite-link', authMiddleware, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!canCreateInviteLink(room, req.user._id)) {
+    return res.status(403).json({ error: 'Only room members can see the invite link' });
+  }
+  const link = await InviteLink.findOne({ room: room._id });
+  if (!link || isLinkExpired(link)) return res.json({ link: null });
+  const token = decryptLinkToken(link);
+  if (!token) return res.json({ link: null });
+  const creator = await User.findById(link.createdBy).select('name').lean();
+  res.json({ link: inviteLinkJson(link, token, creator ? creator.name : '') });
+}));
+
+// DELETE /api/rooms/:id/invite-link — revoke the room's link. The link
+// creator or the room owner; moderators cannot revoke. A revoked link
+// is deleted, so it can never be redeemed again.
+router.delete('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const link = await InviteLink.findOne({ room: room._id });
+  if (!link) return res.status(404).json({ error: 'No invite link for this room' });
+  if (!canRevokeInviteLink(room, link, req.user._id)) {
+    return res.status(403).json({ error: 'Only the link creator or the room owner can revoke it' });
+  }
+  await InviteLink.deleteOne({ _id: link._id });
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Invite link revoked');
+  res.json({ message: 'Invite link revoked' });
+}));
+
+// POST /api/invite-links/:token/join — redeem a link. The token is
+// validated by shape first (no DB lookup for garbage), then by hash.
+// Invalid and revoked links share one 404 message so the endpoint
+// cannot tell an attacker whether a token ever existed; expired links
+// get a distinct 410. A private-room join adds the user as a member
+// (plain member, like accepting a room invite); a public-room join
+// adds nothing — the room is already open. Answers with the fresh
+// room JSON so the client can open the room directly.
+router.post('/invite-links/:token/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  if (!isValidInviteToken(token)) {
+    return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
+  }
+  const link = await InviteLink.findOne({ tokenHash: hashToken(token) });
+  if (!link) {
+    return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
+  }
+  if (isLinkExpired(link)) {
+    // Sweep the stale row now — the TTL index would get it later.
+    await InviteLink.deleteOne({ _id: link._id });
+    return res.status(410).json({ error: 'This invite link has expired — ask for a fresh one' });
+  }
+  const room = await Room.findById(link.room).lean();
+  if (!room) {
+    await InviteLink.deleteOne({ _id: link._id });
+    return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
+  }
+  // Private rooms admit only accepted friends of the link creator —
+  // the same rule as room invites. Members skip the check.
+  const friendRows = room.isPrivate && !isRoomMember(room, req.user._id)
+    ? await Friendship.find({
+        $or: [
+          { requester: link.createdBy, recipient: req.user._id },
+          { requester: req.user._id, recipient: link.createdBy }
+        ]
+      }).lean()
+    : [];
+  if (!canJoinViaLink(room, link, req.user._id, friendRows)) {
+    return res.status(403).json({ error: 'This invite link is for friends of the person who shared it — ask them to add you as a friend first' });
+  }
+  if (room.isPrivate) {
+    const members = normalizeMembers(room);
+    if (!members.some((m) => m.userId === String(req.user._id))) {
+      members.push({ userId: String(req.user._id), role: 'member' });
+      await writeMembers(room._id, members);
+    }
+  }
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Joined room via invite link');
+  res.json(await freshRoomJson(room._id, req.user._id));
 }));
 
 // --- DIRECT MESSAGES (FRIENDS ONLY) ---
