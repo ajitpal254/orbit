@@ -7,18 +7,24 @@
 // is nowhere to join. Data is GET /api/friends/presence, the same
 // endpoint SidePanel consumes; no new backend. Hidden entirely when
 // nobody is around, so an empty friends list shows no trace of it.
+// Home fetches presence once and passes it here (shared with the
+// night sky and the side panel) — when `friends` is provided, use it
+// and skip the standalone fetch; otherwise fetch on our own.
 import React, { useEffect, useState, useCallback } from 'react';
 import { apiJson, getFriendsPresence } from '../api';
 import { storiesFriends } from '../desktop';
 import Avatar from './Avatar';
 
-export default function StoriesRow({ refreshTick, onJoin }) {
+export default function StoriesRow({ refreshTick, onJoin, friends: friendsProp }) {
   const [isPhone, setIsPhone] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 520px)').matches
   );
-  const [friends, setFriends] = useState(null);
+  const [ownFriends, setOwnFriends] = useState(null);
   const [joining, setJoining] = useState(null);
   const [error, setError] = useState('');
+
+  // Home owns the fetch when it passes `friends`; otherwise fetch here.
+  const friends = friendsProp !== undefined ? friendsProp : ownFriends;
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 520px)');
@@ -29,20 +35,21 @@ export default function StoriesRow({ refreshTick, onJoin }) {
 
   const load = useCallback(async () => {
     try {
-      setFriends(await getFriendsPresence());
+      setOwnFriends(await getFriendsPresence());
     } catch {}
   }, []);
 
   useEffect(() => {
-    if (!isPhone) return undefined;
+    if (friendsProp !== undefined || !isPhone) return undefined;
     load();
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
-  }, [load, isPhone]);
+  }, [load, isPhone, friendsProp]);
 
   useEffect(() => {
-    if (isPhone && refreshTick > 0) load();
-  }, [refreshTick, load, isPhone]);
+    if (friendsProp !== undefined || !isPhone || refreshTick <= 0) return;
+    load();
+  }, [refreshTick, load, isPhone, friendsProp]);
 
   const joinFriendRoom = async (friend) => {
     if (!friend.room) return;

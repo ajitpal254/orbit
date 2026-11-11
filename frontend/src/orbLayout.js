@@ -11,7 +11,7 @@
 // clamp applies, which assumes a roomy desktop container and can clip a
 // wide orb on a narrow phone (a 112px orb centered at x=12% of a 360px
 // room sticks 13px past the left edge).
-const hashString = (str = '') => {
+export const hashString = (str = '') => {
   let h = 0x811c9dc5;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
