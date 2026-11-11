@@ -9,6 +9,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import { heroOccupants } from '../desktop';
+import { Icon } from './icons';
 
 export default function HeroCard({ room, onJoin, onStartRoom, onGoFriends }) {
   const stageRef = useRef(null);
@@ -35,7 +36,7 @@ export default function HeroCard({ room, onJoin, onStartRoom, onGoFriends }) {
       <section className="hero-card hero-empty" aria-label="No one is live right now">
         <div className="hero-empty-orb">
           <div className="orb" style={{ background: 'linear-gradient(135deg, #8b5cf6, #d946ef)' }}>
-            <span className="orb-initials">🪐</span>
+            <span className="orb-initials"><Icon name="planet" size={30} /></span>
           </div>
         </div>
         <strong>It's quiet in orbit</strong>
@@ -93,7 +94,7 @@ export default function HeroCard({ room, onJoin, onStartRoom, onGoFriends }) {
       <div className="hero-info">
         <span className="hero-live-tag"><span className="live-dot" /> LIVE</span>
         <strong className="hero-room-name">
-          {room.isPrivate && <span className="lock-badge" title="Private room">🔒 </span>}
+          {room.isPrivate && <span className="lock-badge" title="Private room"><Icon name="lock" size={12} /> </span>}
           {room.name}
         </strong>
         {room.topic && <span className="muted hero-topic">{room.topic}</span>}

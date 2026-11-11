@@ -8,12 +8,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { apiJson, getFriendsPresence, getNotifications } from '../api';
 import Avatar from './Avatar';
+import { Icon } from './icons';
 
 const ICONS = {
-  friend_request: '👋',
-  friend_accepted: '✅',
-  room_invite: '🔒',
-  dm: '💬'
+  friend_request: 'user-plus',
+  friend_accepted: 'check-circle',
+  room_invite: 'lock',
+  dm: 'chat'
 };
 
 // Mirrors the timeAgo in Notifications.jsx (kept local so this panel
@@ -150,7 +151,7 @@ export default function SidePanel({ refreshTick, onJoinRoom, onNavigate }) {
                 style={{ animationDelay: `${i * 40}ms` }}
                 onClick={() => openActivity(n)}
               >
-                <span className="notif-icon">{ICONS[n.type] || '🔔'}</span>
+                <span className="notif-icon"><Icon name={ICONS[n.type] || 'bell'} size={20} /></span>
                 <Avatar user={n.actor || {}} size="sm" />
                 <span className="person-info">
                   <span className="notif-text">{n.text}</span>

@@ -3,6 +3,7 @@
 // Pure modules only — no React, no DOM, no MongoDB.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { ICON_PATHS } from '../frontend/src/iconPaths.js';
 import { signalLevel } from '../frontend/src/signalLevel.js';
 import { emitRoomsChanged } from '../lib/socket.js';
@@ -14,7 +15,7 @@ const ICONS_IN_USE = [
   'planet', 'bell', 'mic', 'mic-off', 'headphones', 'headphones-off',
   'chat', 'phone', 'users', 'user', 'user-plus', 'search', 'plus', 'x',
   'check', 'check-circle', 'chevron-left', 'send', 'lock', 'globe',
-  'mail', 'crown', 'shield', 'image', 'volume'
+  'mail', 'crown', 'shield', 'image', 'volume', 'home'
 ];
 
 test('icon set: every icon the app uses exists', () => {
@@ -50,6 +51,27 @@ test('icon set: every element is a valid SVG descriptor, no emoji', () => {
 test('icon set: no icon name is an emoji or blank', () => {
   for (const name of Object.keys(ICON_PATHS)) {
     assert.match(name, /^[a-z][a-z0-9-]*$/, `bad icon name: ${name}`);
+  }
+});
+
+// The rail and the activity feed render SVG icons, not emoji — the
+// v0.2.0 visual pass missed these files and the v0.2.1 review caught
+// them (IconRail used planet/people/chat/bell emoji; SidePanel used
+// wave/check/lock/chat emoji). If an emoji creeps back into one of
+// these files, this fails. Deliberately scoped to the icon UI: emoji
+// in copy elsewhere (and in code comments) is not covered here.
+const EMOJI = /[\u{1F000}-\u{1FAFF}\u2600-\u27BF\u2B00-\u2BFF]/u;
+const ICON_UI_FILES = [
+  '../frontend/src/components/IconRail.jsx',
+  '../frontend/src/components/SidePanel.jsx',
+  '../frontend/src/components/HeroCard.jsx',
+  '../frontend/src/components/MiniPlayer.jsx'
+];
+
+test('icon rail and activity feed: no emoji glyphs in icon UI', () => {
+  for (const rel of ICON_UI_FILES) {
+    const src = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.equal(EMOJI.test(src), false, `${rel} contains an emoji glyph`);
   }
 });
 

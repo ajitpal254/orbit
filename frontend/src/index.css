@@ -1549,6 +1549,7 @@ textarea {
     z-index: 20;
   }
   .rail-logo { font-size: 1.5rem; line-height: 1; margin-bottom: 0.4rem; }
+  .rail-logo .icon { width: 24px; height: 24px; }
   .rail-items { display: flex; flex-direction: column; gap: 0.5rem; }
   .rail-btn {
     position: relative;

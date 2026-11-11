@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { formatCallDuration } from '../voiceSession';
+import { Icon } from './icons';
 
 // Mini-player: shown while a voice session is active but the room view
 // is not on screen (App.jsx renders it only then — never together with
@@ -42,7 +43,7 @@ export default function MiniPlayer({ roomName, joinedAt, muted, modMuted, onTogg
         title={modMuted ? 'Muted by moderator' : undefined}
         aria-label={modMuted ? 'Muted by moderator' : muted ? 'Unmute' : 'Mute'}
       >
-        <span key={muted ? 'off' : 'on'} className="voice-ico">{muted ? '🔇' : '🎙️'}</span>
+        <span key={muted ? 'off' : 'on'} className="voice-ico"><Icon name={muted ? 'mic-off' : 'mic'} size={26} /></span>
       </button>
     </div>
   );
