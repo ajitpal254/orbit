@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { apiJson } from '../api';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
+import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 
 export default function RoomView({ user, room, onLeave }) {
@@ -56,6 +57,7 @@ export default function RoomView({ user, room, onLeave }) {
         ...prev,
         [socketId]: { socketId, userId, name, muted: false }
       }));
+      playJoinSound();
     };
     const onUserLeft = ({ socketId }) => {
       setOccupants((prev) => {
@@ -115,24 +117,22 @@ export default function RoomView({ user, room, onLeave }) {
   }, [messages, chatOpen]);
 
   const toggleMute = useCallback(() => {
-    setMuted((m) => {
-      const next = !m;
-      voiceRef.current?.setMuted(next);
-      setOccupants((prev) => ({
-        ...prev,
-        self: { ...prev.self, muted: next }
-      }));
-      return next;
-    });
-  }, []);
+    const next = !muted;
+    voiceRef.current?.setMuted(next);
+    setOccupants((prev) => ({
+      ...prev,
+      self: { ...prev.self, muted: next }
+    }));
+    setMuted(next);
+    playMuteSound(next);
+  }, [muted]);
 
   const toggleDeafen = useCallback(() => {
-    setDeafened((d) => {
-      const next = !d;
-      voiceRef.current?.setDeafened(next);
-      return next;
-    });
-  }, []);
+    const next = !deafened;
+    voiceRef.current?.setDeafened(next);
+    setDeafened(next);
+    playDeafenSound(next);
+  }, [deafened]);
 
   const openChat = () => {
     setChatOpen((v) => !v);
