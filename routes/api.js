@@ -25,6 +25,7 @@ const { validateRoomInput, validateMessageInput, accentById } = require('../lib/
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { canDm, buildSummaries } = require('../lib/dms');
+const { notExpiredFilter, withExpiry } = require('../lib/fadingChat');
 const { emitToUser, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
 const { buildFriendPresence } = require('../lib/friendPresence');
 const presence = require('../lib/presence');
@@ -784,7 +785,9 @@ router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) 
     return res.status(403).json({ error: 'This room is private' });
   }
   const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 50));
-  const messages = await Message.find({ roomId: room._id })
+  // Fading chat: expired messages (expireAt at or before now) never
+  // reach the client — the TTL index only cleans up storage later.
+  const messages = await Message.find({ roomId: room._id, ...notExpiredFilter() })
     .sort({ createdAt: -1 }).limit(limit).lean();
   res.json(messages.reverse().map(messageJson));
 }));
@@ -797,14 +800,14 @@ router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res)
   }
   const { ok, error, text } = validateMessageInput(req.body || {});
   if (!ok) return res.status(400).json({ error });
-  const msg = await Message.create({
+  const msg = await Message.create(withExpiry({
     roomId: room._id,
     userId: req.user._id,
     name: req.user.name,
     // Stored encrypted; the broadcast below sends the plaintext to room
     // members over their own TLS/WSS connection — that is correct.
     text: encrypt(text)
-  });
+  }));
   // Broadcast live to everyone in the room (socket.io attached on the app).
   const io = req.app.get('io');
   if (io) io.to(String(room._id)).emit('chat-message', messageJson(msg));
@@ -911,9 +914,13 @@ router.get('/dms', authMiddleware, asyncHandler(async (req, res) => {
   const friendIds = [...new Set(rows.map((r) => otherUserId(r, req.user._id)))];
   const friends = await User.find({ _id: { $in: friendIds } }).select('name email avatarPreset avatarImage').lean();
   // All DMs involving me, newest first (capped — the summary only needs
-  // the latest per friend; threads fetch the rest).
+  // the latest per friend; threads fetch the rest). Fading chat:
+  // expired DMs never surface as a last message or an unread count.
   const dms = await DirectMessage.find({
-    $or: [{ sender: req.user._id }, { recipient: req.user._id }]
+    $and: [
+      { $or: [{ sender: req.user._id }, { recipient: req.user._id }] },
+      notExpiredFilter()
+    ]
   }).sort({ createdAt: -1 }).limit(1000).lean();
   const plain = dms.map((m) => ({ ...m, text: decryptDmText(m) }));
   res.json(buildSummaries(friends.map(userJson), plain, req.user._id));
@@ -932,13 +939,19 @@ router.get('/dms/:userId', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Direct messages are for friends only' });
   }
   await DirectMessage.updateMany(
-    { sender: other._id, recipient: req.user._id, read: false },
+    { sender: other._id, recipient: req.user._id, read: false, ...notExpiredFilter() },
     { read: true }
   );
+  // Fading chat: expired messages never reach the thread view.
   const messages = await DirectMessage.find({
-    $or: [
-      { sender: req.user._id, recipient: other._id },
-      { sender: other._id, recipient: req.user._id }
+    $and: [
+      {
+        $or: [
+          { sender: req.user._id, recipient: other._id },
+          { sender: other._id, recipient: req.user._id }
+        ]
+      },
+      notExpiredFilter()
     ]
   }).sort({ createdAt: -1 }).limit(50).lean();
   const names = new Map([
@@ -962,13 +975,13 @@ router.post('/dms/:userId', authMiddleware, friendLimit, asyncHandler(async (req
   }
   const { ok, error, text } = validateMessageInput(req.body || {});
   if (!ok) return res.status(400).json({ error });
-  const msg = await DirectMessage.create({
+  const msg = await DirectMessage.create(withExpiry({
     sender: req.user._id,
     recipient: other._id,
     // Stored encrypted; the push below sends the plaintext to the
     // recipient over their own TLS/WSS connection — that is correct.
     text: encrypt(text)
-  });
+  }));
   const payload = dmJson(msg, req.user.name);
   emitToUser(other._id, 'dm-message', payload);
   // One unread DM notification per sender (deduped) + best-effort push.

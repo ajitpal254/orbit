@@ -4,9 +4,11 @@
 // tests/orbLayout.test.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   starPosition, starState, starStatusText, starLabel, canJoin,
-  outCount, visibleStars, MAX_STARS
+  outCount, visibleStars, MAX_STARS,
+  ambientStars, ambientStarClass, AMBIENT_STAR_COUNT, AMBIENT_SEED
 } from '../frontend/src/nightSky.js';
 
 const friend = (id, status, room) => ({
@@ -100,4 +102,76 @@ test('visibleStars: in-room first, then online, away, offline; capped at MAX_STA
   assert.equal(capped.overflow, 5);
   assert.equal(visibleStars([]).overflow, 0);
   assert.equal(visibleStars(null).stars.length, 0);
+});
+
+test('ambientStars: same seed → same field, across calls (never jumps on re-render)', () => {
+  assert.deepEqual(ambientStars(), ambientStars());
+  assert.deepEqual(ambientStars('orbit-sky'), ambientStars('orbit-sky'));
+  assert.deepEqual(ambientStars('other-seed'), ambientStars('other-seed'));
+  assert.equal(ambientStars().length, AMBIENT_STAR_COUNT);
+  assert.equal(AMBIENT_SEED, 'orbit-sky');
+});
+
+test('ambientStars: a different seed is a different field', () => {
+  const a = ambientStars('orbit-sky');
+  const b = ambientStars('someone-else');
+  assert.notDeepEqual(a, b);
+});
+
+test('ambientStars: every star stays in the stage, with a real size/opacity/twinkle', () => {
+  const seen = new Set();
+  for (const s of ambientStars()) {
+    assert.ok(s.x >= 4 && s.x <= 96, `x ${s.x} out of bounds`);
+    assert.ok(s.y >= 6 && s.y <= 94, `y ${s.y} out of bounds`);
+    assert.ok(s.size >= 1 && s.size <= 2.5, `size ${s.size} out of range`);
+    assert.ok(s.opacity >= 0.25 && s.opacity <= 0.85, `opacity ${s.opacity} out of range`);
+    assert.ok(s.duration >= 3 && s.duration <= 7, `duration ${s.duration} out of range`);
+    assert.ok(['far', 'mid', 'near'].includes(s.layer), `unknown layer ${s.layer}`);
+    seen.add(`${s.x},${s.y}`);
+  }
+  assert.ok(seen.size > AMBIENT_STAR_COUNT - 5, 'ambient positions should mostly differ');
+});
+
+test('ambientStars: depth — far stars are smaller and dimmer than near stars', () => {
+  const stars = ambientStars();
+  const far = stars.filter((s) => s.layer === 'far');
+  const mid = stars.filter((s) => s.layer === 'mid');
+  const near = stars.filter((s) => s.layer === 'near');
+  assert.ok(far.length > 0 && mid.length > 0 && near.length > 0, 'all three depth layers should appear');
+  for (const s of far) {
+    assert.ok(s.size <= 1.5, `far star size ${s.size} too big`);
+    assert.ok(s.opacity <= 0.45, `far star opacity ${s.opacity} too bright`);
+  }
+  for (const s of near) {
+    assert.ok(s.size >= 2, `near star size ${s.size} too small`);
+    assert.ok(s.opacity >= 0.55, `near star opacity ${s.opacity} too dim`);
+  }
+  const avg = (arr, key) => arr.reduce((sum, s) => sum + s[key], 0) / arr.length;
+  assert.ok(avg(far, 'size') < avg(mid, 'size') && avg(mid, 'size') < avg(near, 'size'), 'size should grow with depth');
+  assert.ok(avg(far, 'opacity') < avg(mid, 'opacity') && avg(mid, 'opacity') < avg(near, 'opacity'), 'opacity should grow with depth');
+});
+
+test('ambientStars: count is honoured, and 0 gives an empty field', () => {
+  assert.equal(ambientStars('orbit-sky', 10).length, 10);
+  assert.equal(ambientStars('orbit-sky', 0).length, 0);
+  assert.deepEqual(ambientStars('orbit-sky', 10).slice(0, 5), ambientStars('orbit-sky', 5));
+});
+
+test('ambientStarClass: layer picks the class, missing layer falls back to mid', () => {
+  assert.equal(ambientStarClass({ layer: 'far' }), 'ambient-star ambient-star--far');
+  assert.equal(ambientStarClass({ layer: 'mid' }), 'ambient-star ambient-star--mid');
+  assert.equal(ambientStarClass({ layer: 'near' }), 'ambient-star ambient-star--near');
+  assert.equal(ambientStarClass({}), 'ambient-star ambient-star--mid');
+  assert.equal(ambientStarClass(null), 'ambient-star ambient-star--mid');
+});
+
+test('reduced motion: the ambient twinkle is stilled, and the star keeps its own brightness', () => {
+  const css = readFileSync(new URL('../frontend/src/index.css', import.meta.url), 'utf8');
+  const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.ok(reduced.includes('.ambient-star'), 'reduced-motion block must mention .ambient-star');
+  assert.match(reduced, /\.ambient-star\s*\{\s*animation:\s*none;\s*\}/, 'reduced motion must disable the ambient-star animation');
+  // With the animation off, the star falls back to its base opacity
+  // (--ao), so it sits still at its own brightness instead of going
+  // invisible or full-bright.
+  assert.match(css, /\.ambient-star\s*\{[^}]*opacity:\s*var\(--ao/, '.ambient-star base opacity must be its own --ao');
 });

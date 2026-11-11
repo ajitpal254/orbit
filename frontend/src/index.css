@@ -331,18 +331,20 @@ input::placeholder { color: var(--muted); }
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 /* Presence is carried by glow + ring + the status text under the name,
-   never by colour alone. In-room pulses (thicker ring + live-pulse);
-   online glows steadily; away is amber; offline is small, grey, dim. */
+   never by colour alone. In-room pulses with a strong halo (thicker
+   ring + live-pulse, brighter than online so a live friend reads at a
+   glance); online glows steadily; away is amber; offline is small,
+   grey, dim. */
 .night-star--in-room .night-star-dot {
   background: linear-gradient(135deg, #34d399, #22d3ee);
   border: 2px solid rgba(52, 211, 153, 0.9);
-  box-shadow: 0 0 14px rgba(52, 211, 153, 0.65);
+  box-shadow: 0 0 22px rgba(52, 211, 153, 0.85), 0 0 44px rgba(52, 211, 153, 0.3);
   animation: night-pulse 2s ease-in-out infinite;
 }
 .night-star--online .night-star-dot {
   background: linear-gradient(135deg, #34d399, #2dd4a7);
   border: 2px solid rgba(52, 211, 153, 0.55);
-  box-shadow: 0 0 10px rgba(52, 211, 153, 0.4);
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.55);
 }
 .night-star--away .night-star-dot {
   background: linear-gradient(135deg, #f59e0b, #fbbf24);
@@ -356,8 +358,42 @@ input::placeholder { color: var(--muted); }
   transform: scale(0.82);
 }
 @keyframes night-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45), 0 0 14px rgba(52, 211, 153, 0.65); }
-  50% { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0), 0 0 14px rgba(52, 211, 153, 0.65); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45), 0 0 22px rgba(52, 211, 153, 0.85), 0 0 44px rgba(52, 211, 153, 0.3); }
+  50% { box-shadow: 0 0 0 10px rgba(52, 211, 153, 0), 0 0 22px rgba(52, 211, 153, 0.85), 0 0 44px rgba(52, 211, 153, 0.3); }
+}
+/* Richer sky: dense ambient starfield + soft nebula tint behind the
+   friend stars, so the stage feels alive with one or two friends.
+   Decorative only (pointer-events none, aria-hidden in the component)
+   — friend stars sit above it (z-index 2) and keep their keyboard
+   behaviour. Depth comes from three layers: far stars are tiny/dim,
+   near stars bigger/brighter with a soft glow. Same dark violet /
+   fuchsia palette as the panel behind it — no new colours. */
+.ambient-sky { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.ambient-nebula {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(220px 120px at 22% 30%, rgba(139, 92, 246, 0.20), transparent 70%),
+    radial-gradient(260px 140px at 78% 68%, rgba(217, 70, 239, 0.13), transparent 70%),
+    radial-gradient(180px 100px at 55% 85%, rgba(34, 211, 238, 0.07), transparent 70%);
+}
+.ambient-star {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #fff;
+  /* Base opacity is the star's own --ao; the twinkle keyframes breathe
+     around it, so with animation off (reduced motion) the star simply
+     sits at its own brightness. */
+  opacity: var(--ao, 0.5);
+  animation: ambient-twinkle 5s ease-in-out infinite;
+}
+.ambient-star--far { box-shadow: 0 0 1px rgba(255, 255, 255, 0.25); }
+.ambient-star--mid { box-shadow: 0 0 2px rgba(255, 255, 255, 0.35); }
+.ambient-star--near { box-shadow: 0 0 4px rgba(255, 255, 255, 0.55); }
+@keyframes ambient-twinkle {
+  0%, 100% { opacity: calc(var(--ao, 0.5) * 0.45); }
+  50% { opacity: var(--ao, 0.5); }
 }
 .night-star-name {
   font-size: 0.82rem;
@@ -1442,6 +1478,7 @@ input::placeholder { color: var(--muted); }
   gap: 0.5rem;
 }
 .chat-empty { text-align: center; margin: 1rem 0; font-size: 0.88rem; }
+.chat-fade-note { text-align: center; font-size: 0.78rem; margin: 0.5rem 0 0.25rem; }
 .chat-msg {
   display: flex;
   flex-direction: column;
@@ -1505,6 +1542,9 @@ input::placeholder { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   .splash-orb { animation: none; }
   .splash.splash-hide { transition: none; }
+  /* Ambient sky stars sit still at their own brightness (their base
+     opacity is --ao; the twinkle only breathes around it). */
+  .ambient-star { animation: none; }
   /* Everything new in this pass — and everything old — goes still:
      animations finish instantly, transitions snap, orbs stop gliding. */
   *, *::before, *::after {

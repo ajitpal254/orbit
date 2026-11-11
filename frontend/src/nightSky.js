@@ -57,6 +57,47 @@ export function starPosition(friend, index = 0) {
   };
 }
 
+// Ambient starfield: decorative, non-interactive background stars so
+// the sky feels alive even with one or two friends. Positions come from
+// a hash of `${seed}:${i}` (same FNV-1a hashString as friend stars),
+// so the field is identical on every render — it never jumps when
+// presence refreshes. Three depth layers give the field depth: far
+// (tiny, dim), mid, near (bigger, brighter, soft glow). Pure +
+// browser-free, tested in tests/nightSky.test.mjs.
+export const AMBIENT_STAR_COUNT = 48;
+export const AMBIENT_SEED = 'orbit-sky';
+const AMBIENT_LAYERS = [
+  { layer: 'far', size: [1, 1.5], opacity: [0.25, 0.45] },
+  { layer: 'mid', size: [1.5, 2], opacity: [0.4, 0.6] },
+  { layer: 'near', size: [2, 2.5], opacity: [0.55, 0.85] }
+];
+
+export function ambientStars(seed = AMBIENT_SEED, count = AMBIENT_STAR_COUNT) {
+  return Array.from({ length: Math.max(0, count) }, (_, i) => {
+    const h = hashString(`${seed}:${i}`);
+    const layer = AMBIENT_LAYERS[h % 3];
+    // Different bit slices of the one hash, so x/y/size/opacity vary
+    // independently while staying deterministic per (seed, i).
+    const frac = (shift) => ((h >>> shift) % 100) / 100;
+    const size = layer.size[0] + frac(16) * (layer.size[1] - layer.size[0]);
+    const opacity = layer.opacity[0] + frac(24) * (layer.opacity[1] - layer.opacity[0]);
+    return {
+      layer: layer.layer,
+      x: Math.round((4 + ((h % 9200) / 100)) * 10) / 10, // 4–96% of the stage
+      y: Math.round((6 + (((h >>> 8) % 8800) / 100)) * 10) / 10, // 6–94%
+      size: Math.round(size * 10) / 10,
+      opacity: Math.round(opacity * 100) / 100,
+      delay: -((h % 60) / 10),
+      duration: 3 + (h % 40) / 10 // 3–7s twinkle cycle
+    };
+  });
+}
+
+// CSS class for one ambient star (layer picks its size/glow tier).
+export function ambientStarClass(star) {
+  return `ambient-star ambient-star--${star?.layer || 'mid'}`;
+}
+
 // Short status line under the star's name — the non-colour cue, so
 // presence is never carried by colour alone.
 export function starStatusText(friend) {

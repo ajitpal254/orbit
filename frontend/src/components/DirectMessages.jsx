@@ -120,6 +120,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
           />
           <button className="btn btn-primary" type="submit" disabled={sending}><Icon name="send" size={15} /> Send</button>
         </form>
+        <p className="muted chat-fade-note">Messages disappear after 24 hours.</p>
       </div>
     );
   }
