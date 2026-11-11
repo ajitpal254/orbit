@@ -4,12 +4,17 @@
 // (LiveKit) later means replacing this file, not the room UI.
 //
 // Signaling rides on socket.io (server: lib/socket.js):
-//   - exactly ONE side offers per pair (see isOfferer): the side with the
-//     larger socket id. The joiner offers to smaller-id occupants from
-//     `room-state`; existing occupants offer to a larger-id newcomer on
-//     `user-joined`. Both sides compute the same answer, so it holds
-//     regardless of join order — two people joining at the same moment can
-//     never both offer (glare) and kill the connection.
+//   - every side offers when it learns of a peer: the joiner on
+//     `room-state`, existing occupants on `user-joined`. Two sides that
+//     learn of each other at the same moment both offer — that is expected,
+//     and perfect negotiation below resolves it instead of killing the
+//     connection. Always offering (rather than electing one offerer) also
+//     keeps mixed old/new clients working: an older client that never
+//     offers on `user-joined` still gets an offer from the new side.
+//   - perfect negotiation: the side with the smaller socket id is polite —
+//     when offers collide it rolls back its own pending offer and answers
+//     the incoming one; the impolite side ignores the colliding offer and
+//     waits for its own to be answered. Exactly one offer survives per pair.
 //   - offers/answers/ICE relay through `signal` { to, type, data }
 //   - ICE candidates arriving before the remote description is set are
 //     queued and flushed after setRemoteDescription, never dropped.
@@ -27,9 +32,9 @@ const ICE_SERVERS = [
 const SPEAK_THRESHOLD = 0.02; // RMS of time-domain audio samples
 const SPEAK_POLL_MS = 150;
 
-// Deterministic offerer rule: for any pair, exactly one side offers —
-// the one with the larger socket id. Both sides compute the same result,
-// so simultaneous joins can never glare.
+// Deterministic politeness for perfect negotiation: the side with the
+// smaller socket id is polite (rolls back on a colliding offer); the other
+// side is impolite (ignores it). Both sides compute the same result.
 export function isOfferer(mySocketId, otherSocketId) {
   if (!mySocketId || !otherSocketId) return true;
   return mySocketId > otherSocketId;
@@ -154,35 +159,43 @@ export class VoiceEngine {
       data: new Uint8Array(256),
       speaking: false,
       // Keep candidates queued by an early ICE message (see _addIceCandidate).
-      pendingCandidates: existing ? existing.pendingCandidates : []
+      pendingCandidates: existing ? existing.pendingCandidates : [],
+      // Perfect negotiation: smaller socket id is polite (rolls back on a
+      // colliding offer), larger id is impolite (ignores the collision).
+      polite: this.socket.id ? this.socket.id < socketId : false,
+      makingOffer: existing ? existing.makingOffer : false,
+      ignoreOffer: false
     });
     return pc;
   }
 
   async _offerTo(socketId) {
+    const pc = this._createPeer(socketId);
+    const peer = this.peers.get(socketId);
     try {
-      const pc = this._createPeer(socketId);
+      peer.makingOffer = true;
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       this.socket.emit('signal', { to: socketId, type: 'offer', data: offer });
     } catch (err) {
       console.warn('offer failed', err);
+    } finally {
+      peer.makingOffer = false;
     }
   }
 
   async _onRoomState({ occupants }) {
-    // We are the joiner: offer only to occupants we are the offerer for.
-    // The other side offers to us on `user-joined` when the rule says so.
-    const myId = this.socket.id;
+    // We are the joiner: offer to every occupant already in the room.
+    // A colliding offer from the other side is resolved by perfect
+    // negotiation in _onSignal, so offering unconditionally is safe.
     for (const occ of occupants || []) {
-      if (isOfferer(myId, occ.socketId)) await this._offerTo(occ.socketId);
+      await this._offerTo(occ.socketId);
     }
   }
 
   async _onUserJoined({ socketId }) {
-    // An existing occupant learns a newcomer joined: offer only when the
-    // rule makes us the offerer for this pair.
-    if (socketId && isOfferer(this.socket.id, socketId)) await this._offerTo(socketId);
+    // An existing occupant learns a newcomer joined: offer to them too.
+    if (socketId) await this._offerTo(socketId);
   }
 
   // ICE candidates that arrive before the remote description is set would
@@ -209,7 +222,23 @@ export class VoiceEngine {
   async _onSignal({ from, type, data }) {
     try {
       if (type === 'offer') {
-        const pc = this.peers.get(from)?.pc || this._createPeer(from);
+        let peer = this.peers.get(from);
+        if (!peer) {
+          this._createPeer(from);
+          peer = this.peers.get(from);
+        }
+        const pc = peer.pc;
+        // Perfect negotiation: if we have a pending local offer and an
+        // offer arrives at the same time, the polite side rolls back and
+        // answers the incoming offer; the impolite side ignores it and
+        // waits for its own offer to be answered. Either way exactly one
+        // offer survives and the connection forms.
+        const offerCollision = peer.makingOffer || pc.signalingState !== 'stable';
+        peer.ignoreOffer = !peer.polite && offerCollision;
+        if (peer.ignoreOffer) return;
+        if (offerCollision) {
+          await pc.setLocalDescription({ type: 'rollback' });
+        }
         await pc.setRemoteDescription(new RTCSessionDescription(data));
         this._flushPendingCandidates(from);
         const answer = await pc.createAnswer();
