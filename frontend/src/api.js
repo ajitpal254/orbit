@@ -51,7 +51,18 @@ export const apiJson = async (url, options = {}) => {
     }
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    // The caller usually only needs the message — but two flows need
+    // more: a private room's 403 carries its locked { id, name } stub
+    // for the locked-room screen (see routes/api.js), and a
+    // rate-limited knock's 429 carries the pending knock, so the UI
+    // can show the pending state instead of an error.
+    const err = new Error(data.error || 'Request failed');
+    err.status = res.status;
+    if (data.room) err.room = data.room;
+    if (data.knock) err.knock = data.knock;
+    throw err;
+  }
   return data;
 };
 
@@ -89,6 +100,36 @@ export const declineInvite = (inviteId) => jsonPost(`/api/invites/${inviteId}/de
 export const inviteToRoom = (roomId, userId) => jsonPost(`/api/rooms/${roomId}/invite`, { userId });
 
 export const leavePrivateRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/leave`);
+
+// --- Campfires (fading rooms) ---
+export const keepRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/keep`);
+
+// --- Invite links (shareable join links) ---
+
+export const createInviteLink = (roomId) => jsonPost(`/api/rooms/${roomId}/invite-link`);
+
+export const getInviteLink = (roomId) => apiJson(`/api/rooms/${roomId}/invite-link`);
+
+export const revokeInviteLink = (roomId) =>
+  apiJson(`/api/rooms/${roomId}/invite-link`, { method: 'DELETE' });
+
+export const joinViaInviteLink = (token) =>
+  jsonPost(`/api/invite-links/${encodeURIComponent(token)}/join`);
+
+// --- Knocks on private rooms ---
+
+export const knockOnRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/knock`);
+
+export const getKnockStatus = (roomId) => apiJson(`/api/rooms/${roomId}/knock`);
+
+export const withdrawKnock = (roomId) =>
+  apiJson(`/api/rooms/${roomId}/knock`, { method: 'DELETE' });
+
+export const getRoomKnocks = (roomId) => apiJson(`/api/rooms/${roomId}/knocks`);
+
+export const admitKnock = (knockId) => jsonPost(`/api/knocks/${knockId}/admit`);
+
+export const declineKnock = (knockId) => jsonPost(`/api/knocks/${knockId}/decline`);
 
 // --- Roles & moderation (private rooms) ---
 

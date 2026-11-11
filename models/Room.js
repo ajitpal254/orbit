@@ -12,6 +12,16 @@ const roomSchema = new mongoose.Schema({
     default: 'violet'
   },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  // Campfires (fading rooms, playbook item 4): a room created with the
+  // "Campfire" toggle is deleted 60s after presence empties, unless
+  // its owner keeps it (see lib/fadingRooms.js). Legacy rooms have
+  // neither field and stay permanent — no backfill, no surprise
+  // deletion. `status` is the cleanup worker's atomic claim marker:
+  // 'open' -> 'closed' (claimed) -> document deleted.
+  ephemeral: { type: Boolean, default: false, index: true },
+  expiresAt: { type: Date, default: null, index: true },
+  status: { type: String, enum: ['open', 'closed'], default: 'open' },
+  closedAt: { type: Date, default: null },
   // Private rooms are only visible to their members. The creator is
   // auto-added to members on creation; public rooms ignore this list.
   // Rooms created before this field existed have no isPrivate/members
@@ -30,5 +40,8 @@ const roomSchema = new mongoose.Schema({
     role: { type: String, enum: ['owner', 'moderator', 'member'], default: 'member' }
   }]
 }, { timestamps: true });
+
+// The cleanup worker's query: due campfires first.
+roomSchema.index({ ephemeral: 1, status: 1, expiresAt: 1 });
 
 module.exports = mongoose.model('Room', roomSchema);

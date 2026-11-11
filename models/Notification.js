@@ -17,7 +17,7 @@ const notificationSchema = new mongoose.Schema({
     type: String,
     // 'test' is the self-sent row POST /api/push/test leaves behind so
     // the bell shows the test too.
-    enum: ['friend_request', 'friend_accepted', 'room_invite', 'dm', 'test'],
+    enum: ['friend_request', 'friend_accepted', 'room_invite', 'dm', 'knock', 'test'],
     required: true,
     index: true
   },

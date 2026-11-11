@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useLayoutEffect, useRef, useReducer } from 'react';
-import { apiFetch, apiJson, getDms, getFriends, getNotifications } from './api';
+import { apiFetch, apiJson, getDms, getFriends, getNotifications, joinViaInviteLink } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound, playMuteSound } from './sounds';
 import { voiceSessionReducer, initialVoiceSessionState } from './voiceSession';
@@ -19,6 +19,7 @@ import Avatar from './components/Avatar';
 import IconRail from './components/IconRail';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
+import LockedRoom from './components/LockedRoom';
 import { Icon } from './components/icons';
 
 // Boot timeout per /api/auth/me attempt. Render's free tier sleeps when
@@ -34,6 +35,16 @@ export default function App() {
   const [bootError, setBootError] = useState('');
   const [bootKey, setBootKey] = useState(0); // bump to re-run the boot check
   const [room, setRoom] = useState(null);
+  // Latest room for the deep-link effect, which must keep its short
+  // dependency list (see tests/appCallbackOrder.test.mjs): a failed
+  // invite link must not pull the user out of a live call.
+  const roomRef = useRef(null);
+  roomRef.current = room;
+  // A private room the user is not a member of, opened from a link /
+  // deep link / push tap: the locked-room screen with a knock button,
+  // instead of a silent bounce to the rooms list. { id, name } — the
+  // locked stub the server returns with the private-room 403.
+  const [lockedRoom, setLockedRoom] = useState(null);
   // Whether the room view itself is on screen. The voice session is
   // keyed off `room`, not this flag: navigating to another view hides
   // the room (RoomView stays mounted, so the call keeps running) and
@@ -60,6 +71,10 @@ export default function App() {
   // A new app version is waiting in the service worker (see pwa.js).
   // Shown as a toast; the app never auto-reloads for it.
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  // A redeemed invite link that did not work (invalid / revoked /
+  // expired / not a friend of the sharer): shown as a dismissible
+  // banner over the rooms list instead of a bare error page.
+  const [inviteLinkError, setInviteLinkError] = useState('');
   // Sliding tab pill: measured from the active tab button (offsetLeft /
   // offsetWidth) instead of CSS calc, so it tracks the active tab
   // exactly on every width and font.
@@ -125,11 +140,20 @@ export default function App() {
     socket.on('room-invite', onNotify);
     socket.on('friend-accepted', onNotify);
     socket.on('dm-message', onNotify);
+    // Knock traffic: a knock on my room (answer it from the members
+    // panel), and the answer to my knock (admitted → the room appears
+    // in my list; declined → my pending state clears).
+    socket.on('knock-received', onNotify);
+    socket.on('knock-admitted', onNotify);
+    socket.on('knock-declined', onNotify);
     return () => {
       socket.off('friend-request', onNotify);
       socket.off('room-invite', onNotify);
       socket.off('friend-accepted', onNotify);
       socket.off('dm-message', onNotify);
+      socket.off('knock-received', onNotify);
+      socket.off('knock-admitted', onNotify);
+      socket.off('knock-declined', onNotify);
     };
   }, [user]);
 
@@ -175,6 +199,7 @@ export default function App() {
   // engine joins); leaving it ends the session. Navigating between
   // views never touches either — that is the whole point.
   const joinRoom = useCallback((r) => {
+    setLockedRoom(null);
     if (room?.id === r.id) {
       // Already in this room's session — just show the room again
       // instead of restarting the call timer and resetting mute.
@@ -190,6 +215,7 @@ export default function App() {
 
   const leaveRoom = useCallback(() => {
     setRoom(null);
+    setLockedRoom(null);
     setInRoom(false);
     dispatchSession({ type: 'leave' });
   }, []);
@@ -197,6 +223,7 @@ export default function App() {
   // Navigate to a view without dropping the call: the room view hides,
   // RoomView stays mounted, and the mini-player appears.
   const goTo = useCallback((v) => {
+    setLockedRoom(null);
     setView(v);
     setInRoom(false);
   }, []);
@@ -221,7 +248,17 @@ export default function App() {
         const room = await apiJson(`/api/rooms/${target.roomId}`);
         joinRoom(room);
         return;
-      } catch {
+      } catch (err) {
+        // A private room I am not a member of (a knock notification's
+        // room is one I own, so this is the invite/gone case — but a
+        // stale knock target can land here too): show the locked-room
+        // screen with its knock button instead of bouncing silently.
+        if (err.room) {
+          setLockedRoom(err.room);
+          setView('rooms');
+          setInRoom(false);
+          return;
+        }
         // Fall through to the rooms list below.
       }
     }
@@ -254,10 +291,14 @@ export default function App() {
   useEffect(() => onUpdateAvailable(() => setUpdateAvailable(true)), []);
 
   // Deep links from push taps: the service worker opens the app at
-  // /#friends, /#room-<id>, /#dm-<userId> or /#notifications. Read the
-  // hash once the user is known (room/DM targets need auth + a fetch),
-  // and on hashchange for taps while a tab is already open (the SW
-  // navigates that tab in place instead of opening a new one).
+  // /#friends, /#room-<id>, /#dm-<userId> or /#notifications. Invite
+  // links arrive the same way, as /#invite-<token> — shared by a room
+  // member, redeemed here via POST /api/invite-links/:token/join.
+  // Read the hash once the user is known (room/DM/invite targets need
+  // auth + a fetch), and on hashchange for taps while a tab is already
+  // open (the SW navigates that tab in place instead of opening a new
+  // one). A logged-out opener keeps the hash through the Auth screen;
+  // it is redeemed once they sign in.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -266,12 +307,33 @@ export default function App() {
       if (!target) return;
       // Consume the hash so a reload doesn't re-navigate.
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      if (target.inviteToken) {
+        try {
+          const room = await joinViaInviteLink(target.inviteToken);
+          if (cancelled) return;
+          setInviteLinkError('');
+          joinRoom(room);
+        } catch (err) {
+          if (cancelled) return;
+          setInviteLinkError(err.message || 'That invite link did not work.');
+          // Stay in the current call when already in one — the banner
+          // above the room view explains the failed link.
+          if (!roomRef.current) goTo('rooms');
+        }
+        return;
+      }
       if (target.view === 'rooms' && target.roomId) {
         try {
           const room = await apiJson(`/api/rooms/${target.roomId}`);
           if (!cancelled) joinRoom(room);
-        } catch {
-          if (!cancelled) goTo('rooms');
+        } catch (err) {
+          // A private room I am not a member of: the locked-room
+          // screen (with its knock button), not a silent bounce.
+          if (!cancelled && err.room) {
+            setLockedRoom(err.room);
+            setView('rooms');
+            setInRoom(false);
+          } else if (!cancelled) goTo('rooms');
         }
         return;
       }
@@ -325,6 +387,7 @@ export default function App() {
     } catch {}
     disconnectSocket();
     setRoom(null);
+    setLockedRoom(null);
     setInRoom(false);
     dispatchSession({ type: 'leave' });
     setView('rooms');
@@ -427,6 +490,12 @@ export default function App() {
       )}
 
       <main className="main">
+        {inviteLinkError && (
+          <div className="invite-error" role="alert">
+            <span>{inviteLinkError}</span>
+            <button className="btn btn-text btn-small" onClick={() => setInviteLinkError('')} aria-label="Dismiss">Dismiss</button>
+          </div>
+        )}
         {room && (
           // The room view stays mounted at this one spot while a call is
           // active — hiding it (display: none) instead of unmounting it
@@ -464,6 +533,12 @@ export default function App() {
             onNavigate={handleNotifNavigate}
             onBack={() => goTo('rooms')}
             onRead={() => setRefreshTick((t) => t + 1)}
+          />
+        ) : lockedRoom ? (
+          <LockedRoom
+            room={lockedRoom}
+            onJoined={joinRoom}
+            onBack={() => setLockedRoom(null)}
           />
         ) : (
           <Home user={user} onJoin={joinRoom} refreshTick={refreshTick} onOpenAbout={() => goTo('about')} onNavigate={handleNotifNavigate} notifUnread={notifUnread} onOpenNotifications={() => goTo('notifications')} />

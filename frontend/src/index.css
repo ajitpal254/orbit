@@ -858,6 +858,43 @@ input::placeholder { color: var(--muted); }
 }
 .conn-details-btn:hover { color: var(--text); border-color: var(--border-strong); }
 .conn-details-btn .icon { width: 14px; height: 14px; }
+
+/* Invite link: the header button, the in-flow panel under the room
+   header (RoomView), and the join-error banner (App). The panel is
+   plain in-flow content with no animation, so there is nothing to
+   still under prefers-reduced-motion. */
+.invite-link-btn { flex-shrink: 0; }
+.invite-link-btn .icon { width: 16px; height: 16px; }
+.invite-link-panel { margin: 0 0 0.6rem; padding: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.invite-link-head { display: flex; align-items: center; justify-content: space-between; }
+.invite-link-head strong { display: inline-flex; align-items: center; gap: 0.35rem; }
+.invite-link-row { display: flex; gap: 0.5rem; }
+.invite-link-row input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.6rem;
+  text-overflow: ellipsis;
+}
+.invite-link-actions { display: flex; justify-content: flex-end; }
+.invite-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0 0 0.8rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--text);
+  font-size: 0.9rem;
+}
 .conn-popover {
   position: absolute;
   left: 50%;
@@ -1174,6 +1211,65 @@ input::placeholder { color: var(--muted); }
 .privacy-hint { font-size: 0.85rem; margin: 0.3rem 0 0.5rem; }
 .lock-badge { font-size: 0.85em; }
 .room-private-line { margin: 0.55rem 0 0; color: var(--muted); font-size: 0.8rem; font-weight: 700; }
+
+/* Campfires (fading rooms): static amber accents only — no animation,
+   so prefers-reduced-motion needs nothing new here. */
+.campfire-badge { display: inline-flex; align-items: center; gap: 0.2rem; font-size: 0.8em; font-weight: 700; color: #fbbf24; margin-right: 0.35rem; vertical-align: 0.05em; }
+.campfire-badge .icon { width: 12px; height: 12px; }
+.campfire-toggle { display: flex; align-items: center; gap: 0.55rem; margin: 0.55rem 0 0.2rem; font-size: 0.9rem; font-weight: 700; color: var(--text); cursor: pointer; }
+.campfire-toggle input { accent-color: #f59e0b; width: 17px; height: 17px; flex-shrink: 0; }
+.campfire-toggle span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.campfire-line { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0.6rem 0.2rem 0; color: #fbbf24; font-size: 0.86rem; font-weight: 600; }
+.campfire-line .icon { width: 14px; height: 14px; flex-shrink: 0; }
+.campfire-line--kept { color: var(--muted); }
+
+/* Locked room + knocks: a private room opened by a non-member, and the
+   pending knocks in the members panel. The lock icon breathes gently;
+   the global prefers-reduced-motion rule stills it like everything else. */
+.locked-card { text-align: center; padding: 2rem 1.25rem; }
+.locked-card h2 { margin: 0.6rem 0 0.3rem; }
+.locked-card .btn { margin-top: 0.8rem; }
+.locked-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.locked-icon--pulse { animation: locked-pulse 2.4s ease-in-out infinite; }
+@keyframes locked-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.35); }
+  50% { box-shadow: 0 0 0 12px rgba(139, 92, 246, 0); }
+}
+.knock-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  margin: 0.8rem 0 0;
+}
+.knock-pending .icon { flex-shrink: 0; }
+
+/* Pending knocks in the members panel (owner/mods only). */
+.knocks-section { border-top: 1px solid var(--border); margin-top: 0.7rem; padding-top: 0.7rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.knocks-title { display: flex; align-items: center; gap: 0.35rem; margin: 0; font-size: 0.9rem; }
+.knock-row { background: rgba(139, 92, 246, 0.06); border-color: rgba(139, 92, 246, 0.35); }
+.knock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
 
 /* Room body: members panel + orb stage. A flex column at every width
    so the room-space keeps its flex:1 vertical fill on mobile exactly

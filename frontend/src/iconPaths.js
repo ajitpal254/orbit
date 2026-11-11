@@ -46,6 +46,10 @@ export const ICON_PATHS = {
   chat: [
     { el: 'path', d: 'M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z' }
   ],
+  // Campfire (fading rooms): a flame, drawn as one stroke path.
+  flame: [
+    { el: 'path', d: 'M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z' }
+  ],
   // Hang-up: the plain handset, rotated 135° by .voice-btn.leave CSS —
   // that rotation is what turns it into the familiar hang-up glyph.
   phone: [
@@ -89,6 +93,11 @@ export const ICON_PATHS = {
   'chevron-left': [
     { el: 'polyline', points: '15 18 9 12 15 6' }
   ],
+  // Chain link — invite links (RoomView header) and copy-link controls.
+  link: [
+    { el: 'path', d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' },
+    { el: 'path', d: 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' }
+  ],
   send: [
     { el: 'line', x1: 22, y1: 2, x2: 11, y2: 13 },
     { el: 'polygon', points: '22 2 15 22 11 13 2 9 22 2' }
@@ -96,6 +105,13 @@ export const ICON_PATHS = {
   lock: [
     { el: 'rect', x: 3, y: 11, width: 18, height: 11, rx: 2 },
     { el: 'path', d: 'M7 11V7a5 5 0 0 1 10 0v4' }
+  ],
+  // Knock: a door with two knock marks — asking to be let in.
+  knock: [
+    { el: 'rect', x: 8, y: 3, width: 11, height: 18, rx: 1 },
+    { el: 'circle', cx: 16, cy: 12, r: 0.8 },
+    { el: 'line', x1: 2, y1: 8, x2: 4.5, y2: 8 },
+    { el: 'line', x1: 2, y1: 12, x2: 4.5, y2: 12 }
   ],
   globe: [
     { el: 'circle', cx: 12, cy: 12, r: 10 },

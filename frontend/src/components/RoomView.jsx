@@ -1,11 +1,22 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock } from '../api';
+import { buildInviteLinkUrl } from '../deepLink';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import Avatar from './Avatar';
 import { Icon, SignalBars } from './icons';
+
+// Short relative age for a knock row ("just now", "5m ago", "3h ago") —
+// a knock expires after 24h, so the owner can see at a glance how
+// long one has been waiting.
+const knockAge = (iso) => {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+};
 
 export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef }) {
   const { muted, deafened, modMuted, modMutedBy } = session;
@@ -32,6 +43,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [friends, setFriends] = useState(null);
   const [invited, setInvited] = useState([]);
   const [inviteError, setInviteError] = useState('');
+  // Invite link (shareable join link): the panel under the header, the
+  // fetched/created link, and copy feedback. One link per room — the
+  // panel loads the existing one or creates it on first open.
+  const [showLink, setShowLink] = useState(false);
+  const [linkInfo, setLinkInfo] = useState(null);
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkError, setLinkError] = useState('');
+  const [copied, setCopied] = useState(false);
+  const linkInputRef = useRef(null);
+  const copiedTimerRef = useRef(null);
   const [leaving, setLeaving] = useState(false);
   // Roles & moderation (private rooms): local copy of the member list so
   // role actions refresh it without leaving the room; moderator-mute
@@ -39,10 +60,22 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [members, setMembers] = useState(room.members || []);
   const [memberError, setMemberError] = useState('');
   const [kicked, setKicked] = useState(false);
+  // Knocks (private rooms): pending knocks for the owner/moderators to
+  // answer. Loaded only for owner/mods; quiet by default — the section
+  // only renders while someone is knocking.
+  const [knocks, setKnocks] = useState([]);
+  const [knockError, setKnockError] = useState('');
+  const [answeringKnock, setAnsweringKnock] = useState(null);
   // Orb tap popover + bounce: which orb's info card is open, and which
   // orb just got tapped (drives the one-shot .orb-tapped bounce).
   const [selectedOrb, setSelectedOrb] = useState(null);
   const [tapOrbId, setTapOrbId] = useState(null);
+  // Campfires (fading rooms): whether this room was kept permanent,
+  // whether it faded under us, and the keep request state.
+  const [kept, setKept] = useState(false);
+  const [faded, setFaded] = useState(false);
+  const [keepBusy, setKeepBusy] = useState(false);
+  const [keepError, setKeepError] = useState('');
   // "Connection details" popover: the per-peer ICE/debug line lives
   // here instead of always-on under the orbs (see below).
   const [showConnDetails, setShowConnDetails] = useState(false);
@@ -167,6 +200,14 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       voiceRef.current?.leave();
       setKicked(true);
     };
+    // This campfire faded while I was still showing it: only possible
+    // when my socket died without a leave (presence emptied, the
+    // worker closed the room). Stop voice and show a notice.
+    const onRoomClosed = ({ roomId }) => {
+      if (roomId !== room.id) return;
+      voiceRef.current?.leave();
+      setFaded(true);
+    };
 
     socket.on('room-state', onRoomState);
     socket.on('user-joined', onUserJoined);
@@ -176,6 +217,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     socket.on('moderator-muted', onModeratorMuted);
     socket.on('moderator-unmuted', onModeratorUnmuted);
     socket.on('room-kicked', onRoomKicked);
+    socket.on('room-closed', onRoomClosed);
 
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
     voice.join();
@@ -191,6 +233,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       socket.off('moderator-muted', onModeratorMuted);
       socket.off('moderator-unmuted', onModeratorUnmuted);
       socket.off('room-kicked', onRoomKicked);
+      socket.off('room-closed', onRoomClosed);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
@@ -200,6 +243,14 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   useEffect(() => {
     setMembers(room.members || []);
   }, [room]);
+
+  // A new room resets the campfire state — RoomView stays mounted
+  // when App swaps rooms, so this cannot live in the mount effect.
+  useEffect(() => {
+    setKept(false);
+    setFaded(false);
+    setKeepError('');
+  }, [room.id]);
 
   useEffect(() => {
     if (chatOpen && chatEndRef.current) {
@@ -275,13 +326,14 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       if (e.key === 'Escape') {
         if (chatOpen) setChatOpen(false);
         else if (showInvite) setShowInvite(false);
+        else if (showLink) setShowLink(false);
         else if (showConnDetails) setShowConnDetails(false);
         else if (selectedOrb) setSelectedOrb(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showConnDetails, selectedOrb]);
+  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showLink, showConnDetails, selectedOrb]);
 
   const openInvite = async () => {
     setShowInvite((v) => !v);
@@ -305,6 +357,64 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     }
   };
 
+  // Invite link: load the room's active link, or create it when there
+  // is none yet. The server returns the existing link instead of
+  // duplicating it, so opening the panel twice is safe.
+  const loadOrCreateLink = async () => {
+    setLinkLoading(true);
+    setLinkError('');
+    try {
+      const data = await getInviteLink(room.id);
+      if (data?.link) {
+        setLinkInfo(data.link);
+      } else {
+        setLinkInfo(await createInviteLink(room.id));
+      }
+    } catch (err) {
+      setLinkError(err.message);
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  const openLinkPanel = () => {
+    const next = !showLink;
+    setShowLink(next);
+    if (next && !linkInfo && !linkLoading) loadOrCreateLink();
+  };
+
+  const linkUrl = linkInfo ? buildInviteLinkUrl(window.location.origin, linkInfo.token) : '';
+
+  // Copy the link: Clipboard API first, with a select-the-input
+  // fallback for browsers/contexts where it is unavailable.
+  const copyLink = async () => {
+    if (!linkUrl) return;
+    try {
+      await navigator.clipboard.writeText(linkUrl);
+    } catch {
+      linkInputRef.current?.select();
+    }
+    setCopied(true);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
+  };
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
+
+  const revokeLink = async () => {
+    if (!window.confirm(`Revoke the invite link for "${room.name}"? Anyone holding it will no longer be able to join with it.`)) return;
+    setLinkError('');
+    try {
+      await revokeInviteLink(room.id);
+      setLinkInfo(null);
+      setCopied(false);
+    } catch (err) {
+      setLinkError(err.message);
+    }
+  };
+
   // Role actions — each answers with the fresh room JSON; the member
   // list refreshes from it. Errors surface under the members panel.
   const runMemberAction = async (fn) => {
@@ -320,6 +430,53 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const myRole = (members.find((m) => m.id === user.id) || {}).role || null;
   const isOwner = myRole === 'owner';
   const isModerator = myRole === 'moderator';
+  const canAnswerKnocks = isOwner || isModerator;
+
+  // Pending knocks for this room, for the members panel. A 403 (plain
+  // member) is expected and stays quiet — only owner/mods ever see it.
+  const loadKnocks = useCallback(async () => {
+    if (!room.isPrivate || !canAnswerKnocks) return;
+    try {
+      setKnocks(await getRoomKnocks(room.id));
+    } catch {
+      // Stay quiet: a failed refresh keeps the last-known list.
+    }
+  }, [room.id, room.isPrivate, canAnswerKnocks]);
+
+  // Refresh the knocks live when one arrives or is withdrawn, and when
+  // the role becomes known (members load after mount).
+  useEffect(() => { loadKnocks(); }, [loadKnocks]);
+  useEffect(() => {
+    const socket = getSocket();
+    const onKnock = ({ roomId } = {}) => {
+      if (roomId === room.id) loadKnocks();
+    };
+    socket.on('knock-received', onKnock);
+    socket.on('knock-withdrawn', onKnock);
+    return () => {
+      socket.off('knock-received', onKnock);
+      socket.off('knock-withdrawn', onKnock);
+    };
+  }, [room.id, loadKnocks]);
+
+  // Answer a knock: admit adds the knocker as a member (the response
+  // carries the fresh room JSON); decline just clears it. Either way
+  // the row leaves the panel at once — a failed answer reloads the
+  // list instead of guessing.
+  const answerKnock = async (knockId, admit) => {
+    setAnsweringKnock(knockId);
+    setKnockError('');
+    try {
+      const res = admit ? await admitKnock(knockId) : await declineKnock(knockId);
+      setKnocks((prev) => prev.filter((k) => k.id !== knockId));
+      if (admit && res.room?.members) setMembers(res.room.members);
+    } catch (err) {
+      setKnockError(err.message);
+      loadKnocks();
+    } finally {
+      setAnsweringKnock(null);
+    }
+  };
 
   const promote = (memberId) => runMemberAction(() => promoteMember(room.id, memberId));
   const demote = (memberId) => runMemberAction(() => demoteMember(room.id, memberId));
@@ -332,6 +489,23 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     runMemberAction(() => transferOwnership(room.id, member.id));
   };
   const mute = (member) => runMemberAction(() => muteMember(room.id, member.id));
+
+  // Campfire "Keep this room": make this room permanent. The server
+  // answers 410 if the room already faded (lost the race to cleanup);
+  // the button hides on success and the room list refreshes live from
+  // the server's rooms-changed push.
+  const keepThisRoom = async () => {
+    setKeepError('');
+    setKeepBusy(true);
+    try {
+      await keepRoom(room.id);
+      setKept(true);
+    } catch (err) {
+      setKeepError(err.message);
+    } finally {
+      setKeepBusy(false);
+    }
+  };
 
   const leaveMembership = async () => {
     if (!window.confirm(`Leave the private room "${room.name}"? You will need a new invite to come back.`)) return;
@@ -401,6 +575,18 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     );
   }
 
+  if (faded) {
+    return (
+      <div className="room-view">
+        <div className="card kicked-card">
+          <h2>This campfire faded</h2>
+          <p className="muted">“{room.name}” closed 1 minute after the last person left. Campfires are temporary — create a new one anytime.</p>
+          <button className="btn btn-primary" onClick={onLeave}>Back to rooms</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="room-view" style={{ '--room-from': accent.from, '--room-to': accent.to }}>
       <div className="room-header">
@@ -415,9 +601,92 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         <span className="room-count">
           <span className="count-dot" /> {people.length} here
         </span>
+        <button
+          className="btn btn-text invite-link-btn"
+          onClick={openLinkPanel}
+          title="Copy invite link"
+          aria-label="Copy invite link"
+          aria-expanded={showLink}
+        >
+          <Icon name="link" size={16} />
+        </button>
       </div>
 
+      {/* Campfire state: everyone in the room sees that it fades; the
+          owner (creator, or the role-owner after a transfer) can keep
+          it permanent. No countdown — the playbook states the 1-minute
+          rule, it does not ask for a ticking timer. */}
+      {room.ephemeral && !kept && (
+        <p className="campfire-line">
+          <Icon name="flame" size={14} /> Campfire — closes 1 min after everyone leaves.
+          {(String(room.createdBy) === String(user.id) || isOwner) && (
+            <button className="btn btn-text btn-small" disabled={keepBusy} onClick={keepThisRoom}>
+              {keepBusy ? 'Keeping…' : 'Keep this room'}
+            </button>
+          )}
+        </p>
+      )}
+      {room.ephemeral && kept && (
+        <p className="campfire-line campfire-line--kept">
+          <Icon name="flame" size={14} /> Kept — this room won’t fade.
+        </p>
+      )}
+      {keepError && <p className="mic-error">{keepError}</p>}
+
       {micError && <p className="mic-error">{micError}</p>}
+
+      {/* Invite link panel: the room's shareable join link. In flow
+          below the header (not absolute), so it can never hide behind
+          the voice bar. */}
+      {showLink && (
+        <div className="invite-link-panel card">
+          <div className="invite-link-head">
+            <strong><Icon name="link" size={15} /> Invite link</strong>
+            <button className="btn btn-text btn-small" onClick={() => setShowLink(false)} aria-label="Close invite link">
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+          {linkLoading && <p className="muted">Making your link…</p>}
+          {!linkLoading && linkInfo && (
+            <>
+              <div className="invite-link-row">
+                <input
+                  ref={linkInputRef}
+                  readOnly
+                  value={linkUrl}
+                  onClick={(e) => e.target.select()}
+                  aria-label="Invite link"
+                />
+                <button className="btn btn-primary btn-small" onClick={copyLink}>
+                  {copied ? (<><Icon name="check" size={13} /> Copied</>) : 'Copy'}
+                </button>
+              </div>
+              <p className="muted members-note">
+                {room.isPrivate ? (
+                  <>
+                    Only friends of {linkInfo.createdBy.id === user.id ? 'yours' : (linkInfo.createdBy.name || 'the person who made this link')} can join with this link.
+                    {linkInfo.expiresAt ? (
+                      <> It expires {new Date(linkInfo.expiresAt).toLocaleDateString([], { month: 'short', day: 'numeric' })} — revoke it and make a new one for a fresh link.</>
+                    ) : null}
+                  </>
+                ) : (
+                  'Anyone with this link can join — this room is public.'
+                )}
+              </p>
+              <div className="invite-link-actions">
+                <button className="btn btn-text btn-small" onClick={revokeLink}>Revoke link</button>
+              </div>
+            </>
+          )}
+          {!linkLoading && !linkInfo && !linkError && (
+            <p className="muted">
+              No invite link yet.{' '}
+              <button className="btn btn-text btn-small" onClick={loadOrCreateLink}>Create one</button>
+            </p>
+          )}
+          {linkError && <p className="error">{linkError}</p>}
+        </div>
+      )}
 
       {/* Room body: members panel + orb stage. They stack on mobile;
           on desktop (min-width: 900px in index.css) the panel becomes
@@ -435,6 +704,11 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               <Icon name="users" size={15} /> Members ({members.length})
               <span className="members-toggle-chev" aria-hidden="true"><Icon name="chevron-left" size={14} /></span>
             </button>
+            {canAnswerKnocks && knocks.length > 0 && (
+              <span className="knock-badge" title={`${knocks.length} ${knocks.length === 1 ? 'person is' : 'people are'} knocking`}>
+                <Icon name="knock" size={12} /> {knocks.length}
+              </span>
+            )}
             <span>
               <button className="btn btn-primary btn-small" onClick={openInvite}>
                 {showInvite ? (<><Icon name="x" size={14} /> Close</>) : (<><Icon name="plus" size={14} /> Invite a friend</>)}
@@ -480,6 +754,37 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               <span className="muted">No members listed.</span>
             )}
           </div>
+          {canAnswerKnocks && knocks.length > 0 && (
+            <div className="knocks-section">
+              <h4 className="knocks-title"><Icon name="knock" size={15} /> Knocking ({knocks.length})</h4>
+              {knocks.map((k) => (
+                <div key={k.id} className="person-row knock-row">
+                  <Avatar user={k.user} size="sm" className="person-orb" />
+                  <span className="person-info">
+                    <strong>{k.user.name || 'Unnamed'}</strong>
+                    <span className="muted person-email">Knocked {knockAge(k.createdAt)} — wants to join</span>
+                  </span>
+                  <span className="row-actions">
+                    <button
+                      className="btn btn-primary btn-small"
+                      disabled={answeringKnock === k.id}
+                      onClick={() => answerKnock(k.id, true)}
+                    >
+                      Admit
+                    </button>
+                    <button
+                      className="btn btn-text btn-small"
+                      disabled={answeringKnock === k.id}
+                      onClick={() => answerKnock(k.id, false)}
+                    >
+                      Decline
+                    </button>
+                  </span>
+                </div>
+              ))}
+              {knockError && <p className="error">{knockError}</p>}
+            </div>
+          )}
           {memberError && <p className="error">{memberError}</p>}
           <p className="muted members-note">
             Moderator mute is cooperative — a muted member's app mutes itself, and a modified client could ignore it.

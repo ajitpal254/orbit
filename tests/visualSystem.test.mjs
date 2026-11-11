@@ -14,8 +14,8 @@ import { emitRoomsChanged } from '../lib/socket.js';
 const ICONS_IN_USE = [
   'planet', 'bell', 'mic', 'mic-off', 'headphones', 'headphones-off',
   'chat', 'phone', 'users', 'user', 'user-plus', 'search', 'plus', 'x',
-  'check', 'check-circle', 'chevron-left', 'send', 'lock', 'globe',
-  'mail', 'crown', 'shield', 'image', 'volume', 'home'
+  'check', 'check-circle', 'chevron-left', 'send', 'lock', 'knock', 'globe',
+  'mail', 'crown', 'shield', 'image', 'volume', 'home', 'link'
 ];
 
 test('icon set: every icon the app uses exists', () => {

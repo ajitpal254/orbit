@@ -45,6 +45,14 @@ test('notificationText covers every type', () => {
     'Amrinder invited you to a private room'
   );
   assert.equal(
+    notificationText({ type: 'knock', actorName: 'Amrinder', roomName: 'Late Night' }),
+    'Amrinder knocked on Late Night'
+  );
+  assert.equal(
+    notificationText({ type: 'knock', actorName: 'Amrinder' }),
+    'Amrinder knocked on your private room'
+  );
+  assert.equal(
     notificationText({ type: 'dm', actorName: 'Amrinder' }),
     'New message from Amrinder'
   );

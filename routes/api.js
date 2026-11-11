@@ -10,6 +10,9 @@ const Room = require('../models/Room');
 const Message = require('../models/Message');
 const Friendship = require('../models/Friendship');
 const RoomInvite = require('../models/RoomInvite');
+const InviteLink = require('../models/InviteLink');
+const { generateInviteToken, isValidInviteToken, expiryForRoom, isLinkExpired, canCreateInviteLink, canRevokeInviteLink, canJoinViaLink } = require('../lib/inviteLinks');
+const Knock = require('../models/Knock');
 const DirectMessage = require('../models/DirectMessage');
 const Notification = require('../models/Notification');
 const PushSubscription = require('../models/PushSubscription');
@@ -26,6 +29,11 @@ const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, fin
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { canDm, buildSummaries } = require('../lib/dms');
 const { notExpiredFilter, withExpiry } = require('../lib/fadingChat');
+const { aliveFilter, isVisible, keepRoom } = require('../lib/fadingRooms');
+const {
+  expiryForKnock, isKnockPending, isKnockRateLimited,
+  canKnock, knockBlockReason, canAnswerKnock, knockJson, notExpiredKnockFilter
+} = require('../lib/knock');
 const { emitToUser, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
 const { buildFriendPresence } = require('../lib/friendPresence');
 const presence = require('../lib/presence');
@@ -417,6 +425,10 @@ const roomJson = (room, meId, profiles = new Map()) => {
     accent: accentById(room.accent),
     createdBy: String(room.createdBy),
     createdAt: room.createdAt,
+    // Campfire state (fading rooms): ephemeral rooms carry their
+    // server-set deadline; legacy/permanent rooms send null.
+    ephemeral: !!room.ephemeral,
+    expiresAt: room.expiresAt || null,
     occupants: occ.map((o) => ({ userId: o.userId, name: o.name, speaking: o.speaking })),
     occupantCount: occ.length,
     isPrivate,
@@ -489,12 +501,19 @@ router.get('/rooms', authMiddleware, asyncHandler(async (req, res) => {
   // or creator). Rooms without isPrivate (pre-private-rooms) match the
   // $ne: true branch and stay public. Both member shapes are matched:
   // 'members.user' for subdocuments, 'members' for legacy plain ids.
+  // Fading rooms: expired or cleanup-claimed rooms never reach the
+  // list — expiry is enforced at read time, not when the worker runs.
   const rooms = await Room.find({
-    $or: [
-      { isPrivate: { $ne: true } },
-      { 'members.user': req.user._id },
-      { members: req.user._id },
-      { createdBy: req.user._id }
+    $and: [
+      {
+        $or: [
+          { isPrivate: { $ne: true } },
+          { 'members.user': req.user._id },
+          { members: req.user._id },
+          { createdBy: req.user._id }
+        ]
+      },
+      aliveFilter()
     ]
   }).sort({ updatedAt: -1 }).lean();
   const profiles = await memberProfilesFor(rooms);
@@ -524,12 +543,41 @@ router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
 
 router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  // A faded campfire reads as gone, exactly like a deleted room — the
+  // worker may not have swept it yet, but its deadline has passed.
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
-    return res.status(403).json({ error: 'This room is private' });
+    // A locked stub — just enough for the locked-room screen (name +
+    // id). The id is unguessable, and topic / members / occupants stay
+    // hidden, so a private room still leaks nothing to a stranger who
+    // stumbles on its id. The frontend reads it off the thrown error
+    // (see apiJson: err.room).
+    return res.status(403).json({ error: 'This room is private', room: { id: String(room._id), name: room.name, isPrivate: true } });
   }
   const profiles = await memberProfilesFor([room]);
   res.json(roomJson(room, req.user._id, profiles));
+}));
+
+// POST /api/rooms/:id/keep — the campfire owner's "Keep this room":
+// make an ephemeral room permanent before it fades. Atomic: the
+// conditional update wins only while the room is still an open
+// campfire whose deadline has not passed; if cleanup already claimed
+// it, the client gets the authoritative 410 instead of a silent
+// success. Keeping an already-permanent room is a no-op success.
+router.post('/rooms/:id/keep', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!isVisible(room)) return res.status(410).json({ error: 'This campfire has already faded' });
+  if (!room.ephemeral) return res.json(await freshRoomJson(room._id, req.user._id));
+  // Owner = the creator, or the role-owner after a transfer.
+  const isOwner = String(room.createdBy) === String(req.user._id) ||
+    getRole(room, req.user._id) === 'owner';
+  if (!isOwner) return res.status(403).json({ error: 'Only the room owner can keep it' });
+  const kept = await keepRoom(Room, room._id);
+  if (!kept) return res.status(410).json({ error: 'This campfire has already faded' });
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Campfire kept — room is permanent now');
+  emitRoomsChanged(room._id); // home screens pick the kept room up live
+  res.json(await freshRoomJson(room._id, req.user._id));
 }));
 
 router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
@@ -541,6 +589,8 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   await Room.deleteOne({ _id: room._id });
   await Message.deleteMany({ roomId: room._id });
   await RoomInvite.deleteMany({ room: room._id });
+  await InviteLink.deleteMany({ room: room._id });
+  await Knock.deleteMany({ room: room._id });
   clearMutedForRoom(room._id);
   emitRoomsChanged(room._id); // home screens drop the deleted room live
   res.json({ message: 'Room deleted' });
@@ -633,9 +683,14 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
     await Room.deleteOne({ _id: room._id });
     await Message.deleteMany({ roomId: room._id });
     await RoomInvite.deleteMany({ room: room._id });
+    await InviteLink.deleteMany({ room: room._id });
+    await Knock.deleteMany({ room: room._id });
     clearMutedForRoom(room._id);
     return res.json({ message: 'Left the room — it was deleted as the last member left' });
   }
+  // Leaving takes my invite link with me: the link admits friends of
+  // its creator, and I am no longer in the room to vouch for them.
+  await InviteLink.deleteMany({ room: room._id, createdBy: req.user._id });
   await writeMembers(room._id, remaining);
   res.json({ message: 'Left the room' });
 }));
@@ -700,6 +755,10 @@ router.post('/rooms/:id/members/:userId/kick', authMiddleware, friendLimit, asyn
   const members = normalizeMembers(room).filter((m) => m.userId !== String(target._id));
   await writeMembers(room._id, members);
   await RoomInvite.deleteMany({ room: room._id, invitee: target._id });
+  // A kicked member's invite link goes too — it admits friends of its
+  // creator, and they are no longer in the room.
+  await InviteLink.deleteMany({ room: room._id, createdBy: target._id });
+  await Knock.deleteMany({ room: room._id, user: target._id });
   setMutedInRoom(room._id, target._id, false);
   kickSocketsFromRoom(target._id, room._id);
   req.log.info({ userId: String(req.user._id), roomId: String(room._id), targetId: String(target._id) }, 'Member kicked');
@@ -780,7 +839,7 @@ const messageJson = (m) => {
 
 router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }
@@ -794,7 +853,7 @@ router.get('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) 
 
 router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }
@@ -869,6 +928,407 @@ router.post('/invites/:id/decline', authMiddleware, friendLimit, asyncHandler(as
   const room = await Room.findById(invite.room).lean();
   const inviter = await User.findById(invite.inviter);
   res.json(inviteJson(invite, room, inviter));
+}));
+
+// --- INVITE LINKS (SHAREABLE JOIN LINKS) ---
+//
+// Playbook: "Invite links — Join without searching. Expiring for
+// private rooms." One active link per room; the raw token is returned
+// to its authorized viewers (they need it to build the shareable URL)
+// and is never logged. See lib/inviteLinks.js for the rules: private
+// links expire after 7 days, public links never expire; a private-room
+// link admits only accepted friends of the link creator (the same
+// rule as room invites); revocation is the link creator or the room
+// owner — moderators cannot revoke.
+//
+// The link itself is `/#invite-<token>` (a hash, so the token never
+// travels in an HTTP request line or server log — the frontend reads
+// the hash and POSTs the token in the body to /invite-links/:token/join).
+
+// Serialize a link for an authorized viewer, with the raw token the
+// client needs to build the shareable URL.
+const inviteLinkJson = (link, token, creatorName) => ({
+  roomId: String(link.room),
+  token,
+  expiresAt: link.expiresAt || null,
+  createdBy: { id: String(link.createdBy), name: creatorName || '' },
+  createdAt: link.createdAt
+});
+
+// The stored token ciphertext, decrypted for an authorized viewer.
+// Null when it cannot be decrypted (lost/rotated key) — the caller
+// treats that link as unusable and replaces it on next create.
+const decryptLinkToken = (link) => {
+  try {
+    return decrypt(link.token);
+  } catch {
+    return null;
+  }
+};
+
+// POST /api/rooms/:id/invite-link — create the room's link, or return
+// the existing active one (idempotent, like the pending room-invite
+// flow). Private rooms: members only. Public rooms: any signed-in user.
+router.post('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!canCreateInviteLink(room, req.user._id)) {
+    return res.status(403).json({ error: 'Only room members can create an invite link' });
+  }
+  let existing = await InviteLink.findOne({ room: room._id });
+  if (existing) {
+    if (!isLinkExpired(existing)) {
+      const token = decryptLinkToken(existing);
+      if (token) {
+        const creator = await User.findById(existing.createdBy).select('name').lean();
+        return res.json(inviteLinkJson(existing, token, creator ? creator.name : ''));
+      }
+      // Unreadable stored token (lost key) — drop the dead link and
+      // make a fresh one below.
+    }
+    await InviteLink.deleteOne({ _id: existing._id });
+    existing = null;
+  }
+  const token = generateInviteToken();
+  let link;
+  try {
+    link = await InviteLink.create({
+      room: room._id,
+      createdBy: req.user._id,
+      tokenHash: hashToken(token),
+      token: encrypt(token),
+      expiresAt: expiryForRoom(room)
+    });
+  } catch (err) {
+    // Lost a race with another create for the same room (unique index
+    // on room) — return the winner's link instead of failing.
+    if (err && err.code === 11000) {
+      const winner = await InviteLink.findOne({ room: room._id });
+      if (winner && !isLinkExpired(winner)) {
+        const winnerToken = decryptLinkToken(winner);
+        if (winnerToken) {
+          const creator = await User.findById(winner.createdBy).select('name').lean();
+          return res.json(inviteLinkJson(winner, winnerToken, creator ? creator.name : ''));
+        }
+      }
+    }
+    throw err;
+  }
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Invite link created');
+  res.status(201).json(inviteLinkJson(link, token, req.user.name));
+}));
+
+// GET /api/rooms/:id/invite-link — my room's active link, if any.
+// { link: null } when there is none (or it expired / is unreadable) —
+// 200, not 404, so the UI treats "no link yet" as a normal state.
+router.get('/rooms/:id/invite-link', authMiddleware, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!canCreateInviteLink(room, req.user._id)) {
+    return res.status(403).json({ error: 'Only room members can see the invite link' });
+  }
+  const link = await InviteLink.findOne({ room: room._id });
+  if (!link || isLinkExpired(link)) return res.json({ link: null });
+  const token = decryptLinkToken(link);
+  if (!token) return res.json({ link: null });
+  const creator = await User.findById(link.createdBy).select('name').lean();
+  res.json({ link: inviteLinkJson(link, token, creator ? creator.name : '') });
+}));
+
+// DELETE /api/rooms/:id/invite-link — revoke the room's link. The link
+// creator or the room owner; moderators cannot revoke. A revoked link
+// is deleted, so it can never be redeemed again.
+router.delete('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const link = await InviteLink.findOne({ room: room._id });
+  if (!link) return res.status(404).json({ error: 'No invite link for this room' });
+  if (!canRevokeInviteLink(room, link, req.user._id)) {
+    return res.status(403).json({ error: 'Only the link creator or the room owner can revoke it' });
+  }
+  await InviteLink.deleteOne({ _id: link._id });
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Invite link revoked');
+  res.json({ message: 'Invite link revoked' });
+}));
+
+// POST /api/invite-links/:token/join — redeem a link. The token is
+// validated by shape first (no DB lookup for garbage), then by hash.
+// Invalid and revoked links share one 404 message so the endpoint
+// cannot tell an attacker whether a token ever existed; expired links
+// get a distinct 410. A private-room join adds the user as a member
+// (plain member, like accepting a room invite); a public-room join
+// adds nothing — the room is already open. Answers with the fresh
+// room JSON so the client can open the room directly.
+router.post('/invite-links/:token/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  if (!isValidInviteToken(token)) {
+    return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
+  }
+  const link = await InviteLink.findOne({ tokenHash: hashToken(token) });
+  if (!link) {
+    return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
+  }
+  if (isLinkExpired(link)) {
+    // Sweep the stale row now — the TTL index would get it later.
+    await InviteLink.deleteOne({ _id: link._id });
+    return res.status(410).json({ error: 'This invite link has expired — ask for a fresh one' });
+  }
+  const room = await Room.findById(link.room).lean();
+  if (!room) {
+    await InviteLink.deleteOne({ _id: link._id });
+    return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
+  }
+  // Private rooms admit only accepted friends of the link creator —
+  // the same rule as room invites. Members skip the check.
+  const friendRows = room.isPrivate && !isRoomMember(room, req.user._id)
+    ? await Friendship.find({
+        $or: [
+          { requester: link.createdBy, recipient: req.user._id },
+          { requester: req.user._id, recipient: link.createdBy }
+        ]
+      }).lean()
+    : [];
+  if (!canJoinViaLink(room, link, req.user._id, friendRows)) {
+    return res.status(403).json({ error: 'This invite link is for friends of the person who shared it — ask them to add you as a friend first' });
+  }
+  if (room.isPrivate) {
+    const members = normalizeMembers(room);
+    if (!members.some((m) => m.userId === String(req.user._id))) {
+      members.push({ userId: String(req.user._id), role: 'member' });
+      await writeMembers(room._id, members);
+    }
+  }
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id) }, 'Joined room via invite link');
+  res.json(await freshRoomJson(room._id, req.user._id));
+}));
+
+// --- KNOCKS ON PRIVATE ROOMS ---
+//
+// The reverse of an invite: instead of waiting to be invited, a
+// non-member friend of the room owner knocks and asks to be let in.
+// The owner and moderators get a persistent notification (+ push +
+// live socket) and admit or decline from the room's members panel.
+//
+// Knock vs the playbook's person-knock (Prompt B item 2, socket event
+// 'knock' {toUserId}): this is the same low-pressure ask, scoped to
+// a room so it can be answered with membership. It is REST + server
+// socket fan-out, like invites — a bare client socket event could not
+// persist the request for an offline owner, nor carry the
+// admit/decline lifecycle. No new client→server socket event.
+
+// The user ids that decide on knocks for a room: owner + moderators.
+const knockTargets = (room) =>
+  normalizeMembers(room)
+    .filter((m) => m.role === 'owner' || m.role === 'moderator')
+    .map((m) => m.userId);
+
+// Tell the owner/moderators about a (new or reopened) knock: one
+// persistent notification (+ best-effort push) each, and a live
+// `knock-received` socket push so an open members panel refreshes.
+const notifyKnock = async (room, knock, knocker) => {
+  for (const targetId of knockTargets(room)) {
+    await recordNotification({
+      userId: targetId, type: 'knock',
+      actorId: knock.user, actorName: knocker.name,
+      roomId: room._id, roomName: room.name
+    });
+    emitToUser(targetId, 'knock-received', {
+      knock: knockJson(knock, room, knocker), roomId: String(room._id)
+    });
+  }
+};
+
+// Load a private room for a knock action. Returns { room } or
+// { status, error } — 404 / 410 (a faded campfire reads as gone, so
+// nobody is ever admitted into a deleted room) / 400 (not private).
+const loadRoomForKnock = async (roomId) => {
+  const room = await Room.findById(roomId).lean();
+  if (!room) return { status: 404, error: 'Room not found' };
+  if (!isVisible(room)) return { status: 410, error: 'This campfire has already faded' };
+  if (!room.isPrivate) return { status: 400, error: 'Only private rooms take knocks' };
+  return { room };
+};
+
+// The friendship rows that decide a knock: knocker ↔ room owner.
+const knockFriendRows = (knockerId, ownerId) => Friendship.find({
+  $or: [
+    { requester: knockerId, recipient: ownerId },
+    { requester: ownerId, recipient: knockerId }
+  ]
+}).lean();
+
+// POST /api/rooms/:id/knock — knock on a private room. A pending knock
+// is returned as-is (no duplicate row, no second notification); a
+// repeat within 30s of the last knock is rate-limited (429). A
+// previously declined knock is reopened instead of violating the
+// unique index — same pattern as invites.
+router.post('/rooms/:id/knock', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadRoomForKnock(req.params.id);
+  if (error) return res.status(status).json({ error });
+  if (isRoomMember(room, req.user._id)) {
+    return res.status(400).json({ error: 'You are already a member of this room' });
+  }
+  const friendRows = await knockFriendRows(req.user._id, room.createdBy);
+  if (!canKnock(room, req.user._id, friendRows)) {
+    return res.status(403).json({ error: 'Only friends of the room owner can knock — ask them to invite you' });
+  }
+  const existing = await Knock.findOne({ room: room._id, user: req.user._id });
+  if (existing && isKnockPending(existing)) {
+    if (isKnockRateLimited(existing.createdAt)) {
+      return res.status(429).json({
+        error: 'You already knocked — give them a moment before knocking again',
+        knock: knockJson(existing, room, req.user)
+      });
+    }
+    return res.json(knockJson(existing, room, req.user));
+  }
+  let knock;
+  const reopened = !!existing;
+  if (existing) {
+    existing.status = 'pending';
+    existing.expiresAt = expiryForKnock();
+    await existing.save();
+    knock = existing;
+  } else {
+    knock = await Knock.create({
+      room: room._id, user: req.user._id, status: 'pending',
+      expiresAt: expiryForKnock()
+    });
+  }
+  await notifyKnock(room, knock, req.user);
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), reopened }, 'Knock on private room');
+  res.status(reopened ? 200 : 201).json(knockJson(knock, room, req.user));
+}));
+
+// GET /api/rooms/:id/knock — my knock status for the locked-room
+// screen: my pending knock (if any), whether I am a member, and
+// whether I may knock (+ the friendly reason when I may not).
+router.get('/rooms/:id/knock', authMiddleware, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadRoomForKnock(req.params.id);
+  if (error) return res.status(status).json({ error });
+  if (isRoomMember(room, req.user._id)) {
+    return res.json({ knock: null, isMember: true, canKnock: false, reason: 'You are already a member of this room' });
+  }
+  const friendRows = await knockFriendRows(req.user._id, room.createdBy);
+  const mine = await Knock.findOne({ room: room._id, user: req.user._id });
+  res.json({
+    knock: mine && isKnockPending(mine) ? knockJson(mine, room, req.user) : null,
+    isMember: false,
+    canKnock: canKnock(room, req.user._id, friendRows),
+    reason: knockBlockReason(room, req.user._id, friendRows)
+  });
+}));
+
+// DELETE /api/rooms/:id/knock — withdraw my pending knock. Only the
+// knocker can withdraw it; the owner/moderators' panels refresh live.
+router.delete('/rooms/:id/knock', authMiddleware, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const deleted = await Knock.deleteOne({ room: room._id, user: req.user._id, status: 'pending' });
+  if (!deleted.deletedCount) return res.status(404).json({ error: 'No pending knock to withdraw' });
+  for (const targetId of knockTargets(room)) {
+    emitToUser(targetId, 'knock-withdrawn', { roomId: String(room._id), userId: String(req.user._id) });
+  }
+  res.json({ message: 'Knock withdrawn' });
+}));
+
+// GET /api/rooms/:id/knocks — pending knocks on the room, for the
+// owner/moderators' members panel. Expired knocks are filtered at read
+// time, and knocks from users who became members another way (an
+// invite accepted after knocking) are dropped — there is nothing left
+// to answer for them.
+router.get('/rooms/:id/knocks', authMiddleware, asyncHandler(async (req, res) => {
+  const { status, error, room } = await loadRoomForKnock(req.params.id);
+  if (error) return res.status(status).json({ error });
+  if (!canAnswerKnock(room, req.user._id)) {
+    return res.status(403).json({ error: 'Only the room owner or a moderator can see knocks' });
+  }
+  const knocks = await Knock.find({
+    room: room._id, status: 'pending', ...notExpiredKnockFilter()
+  }).sort({ createdAt: 1 }).lean();
+  const live = knocks.filter((k) => !isRoomMember(room, k.user));
+  const users = await User.find({ _id: { $in: live.map((k) => k.user) } })
+    .select('name avatarPreset avatarImage').lean();
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  res.json(live.map((k) => knockJson(k, room, byId.get(String(k.user)) || null)));
+}));
+
+// Load a pending knock + its room for an answer action. Returns
+// { knock, room } or { status, error } — 400 (bad id) / 404 / 410
+// (room gone or faded — the stale knock is dropped, never answered)
+// / 403 (not owner/mod).
+const loadKnockForAnswer = async (knockId, userId) => {
+  if (!isObjectId(knockId)) return { status: 400, error: 'Invalid knock' };
+  const knock = await Knock.findById(knockId);
+  if (!knock) return { status: 404, error: 'Knock not found' };
+  const room = await Room.findById(knock.room).lean();
+  if (!room) {
+    await Knock.deleteOne({ _id: knock._id });
+    return { status: 410, error: 'This room no longer exists' };
+  }
+  if (!isVisible(room)) {
+    await Knock.deleteOne({ _id: knock._id });
+    return { status: 410, error: 'This campfire has already faded' };
+  }
+  if (!canAnswerKnock(room, userId)) {
+    return { status: 403, error: 'Only the room owner or a moderator can answer knocks' };
+  }
+  return { knock, room };
+};
+
+// Resolving a knock clears its notification rows, so the bell does
+// not keep pointing at an answered knock.
+const clearKnockNotifications = (knock, room) =>
+  Notification.updateMany(
+    { type: 'knock', actor: knock.user, room: room._id, read: false },
+    { read: true }
+  );
+
+// POST /api/knocks/:id/admit — owner/mod only; the knocker becomes a
+// plain member. The claim is atomic (pending + unexpired), so two
+// moderators answering at once — or an answer racing the 24h expiry
+// — resolves to exactly one winner.
+router.post('/knocks/:id/admit', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, knock, room } = await loadKnockForAnswer(req.params.id, req.user._id);
+  if (error) return res.status(status).json({ error });
+  const claimed = await Knock.findOneAndUpdate(
+    { _id: knock._id, status: 'pending', expiresAt: { $gt: new Date() } },
+    { $set: { status: 'admitted' } },
+    { returnDocument: 'after' }
+  );
+  if (!claimed) return res.status(400).json({ error: 'This knock was already answered or has expired' });
+  // The knocker may have joined another way since knocking — only add
+  // them when they are still a non-member.
+  const members = normalizeMembers(room);
+  if (!members.some((m) => m.userId === String(knock.user))) {
+    members.push({ userId: String(knock.user), role: 'member' });
+    await writeMembers(room._id, members);
+  }
+  await clearKnockNotifications(knock, room);
+  const knocker = await User.findById(knock.user);
+  emitToUser(knock.user, 'knock-admitted', { roomId: String(room._id), roomName: room.name });
+  emitRoomsChanged(room._id); // the knocker's home list picks the room up live
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), knockerId: String(knock.user) }, 'Knock admitted');
+  res.json({ knock: knockJson(claimed, room, knocker), room: await freshRoomJson(room._id, req.user._id) });
+}));
+
+// POST /api/knocks/:id/decline — owner/mod only; the knock is cleared
+// and the knocker is NOT added. They may knock again later (a fresh
+// knock, after the 30s window) — a decline is not a ban.
+router.post('/knocks/:id/decline', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const { status, error, knock, room } = await loadKnockForAnswer(req.params.id, req.user._id);
+  if (error) return res.status(status).json({ error });
+  const claimed = await Knock.findOneAndUpdate(
+    { _id: knock._id, status: 'pending', expiresAt: { $gt: new Date() } },
+    { $set: { status: 'declined' } },
+    { returnDocument: 'after' }
+  );
+  if (!claimed) return res.status(400).json({ error: 'This knock was already answered or has expired' });
+  await clearKnockNotifications(knock, room);
+  const knocker = await User.findById(knock.user);
+  emitToUser(knock.user, 'knock-declined', { roomId: String(room._id), roomName: room.name });
+  req.log.info({ userId: String(req.user._id), roomId: String(room._id), knockerId: String(knock.user) }, 'Knock declined');
+  res.json({ knock: knockJson(claimed, room, knocker) });
 }));
 
 // --- DIRECT MESSAGES (FRIENDS ONLY) ---

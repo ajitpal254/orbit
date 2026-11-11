@@ -20,6 +20,10 @@ test('pushPayloadFor covers every notification type', () => {
     { title: 'Orbit', body: 'Amrinder invited you to Late Night', tag: 'orbit-room_invite', data: { url: '/#room-68f1a2b3c4d5e6f708192a3b' } }
   );
   assert.deepEqual(
+    pushPayloadFor({ type: 'knock', actorName: 'Amrinder', roomId: '68f1a2b3c4d5e6f708192a3b', roomName: 'Late Night' }),
+    { title: 'Orbit', body: 'Amrinder knocked on Late Night', tag: 'orbit-knock', data: { url: '/#room-68f1a2b3c4d5e6f708192a3b' } }
+  );
+  assert.deepEqual(
     pushPayloadFor({ type: 'dm', actorName: 'Amrinder', actorId: '68f1a2b3c4d5e6f708192a4c' }),
     { title: 'Orbit', body: 'New message from Amrinder', tag: 'orbit-dm', data: { url: '/#dm-68f1a2b3c4d5e6f708192a4c' } }
   );
@@ -38,6 +42,10 @@ test('pushPayloadFor deep links fall back to the list when ids are missing', () 
   // instead of a broken `#room-undefined` link.
   assert.equal(
     pushPayloadFor({ type: 'room_invite', actorName: 'Amrinder', roomName: 'Late Night' }).data.url,
+    '/#rooms'
+  );
+  assert.equal(
+    pushPayloadFor({ type: 'knock', actorName: 'Amrinder', roomName: 'Late Night' }).data.url,
     '/#rooms'
   );
   assert.equal(
