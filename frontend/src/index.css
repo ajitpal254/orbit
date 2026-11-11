@@ -1528,6 +1528,12 @@ textarea {
   .app { max-width: 1440px; padding: 0 1rem; flex-direction: row; }
   .app-body { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 100vh; }
   .topbar { padding: 0.9rem 2rem; }
+  /* The left rail already shows the logo, bell and profile at ≥900px,
+     so the top bar drops its duplicates — only Log out stays, pinned
+     right. The rail bell carries the notifications badge instead.
+     Phones keep the full top bar. */
+  .topbar .logo, .topbar .bell-btn, .topbar .topbar-avatar { display: none; }
+  .topbar { justify-content: flex-end; }
   .main { padding: 1rem 2rem 3rem; }
   /* The centred top tabs are replaced by the left icon rail on
      desktop (IconRail.jsx); the tab bar stays for mobile/tablet. */
