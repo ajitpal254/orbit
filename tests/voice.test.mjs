@@ -160,6 +160,10 @@ test('glare: two simultaneous joiners converge on one connection', async () => {
 
 test('ICE candidates arriving before the remote description are queued, then flushed', async () => {
   const engine = makeEngine('me');
+  // The sender must be a known occupant (H1 defense): seed it the way
+  // room-state would, without offering — the candidate flow is what
+  // this test is about.
+  engine.occupants.add('peer1');
   // Candidate first: no remote description yet, so it must be queued, not lost.
   await engine._onSignal({ from: 'peer1', type: 'ice', data: { candidate: 'c1' } });
   const peer = engine.peers.get('peer1');
@@ -181,6 +185,40 @@ test('ICE candidates arriving before the remote description are queued, then flu
   await engine._onSignal({ from: 'peer1', type: 'ice', data: { candidate: 'c2' } });
   assert.equal(peer.pc.addedCandidates.length, 2);
   assert.equal(peer.pendingCandidates.length, 0);
+});
+
+test('_onSignal ignores offers and ICE from socket ids not in the room', async () => {
+  const engine = makeEngine('me');
+  // A stranger's offer must not create a peer or trigger an answer —
+  // this is the client half of the H1 fix (the server relay is the
+  // real gate; this stops a stray offer being auto-answered).
+  await engine._onSignal({ from: 'stranger', type: 'offer', data: { type: 'offer', sdp: 'x' } });
+  assert.equal(engine.peers.has('stranger'), false);
+  assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'answer').length, 0);
+  // A stranger's ICE must not create a peer either.
+  await engine._onSignal({ from: 'stranger', type: 'ice', data: { candidate: 'c1' } });
+  assert.equal(engine.peers.has('stranger'), false);
+  // Once the sender is a known occupant, its ICE is accepted.
+  engine.occupants.add('friend');
+  await engine._onSignal({ from: 'friend', type: 'ice', data: { candidate: 'c1' } });
+  assert.ok(engine.peers.get('friend'));
+  assert.equal(engine.peers.get('friend').pendingCandidates.length, 1);
+  engine._removePeer('friend');
+});
+
+test('room-state seeds the known occupants; user-left removes them', async () => {
+  const engine = makeEngine('me');
+  await engine._onRoomState({ occupants: [{ socketId: 'aaa' }] });
+  assert.ok(engine.occupants.has('aaa'));
+  // A signal from a seeded occupant is accepted...
+  await engine._onSignal({ from: 'aaa', type: 'ice', data: { candidate: 'c1' } });
+  assert.ok(engine.peers.get('aaa'));
+  // ...but after they leave, their signals are ignored.
+  engine._onUserLeft({ socketId: 'aaa' });
+  assert.equal(engine.occupants.has('aaa'), false);
+  await engine._onSignal({ from: 'aaa', type: 'offer', data: { type: 'offer', sdp: 'x' } });
+  assert.equal(engine.peers.has('aaa'), false);
+  assert.equal(engine.socket.emitted.filter(([e, p]) => e === 'signal' && p.type === 'answer').length, 0);
 });
 
 test('_offerTo reuses the same peer connection instead of orphaning one', async () => {
@@ -206,6 +244,7 @@ test('unanswered offer is re-offered once after the retry delay', async () => {
 
 test('answered offer is never retried', async () => {
   const engine = makeEngine('me', { offerRetryMs: 10 });
+  engine.occupants.add('peer1'); // known occupant, so its answer is accepted
   await engine._offerTo('peer1');
   await engine._onSignal({ from: 'peer1', type: 'answer', data: { type: 'answer', sdp: 'y' } });
   await new Promise((r) => setTimeout(r, 40));
