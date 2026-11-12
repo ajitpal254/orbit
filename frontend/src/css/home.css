@@ -1,0 +1,342 @@
+/* Home */
+.greeting { padding: 0.4rem 0.1rem 0; }
+.greeting .date-line {
+  margin: 0 0 0.15rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.greeting h2 { margin: 0; font-size: 1.65rem; letter-spacing: -0.03em; font-weight: 800; }
+.greeting p { margin: 0.35rem 0 0; font-size: 0.92rem; }
+
+.section-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0.4rem 0 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 10px #34d399;
+  animation: live-pulse 1.8s ease-in-out infinite;
+}
+@keyframes blink { 50% { opacity: 0.35; } }
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5), 0 0 10px #34d399; }
+  50% { box-shadow: 0 0 0 6px rgba(52, 211, 153, 0), 0 0 10px #34d399; }
+}
+
+.room-list { display: flex; flex-direction: column; gap: 0.7rem; }
+
+/* --- Night-sky home: friends as stars instead of a list. Shown at
+   the top of Home on phones, and on desktop in place of the hero when
+   nobody is live (hasLiveHero hides it ≥900px, see below). Stars are
+   <button>s positioned by % from nightSky.js; the stage is the only
+   absolutely-positioned layer, so the header/sheet stay in flow. */
+.night-sky {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background:
+    radial-gradient(500px 200px at 50% 0%, rgba(139, 92, 246, 0.14), transparent),
+    radial-gradient(400px 180px at 85% 100%, rgba(217, 70, 239, 0.10), transparent),
+    rgba(255, 255, 255, 0.02);
+}
+.night-sky-head { padding: 1rem 1.2rem 0; }
+.night-sky-title { margin: 0; }
+.night-sky-sub { margin: 0.3rem 0 0; font-size: 0.88rem; }
+.night-sky-stage { position: relative; height: 168px; }
+.night-sky-stage .starfield,
+.night-sky-stage .starfield-twinkle { pointer-events: none; }
+.night-sky-note { margin: 0.4rem 1.2rem 0; font-size: 0.85rem; }
+.night-sky-error { padding: 0.6rem 1.2rem 1rem; }
+.night-sky-error p { margin: 0 0 0.4rem; }
+.night-sky-error-line { margin: 0.2rem 1.2rem 0.8rem; }
+.night-sky-more { margin: 0 1.2rem 0.9rem; }
+/* Loading skeleton: three dim dots that breathe where stars will be. */
+.night-star-skeleton {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, 0.10);
+  animation: blink 1.6s ease-in-out infinite;
+}
+.night-star {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font-body);
+  -webkit-tap-highlight-color: transparent;
+  z-index: 2;
+}
+/* Visible focus state — keyboard users Tab between stars. */
+.night-star:focus-visible {
+  outline: 2px solid #f0abfc;
+  outline-offset: 4px;
+  border-radius: 14px;
+}
+.night-star-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+/* Presence is carried by glow + ring + the status text under the name,
+   never by colour alone. In-room pulses with a strong halo (thicker
+   ring + live-pulse, brighter than online so a live friend reads at a
+   glance); online glows steadily; away is amber; offline is small,
+   grey, dim. */
+.night-star--in-room .night-star-dot {
+  background: linear-gradient(135deg, #34d399, #22d3ee);
+  border: 2px solid rgba(52, 211, 153, 0.9);
+  box-shadow: 0 0 22px rgba(52, 211, 153, 0.85), 0 0 44px rgba(52, 211, 153, 0.3);
+  animation: night-pulse 2s ease-in-out infinite;
+}
+.night-star--online .night-star-dot {
+  background: linear-gradient(135deg, #34d399, #2dd4a7);
+  border: 2px solid rgba(52, 211, 153, 0.55);
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.55);
+}
+.night-star--away .night-star-dot {
+  background: linear-gradient(135deg, #f59e0b, #fbbf24);
+  border: 2px solid rgba(245, 158, 11, 0.55);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.35);
+}
+.night-star--offline .night-star-dot {
+  background: linear-gradient(135deg, #475569, #64748b);
+  border: 1px solid rgba(100, 116, 139, 0.5);
+  opacity: 0.55;
+  transform: scale(0.82);
+}
+@keyframes night-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45), 0 0 22px rgba(52, 211, 153, 0.85), 0 0 44px rgba(52, 211, 153, 0.3); }
+  50% { box-shadow: 0 0 0 10px rgba(52, 211, 153, 0), 0 0 22px rgba(52, 211, 153, 0.85), 0 0 44px rgba(52, 211, 153, 0.3); }
+}
+/* Richer sky: dense ambient starfield + soft nebula tint behind the
+   friend stars, so the stage feels alive with one or two friends.
+   Decorative only (pointer-events none, aria-hidden in the component)
+   — friend stars sit above it (z-index 2) and keep their keyboard
+   behaviour. Depth comes from three layers: far stars are tiny/dim,
+   near stars bigger/brighter with a soft glow. Same dark violet /
+   fuchsia palette as the panel behind it — no new colours. */
+.ambient-sky { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.ambient-nebula {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(220px 120px at 22% 30%, rgba(139, 92, 246, 0.20), transparent 70%),
+    radial-gradient(260px 140px at 78% 68%, rgba(217, 70, 239, 0.13), transparent 70%),
+    radial-gradient(180px 100px at 55% 85%, rgba(34, 211, 238, 0.07), transparent 70%);
+}
+.ambient-star {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #fff;
+  /* Base opacity is the star's own --ao; the twinkle keyframes breathe
+     around it, so with animation off (reduced motion) the star simply
+     sits at its own brightness. */
+  opacity: var(--ao, 0.5);
+  animation: ambient-twinkle 5s ease-in-out infinite;
+}
+.ambient-star--far { box-shadow: 0 0 1px rgba(255, 255, 255, 0.25); }
+.ambient-star--mid { box-shadow: 0 0 2px rgba(255, 255, 255, 0.35); }
+.ambient-star--near { box-shadow: 0 0 4px rgba(255, 255, 255, 0.55); }
+@keyframes ambient-twinkle {
+  0%, 100% { opacity: calc(var(--ao, 0.5) * 0.45); }
+  50% { opacity: var(--ao, 0.5); }
+}
+.night-star-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.night-star-status {
+  font-size: 0.68rem;
+  line-height: 1.2;
+  color: var(--muted);
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.night-star--offline .night-star-name { color: var(--muted); }
+/* Profile sheet: in-flow card under the stage (never overlapping a
+   star), with the friend's avatar, status and actions. */
+.night-sheet {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin: 0 1rem 1rem;
+  padding: 0.8rem 0.9rem;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+  animation: pop-in var(--dur-fast) var(--ease-spring) backwards;
+}
+.night-sheet-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+
+.room-card {
+  width: 100%;
+  text-align: left;
+  /* Accent-tinted whole card, not just the 3px edge: a soft wash of
+     the room accent over the base surface, an accent-tinted border,
+     and the accent glow on hover. --room-from/--room-to are set
+     inline per room (Home RoomCard). */
+  background:
+    linear-gradient(155deg, color-mix(in srgb, var(--room-from, #8b5cf6) 14%, transparent), transparent 55%),
+    var(--surface-1);
+  border: 1px solid color-mix(in srgb, var(--room-from, #8b5cf6) 30%, var(--border));
+  border-left: 3px solid var(--room-from, #8b5cf6);
+  border-radius: 18px;
+  padding: 0.95rem 1rem;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: transform var(--dur-fast) var(--ease-out), border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.room-card:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--room-from, #8b5cf6) 60%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 32px -6px var(--room-from, #8b5cf6);
+}
+.room-card:active { transform: translateY(-1px) scale(0.99); }
+.room-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.8rem; }
+.room-name { font-size: 1.05rem; letter-spacing: -0.01em; }
+.room-topic { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.86rem; }
+.room-count {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.count-dot { width: 7px; height: 7px; border-radius: 50%; background: #34d399; }
+.count-dot.speaking { background: #34d399; box-shadow: 0 0 8px #34d399; animation: blink 1s infinite; }
+.room-occupants { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.75rem; }
+.mini-orb {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--room-from, #8b5cf6), var(--room-to, #d946ef));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+}
+.mini-orb.speaking { box-shadow: 0 0 0 2px #34d399, 0 0 12px #34d399; }
+/* Accent ring on the occupant orbs inside a tinted room card. */
+.room-card .mini-orb { box-shadow: 0 0 0 1px color-mix(in srgb, var(--room-from, #8b5cf6) 45%, transparent); }
+.room-card .mini-orb.speaking { box-shadow: 0 0 0 2px #34d399, 0 0 12px #34d399; }
+.room-empty { font-size: 0.85rem; }
+
+.create-card { display: flex; flex-direction: column; gap: 0.15rem; }
+.accent-picker { display: flex; gap: 0.55rem; margin: 0.5rem 0 0.7rem; }
+.accent-swatch {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.15s;
+}
+.accent-swatch.selected { border-color: #fff; transform: scale(1.12); }
+
+.empty-state { text-align: center; padding: 2rem 1rem; }
+.empty-state p { margin: 0; line-height: 1.5; }
+.empty-state .btn { margin-top: 1rem; }
+/* Pulsing orb for the Home empty state — the app's own motif instead
+   of a bare emoji. Gentle scale + glow; stilled by the global
+   prefers-reduced-motion rule like everything else. */
+.empty-orb {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  margin: 0 auto 0.9rem;
+  background: var(--accent-grad);
+  box-shadow: 0 0 32px rgba(139, 92, 246, 0.5), inset 0 -6px 14px rgba(0, 0, 0, 0.25), inset 0 5px 10px rgba(255, 255, 255, 0.25);
+  animation: empty-orb-pulse 2.4s ease-in-out infinite;
+}
+@keyframes empty-orb-pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 24px rgba(139, 92, 246, 0.4), inset 0 -6px 14px rgba(0, 0, 0, 0.25), inset 0 5px 10px rgba(255, 255, 255, 0.25); }
+  50% { transform: scale(1.08); box-shadow: 0 0 44px rgba(139, 92, 246, 0.65), inset 0 -6px 14px rgba(0, 0, 0, 0.25), inset 0 5px 10px rgba(255, 255, 255, 0.25); }
+}
+/* Muted icon disc for secondary empty states (Messages, Notifications). */
+.empty-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  margin: 0 auto 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.empty-icon .icon { width: 26px; height: 26px; }
+/* Skeleton room cards while Home loads — shaped like real cards so
+   the layout doesn't jump when the rooms arrive. */
+.skeleton-card { pointer-events: none; }
+.skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.06));
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+.skeleton-title { width: 55%; height: 16px; margin-bottom: 10px; }
+.skeleton-topic { width: 80%; }
+.skeleton-orbs { display: flex; gap: 0.4rem; margin-top: 0.75rem; }
+.skeleton-orb {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.06));
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+@keyframes skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+

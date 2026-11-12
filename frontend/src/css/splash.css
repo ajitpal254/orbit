@@ -1,0 +1,42 @@
+/* Splash screen — same look as the pre-JS #splash in index.html.
+   The static splash is faded out by main.jsx once React mounts; this
+   React version covers the loading branch (auth check) in App.jsx. */
+.splash {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.1rem;
+  padding: 1.25rem;
+  text-align: center;
+}
+.splash.splash-hide { opacity: 0; transition: opacity 0.45s ease; }
+.splash-orbs { display: flex; align-items: center; gap: 0.9rem; height: 56px; }
+.splash-orb {
+  border-radius: 50%;
+  box-shadow: 0 0 28px rgba(0, 0, 0, 0.5), inset 0 -6px 14px rgba(0, 0, 0, 0.25), inset 0 5px 10px rgba(255, 255, 255, 0.25);
+  animation: splash-float 2.4s ease-in-out infinite;
+}
+.splash-orb-a { width: 34px; height: 34px; background: linear-gradient(135deg, #8b5cf6, #d946ef); animation-delay: 0s; }
+.splash-orb-b { width: 52px; height: 52px; background: linear-gradient(135deg, #d946ef, #f43f5e); animation-delay: 0.35s; }
+.splash-orb-c { width: 34px; height: 34px; background: linear-gradient(135deg, #34d399, #22d3ee); animation-delay: 0.7s; }
+@keyframes splash-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+.splash-wordmark { font-size: 1.9rem; font-weight: 800; letter-spacing: -0.03em; margin: 0; }
+.splash-status { margin: 0; color: var(--muted); font-size: 0.92rem; }
+@media (prefers-reduced-motion: reduce) {
+  .splash-orb { animation: none; }
+  .splash.splash-hide { transition: none; }
+  /* Ambient sky stars sit still at their own brightness (their base
+     opacity is --ao; the twinkle only breathes around it). */
+  .ambient-star { animation: none; }
+  /* Everything new in this pass — and everything old — goes still:
+     animations finish instantly, transitions snap, orbs stop gliding. */
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+

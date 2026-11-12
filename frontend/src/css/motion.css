@@ -1,0 +1,85 @@
+/* Shared motion: view transitions, list stagger-in, error slide-in. */
+.view-anim { animation: view-in var(--dur-med) var(--ease-out) backwards; }
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* Room view entrance — the room's own pieces stagger in. Kept off the
+   .room-view root itself: a transform/opacity on that ancestor would
+   re-parent the fixed voice bar + chat sheet mid-animation. */
+.room-view > .room-header,
+.room-body > .members-panel,
+.room-body .room-space,
+.room-body .conn-details { animation: view-in var(--dur-med) var(--ease-out) backwards; }
+.room-body > .members-panel { animation-delay: 40ms; }
+.room-body .room-space { animation-delay: 80ms; }
+.room-body .conn-details { animation-delay: 120ms; }
+.stagger-in { animation: list-in var(--dur-med) var(--ease-out) backwards; }
+@keyframes list-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.error, .mic-error { animation: msg-in var(--dur-med) var(--ease-out) backwards; }
+/* Unread badges pop when they (re)appear. */
+.unread-badge, .dm-badge, .tab-badge { animation: badge-pop var(--dur-med) var(--ease-spring); }
+@keyframes badge-pop {
+  0% { transform: scale(0.4); }
+  60% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  margin-left: 0.35rem;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  vertical-align: middle;
+}
+.dm-row { width: 100%; text-align: left; cursor: pointer; font-family: inherit; color: var(--text); transition: transform 0.15s, border-color 0.15s; }
+.dm-row:hover { transform: translateY(-1px); border-color: var(--accent); }
+.dm-preview {
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dm-preview.unread { color: var(--text); font-weight: 700; }
+.dm-side { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3rem; flex-shrink: 0; }
+.dm-time { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+.dm-badge {
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+}
+.dm-thread { display: flex; flex-direction: column; gap: 0.8rem; }
+.dm-thread-head { display: flex; align-items: center; gap: 0.6rem; }
+.dm-thread-head .person-info { flex: 1; }
+.dm-messages {
+  flex: 1;
+  min-height: 40vh;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.2rem 0.1rem;
+}
+.dm-input { display: flex; gap: 0.5rem; }
+.dm-input input { margin: 0; flex: 1; }
+

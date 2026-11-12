@@ -1,13 +1,14 @@
 // Tests for the v0.3.0 mobile basics (M1–M3): the ≤520px layout rules
-// in frontend/src/index.css and the small pure helpers in
-// frontend/src/desktop.js / mobileNav.js. No React, no DOM — the CSS
-// is asserted by extracting the media block, the same file-reading
-// approach as tests/visualSystem.test.mjs.
+// in frontend/src/css/* (see tests/cssBundle.js) and the small pure
+// helpers in frontend/src/desktop.js / mobileNav.js. No React, no DOM
+// — the CSS is asserted by extracting the media block, the same
+// file-reading approach as tests/visualSystem.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readCssBundle } from './cssBundle.js';
 
-const css = readFileSync(new URL('../frontend/src/index.css', import.meta.url), 'utf8');
+const css = readCssBundle();
 const roomViewJsx = readFileSync(new URL('../frontend/src/components/RoomView.jsx', import.meta.url), 'utf8');
 
 // The one `@media (max-width: 520px)` block: every phone rule must
@@ -16,7 +17,7 @@ const roomViewJsx = readFileSync(new URL('../frontend/src/components/RoomView.js
 // nested rules.
 export function phoneBlock(source) {
   const start = source.indexOf('@media (max-width: 520px)');
-  assert.notEqual(start, -1, 'no max-width: 520px block in index.css');
+  assert.notEqual(start, -1, 'no max-width: 520px block in the CSS bundle');
   const open = source.indexOf('{', start);
   let depth = 0;
   for (let i = open; i < source.length; i += 1) {
