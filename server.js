@@ -25,8 +25,12 @@ const { securityHeaders } = require('./middleware/securityHeaders');
 // stay unverified until verification email can be sent (audit M1).
 require('./lib/crypto').getKey();
 // Loud warning when the account TURN relay is not configured
-// (TURN_SECRET unset) — voice still works via STUN + fallbacks.
-require('./lib/turnCredentials').warnIfTurnSecretMissing(logger);
+// (METERED_SECRET_KEY / METERED_APP_DOMAIN unset) — voice still works
+// via STUN + fallbacks. Mint once at boot so the credential has
+// propagated (Metered: up to 2 min) before the first call.
+const { meteredTurn, warnIfMeteredTurnMissing } = require('./lib/meteredTurn');
+warnIfMeteredTurnMissing(logger);
+meteredTurn.init();
 require('./lib/emailVerification').logSmtpStatus();
 
 const app = express();

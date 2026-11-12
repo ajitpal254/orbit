@@ -19,7 +19,8 @@ const PushSubscription = require('../models/PushSubscription');
 const { validateProfileUpdate, profileJson } = require('../lib/profile');
 const { notificationJson, recordNotification } = require('../lib/notifications');
 const { getVapidPublicKey, isPushConfigured, sendPushToUser, pushPayloadFor } = require('../lib/push');
-const { turnUrls, turnHandler } = require('../lib/turnCredentials');
+const { turnUrls } = require('../lib/turnCredentials');
+const { turnHandler } = require('../lib/meteredTurn');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
 const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
@@ -85,20 +86,20 @@ const requireVerifiedEmail = (req, res) => {
 // they stay here. TURN *credentials* are NOT here: the old design served
 // the account's static TURN username/credential to anyone who asked
 // (audit H2 — quota exhaustion by anyone on the internet). Credentials
-// are now minted per user, time-limited, behind session auth at
-// GET /api/turn (see lib/turnCredentials.js); the static credential is
-// never sent to a client. Rotate it on the provider side — assume the
-// old one is public.
+// are now minted from Metered's REST API and cached server-side, behind
+// session auth at GET /api/turn (see lib/meteredTurn.js); the static
+// credential is never sent to a client. Rotate it on the provider side
+// — assume the old one is public.
 router.get('/config', (req, res) => {
   res.json({ googleClientId: getGoogleClientId(), turn: { urls: turnUrls() }, vapidPublicKey: getVapidPublicKey() });
 });
 
-// GET /api/turn — session-authenticated: mint a time-limited TURN
-// credential for this user (TURN REST API / coturn static auth —
-// username "<expiry>:<userId>", credential base64(HMAC-SHA1(
-// TURN_SECRET, username)), 24h expiry). Answers { turn: null } when
-// TURN_SECRET is unset; the client then uses STUN + the built-in
-// fallback relays and voice keeps working.
+// GET /api/turn — session-authenticated: serve the cached Metered
+// TURN credential (minted via Metered's REST API, 24h expiry, cached
+// and refreshed ahead of expiry — see lib/meteredTurn.js). Answers
+// { turn: null } when METERED_SECRET_KEY / METERED_APP_DOMAIN are
+// unset, or no credential could be minted; the client then uses STUN
+// + the built-in fallback relays and voice keeps working.
 router.get('/turn', authMiddleware, asyncHandler(async (req, res) => turnHandler(req, res)));
 
 // --- AUTH ---

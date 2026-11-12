@@ -9,10 +9,9 @@
 //
 // Two TURN sources, in order:
 //   1. Account TURN (reliable): a free Metered.ca account's TURN
-//      relay. The server mints a 24h time-limited credential per user
-//      (TURN REST API / coturn static auth, HMAC-SHA1 over
-//      TURN_SECRET — see lib/turnCredentials.js) and serves it from
-//      the session-authenticated GET /api/turn; the static account
+//      relay. The server mints a 24h credential via Metered's REST API
+//      and caches it (see lib/meteredTurn.js), serving it from the
+//      session-authenticated GET /api/turn; the static account
 //      credential is never shipped to clients (audit H2). The
 //      /api/config `turn` object carries only the relay URLs now, so
 //      getIceServers fetches the credential from /api/turn whenever
@@ -83,7 +82,8 @@ export async function getStaticAuthServers() {
 // Account TURN from the server: GET /api/turn mints a time-limited
 // credential for the signed-in user (session cookie, no CSRF needed —
 // GET). Returns the { urls, username, credential } object, or null
-// when the account relay is not configured (TURN_SECRET unset),
+// when the account relay is not configured (METERED_SECRET_KEY /
+// METERED_APP_DOMAIN unset),
 // the user is signed out, or the request fails. Never throws — the
 // caller falls through to the fallback relays.
 export async function getAccountTurn() {
