@@ -227,7 +227,10 @@ export default function App() {
   // Leaving builds the postcard first (the session resets below, and
   // with it joinedAt). RoomView hands over its sightings snapshot;
   // a leave with no snapshot (kicked) or no session start shows no
-  // card — it just leaves.
+  // card — it just leaves. Permanent rooms only: a campfire
+  // (snapshot.ephemeral, as computed by RoomView — a kept campfire
+  // counts as permanent) never gets a card, so the fading-rooms
+  // hard-delete promise holds and there is no tombstone or archive.
   const leaveRoom = useCallback((snapshot) => {
     if (snapshot && session.joinedAt && room) {
       setPostcard(buildPostcard({
@@ -235,7 +238,8 @@ export default function App() {
         joinedAt: session.joinedAt,
         leftAt: Date.now(),
         seen: snapshot.seen,
-        selfId: user?.id
+        selfId: user?.id,
+        ephemeral: snapshot.ephemeral
       }));
     }
     setRoom(null);

@@ -110,6 +110,26 @@ test('buildPostcard marks a solo stay as alone', () => {
   assert.deepEqual(card.participants, []);
 });
 
+test('buildPostcard returns null for a campfire, builds for permanent rooms', () => {
+  const joinedAt = new Date(2026, 10, 11, 20, 0, 0).getTime();
+  const base = {
+    roomName: 'Late Night',
+    joinedAt,
+    leftAt: joinedAt + 72 * 60000,
+    seen: [{ id: 'u1', name: 'Mia' }],
+    selfId: 'me'
+  };
+  // Campfire (ephemeral): no card, however long the stay — the
+  // hard-delete promise holds, no tombstone or archive.
+  assert.equal(buildPostcard({ ...base, ephemeral: true }), null);
+  // Permanent, explicit or legacy (no flag): the card builds.
+  const permanent = buildPostcard({ ...base, ephemeral: false });
+  assert.equal(permanent.roomName, 'Late Night');
+  assert.equal(permanent.durationLabel, '1h 12m');
+  const legacy = buildPostcard({ ...base, ephemeral: undefined });
+  assert.equal(legacy.roomName, 'Late Night');
+});
+
 test('buildPostcard returns null without a room name or session start, and clamps negative stays', () => {
   assert.equal(buildPostcard({ roomName: '', joinedAt: 1000, leftAt: 2000, seen: [], selfId: 'me' }), null);
   assert.equal(buildPostcard({ roomName: 'Late Night', joinedAt: null, leftAt: 2000, seen: [], selfId: 'me' }), null);
@@ -130,6 +150,7 @@ test('App builds the postcard on leave from the session start + snapshot', () =>
   assert.ok(appSrc.includes("import { buildPostcard } from './postcard'"), 'App should import buildPostcard');
   assert.ok(appSrc.includes('buildPostcard({'), 'leaveRoom should build the postcard');
   assert.ok(appSrc.includes('session.joinedAt'), 'duration must come from the voice session joinedAt');
+  assert.ok(appSrc.includes('ephemeral: snapshot.ephemeral'), 'leaveRoom must pass the room\'s campfire state through');
   assert.ok(appSrc.includes('<RoomPostcard postcard={postcard}'), 'App should render the postcard');
   assert.ok(appSrc.includes('setPostcard(null)'), 'joining / dismissing must clear the card');
 });
@@ -141,4 +162,17 @@ test('RoomView hands its sightings to onLeave on every leave path', () => {
   const kicked = roomViewSrc.indexOf('You were removed');
   assert.ok(kicked > 0, 'kicked screen should still exist');
   assert.ok(roomViewSrc.slice(kicked, kicked + 400).includes('onClick={onLeave}'), 'kicked Back-to-rooms passes no snapshot');
+});
+
+// Option A (v0.7.0): postcards are permanent-rooms only. The campfire
+// faded screen must NOT hand a snapshot over — the faded notice is
+// the whole goodbye — and the snapshot itself must carry the room's
+// effective campfire state (a kept campfire counts as permanent).
+test('RoomView never postcards a campfire: faded screen passes no snapshot', () => {
+  const faded = roomViewSrc.indexOf('<h2>This campfire faded</h2>');
+  assert.ok(faded > 0, 'faded screen should still exist');
+  const fadedBtn = roomViewSrc.slice(faded, faded + 600);
+  assert.ok(fadedBtn.includes('onClick={onLeave}'), 'faded Back-to-rooms passes no snapshot');
+  assert.ok(!fadedBtn.includes('buildSnapshot'), 'faded screen must not build a snapshot');
+  assert.ok(roomViewSrc.includes('ephemeral: room.ephemeral && !kept'), 'snapshot must carry the effective campfire state (kept counts as permanent)');
 });

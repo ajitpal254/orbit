@@ -1,5 +1,9 @@
-// Room postcards (v0.6.0): the small recap shown when a room ends —
-// room name, how long you were there, and who was there with you.
+// Room postcards (v0.7.0): the small recap shown when a permanent
+// room ends — room name, how long you were there, and who was there
+// with you. Permanent rooms only: campfires ("fading rooms") keep
+// their hard-delete promise and never produce a postcard, so there is
+// no tombstone or archive model anywhere here — a campfire simply
+// ends, and the faded notice is the whole goodbye.
 //
 // Client-side, in-memory only: nothing is persisted to MongoDB and no
 // server endpoint logs history, by design — fading chat and fading
@@ -65,8 +69,12 @@ export function buildPostcardParticipants(seen, selfId) {
 // The whole card, or null when there is nothing to recap (no room
 // name, or no session start — e.g. a leave that was never a join).
 // `seen` is the raw sightings list; `selfId` is the current user.
-export function buildPostcard({ roomName, joinedAt, leftAt, seen, selfId }) {
+// `ephemeral` is the room's effective campfire state at leave time
+// (RoomView folds its local "kept" flag in, so a kept campfire —
+// permanent now — still gets a card): a campfire never gets one.
+export function buildPostcard({ roomName, joinedAt, leftAt, seen, selfId, ephemeral }) {
   if (!roomName || !joinedAt) return null;
+  if (ephemeral) return null;
   const end = leftAt || Date.now();
   const durationMs = Math.max(0, end - joinedAt);
   const participants = buildPostcardParticipants(seen, selfId);

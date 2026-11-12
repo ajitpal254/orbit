@@ -918,10 +918,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const roleOf = (userId) => (members.find((m) => m.id === userId) || {}).role || null;
 
   // The postcard handover: the sightings list, with the freshest
-  // avatar data merged in. App builds the card from this + the voice
-  // session's joinedAt; a leave with no snapshot (kicked, logout)
-  // simply shows no card.
+  // avatar data merged in, plus the room's effective campfire state.
+  // App builds the card from this + the voice session's joinedAt;
+  // a leave with no snapshot (kicked, logout) simply shows no card.
+  // `ephemeral` is the effective state at leave time: a campfire the
+  // owner kept (kept) is permanent now, so it gets a card; a campfire
+  // that was never kept does not. The faded screen below never passes
+  // a snapshot at all, so a campfire fading under you shows no card
+  // either — its hard-delete promise is untouched.
   const buildSnapshot = useCallback(() => ({
+    ephemeral: room.ephemeral && !kept,
     seen: [...seenRef.current.values()].map((person) => {
       const avatar = occupantAvatars[person.id];
       return {
@@ -930,7 +936,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         avatarImage: avatar?.avatarImage || person.avatarImage || ''
       };
     })
-  }), [occupantAvatars]);
+  }), [occupantAvatars, kept, room.ephemeral]);
 
   const handleLeave = useCallback(() => {
     onLeave(buildSnapshot());
@@ -954,9 +960,10 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         <div className="card kicked-card">
           <h2>This campfire faded</h2>
           <p className="muted">“{room.name}” closed 1 minute after the last person left. Campfires are temporary — create a new one anytime.</p>
-          {/* A campfire closing under you still ends your stay, so the
-              postcard shows the same as a normal leave. */}
-          <button className="btn btn-primary" onClick={() => onLeave(buildSnapshot())}>Back to rooms</button>
+          {/* No snapshot here, by design: campfires never get a
+              postcard (permanent rooms only), and the room is gone —
+              the faded notice is the whole goodbye. */}
+          <button className="btn btn-primary" onClick={onLeave}>Back to rooms</button>
         </div>
       </div>
     );

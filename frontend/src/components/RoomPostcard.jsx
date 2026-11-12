@@ -6,6 +6,7 @@
 // No entrance animation: the card just appears, so it stays still
 // under prefers-reduced-motion like everything else.
 import React, { useEffect, useState } from 'react';
+import './RoomPostcard.css';
 import Avatar from './Avatar';
 import { Icon } from './icons';
 import { canSavePostcardImage, drawPostcardImage } from '../postcard';
