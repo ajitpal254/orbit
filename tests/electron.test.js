@@ -20,6 +20,7 @@ const {
   isOrbitOrigin,
   shouldAllowPermission,
   buildWindowConfig,
+  chromeUserAgent,
   getAppVersion,
 } = require('../electron/app-config');
 const { syncVersion, syncFile } = require('../electron/sync-version');
@@ -150,4 +151,23 @@ test('committed electron/package.json version matches the frontend version', () 
     frontendPkg.version,
     'electron/package.json version must be synced from frontend/package.json (run npm run desktop:sync-version)'
   );
+});
+
+test('chromeUserAgent strips the Electron token, keeps the Chrome tokens', () => {
+  const electronUa =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Electron/45.3.1';
+  assert.equal(
+    chromeUserAgent(electronUa),
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+  );
+  assert.doesNotMatch(chromeUserAgent(electronUa), /Electron\//);
+});
+
+test('chromeUserAgent leaves a plain Chrome UA unchanged, and passes through unusable input', () => {
+  const chromeUa =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+  assert.equal(chromeUserAgent(chromeUa), chromeUa);
+  assert.equal(chromeUserAgent(''), '');
+  assert.equal(chromeUserAgent(null), null);
+  assert.equal(chromeUserAgent(undefined), undefined);
 });
