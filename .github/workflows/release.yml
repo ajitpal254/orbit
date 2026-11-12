@@ -1,0 +1,83 @@
+# Orbit Windows release — create a GitHub Release with the .exe installer.
+#
+# HOW THIS FILE GETS INTO THE REPO (do it once, in the GitHub web UI):
+# The token used for PRs cannot push workflow files, so this file is NOT
+# committed by the PR that introduces the desktop app. Ajit adds it by hand:
+#   1. GitHub repo → Actions tab → "New workflow" (or "set up a workflow yourself")
+#   2. Name the file `.github/workflows/release.yml` (top-right filename box)
+#   3. Paste this whole file into the editor
+#   4. Commit directly to `main` (Commit changes → Commit directly to the main branch)
+#
+# WHAT IT DOES:
+# On every push to main it reads the app version from frontend/package.json.
+# If a GitHub Release for tag v<version> already exists, it does nothing
+# (so hotfix pushes to main do not spam releases). If the tag does not exist
+# yet, it builds the Windows installer with electron-builder and creates a
+# full (not draft, not prerelease) GitHub Release titled
+# "Orbit v<version> — Windows installer" with the .exe attached.
+#
+# SEQUENCING NOTE (2026-11-12): PR #10 (v0.7.0) merged BEFORE this workflow
+# existed, so no v0.7.0 release was auto-created. The first auto-release
+# will be triggered by the merge of the Windows-packaging PR itself
+# (version is still 0.7.0, so the tag guard will create v0.7.0 then).
+#
+# The installer is UNSIGNED (no code-signing certificate exists): Windows
+# SmartScreen will warn on first install — click "More info" → "Run anyway".
+# There is no auto-updater; users download the new .exe for each release.
+name: Release Windows installer
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Read app version
+        id: version
+        shell: bash
+        run: echo "version=$(node -p "require('./frontend/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
+        id: exists
+        shell: bash
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build Windows installer
+        if: steps.exists.outputs.exists == 'false'
+        run: npm run desktop:dist
+
+      - name: Create GitHub Release
+        if: steps.exists.outputs.exists == 'false'
+        shell: bash
+        run: |
+          EXE=$(ls dist/*.exe | head -n 1)
+          gh release create "v${{ steps.version.outputs.version }}" "$EXE" \
+            --title "Orbit v${{ steps.version.outputs.version }} — Windows installer" \
+            --notes "Windows installer for Orbit v${{ steps.version.outputs.version }}. Download the .exe, run it, and sign in — the app loads the hosted Orbit site. Unsigned: Windows SmartScreen will warn on first install; click 'More info' then 'Run anyway'."
+        env:
+          GH_TOKEN: ${{ github.token }}

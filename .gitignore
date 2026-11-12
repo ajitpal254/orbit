@@ -1,3 +1,6 @@
 node_modules/
 .env
 frontend/node_modules/
+# electron-builder output (Windows installer / unpacked app) — built by
+# the release workflow on windows-latest, never committed.
+dist/

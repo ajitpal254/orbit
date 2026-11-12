@@ -44,6 +44,7 @@ frontend/src/
   socket.js          socket.io client singleton
   api.js             fetch helper (cookie session + CSRF)
   components/        Auth, Home (room cards), RoomView (orbs + voice bar + chat), Friends
+electron/            Windows desktop shell (main process, permission allowlist, icon)
 tests/               node:test — pure-logic tests (no Mongo needed)
 ```
 
@@ -68,6 +69,18 @@ Ajit creates the service himself — **Web Service** (not Static Site):
 | Env vars | `MONGODB_URI` (Atlas, db `orbit`), `DATA_ENCRYPTION_KEY` (see Security — required in production), `GOOGLE_CLIENT_ID` (optional — enables the Google button), `METERED_SECRET_KEY` + `METERED_APP_DOMAIN` (optional — enables the account TURN relay, see Voice connectivity below), `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` (optional — enables web push, see Notifications below) |
 
 Render sets `PORT` and `NODE_ENV` itself. **Important:** the frontend is served from the committed `public/` folder — Render never rebuilds it, so any UI change needs `npm run build` in `frontend/` + committing `public/` first.
+
+## Windows desktop app (.exe)
+
+Orbit ships as a Windows desktop app too — a thin Electron shell around the hosted site. It loads https://orbit-3lzs.onrender.com/ in its own window (taskbar icon, mic/camera for voice) and bundles **no server and no database**: rooms, voice and chat all live on the hosted app. It needs the hosted site reachable; there is no offline mode.
+
+- **Run in dev:** `npm run desktop:dev` (loads the hosted site in a window; DevTools available while unpackaged).
+- **Build the installer (Windows):** `npm run desktop:dist` — syncs the version from `frontend/package.json`, then builds a one-click NSIS installer into `dist/` (`Orbit Setup <version>.exe`, desktop + start-menu shortcuts). On Linux only the unpacked dir can be built (`npx electron-builder --win --dir` — the NSIS installer needs Windows/wine); the real installer is built by the release workflow on `windows-latest`.
+- **Light by design:** one window only — no tray, no background services, no auto-updater. The packaged app contains only `electron/` + `package.json` (the web app's `node_modules` are NOT bundled — the asar is ~64 KB); the renderer JS heap is capped at 512 MB and background throttling is on. Measured in the sandbox (Linux + Xvfb software rendering, real site loaded): ~726 MB total RSS, mostly the stock Electron/Chromium runtime — expect materially less on Windows with hardware acceleration.
+- **Mic/camera:** granted only to the hosted Orbit origin; every other permission is denied (see `electron/app-config.js`, unit-tested in `tests/electron.test.js`).
+- **Releases:** every push to `main` runs `.github/workflows/release.yml`. It reads the version from `frontend/package.json` and, only if tag `v<version>` does not exist yet, builds the installer and creates a GitHub Release titled "Orbit v<version> — Windows installer" with the `.exe` attached. Hotfix pushes to main do not create a release. The workflow file is provided with the PR (it cannot be pushed by the PR itself — the token has no `workflow` scope); add it via the GitHub web UI (Actions → New workflow, name it `.github/workflows/release.yml`, paste, commit to `main`). Either order works — add the file first and the release is created by this PR's merge, or merge first and the file-add push creates it.
+- **Unsigned installer:** there is no code-signing certificate, so Windows SmartScreen warns on first install — click "More info" → "Run anyway". There is no auto-update; download the new `.exe` for each release.
+- **App ID:** `com.orbit.app` (`package.json` `build.appId`) — pick it before the first public release; changing it later installs side-by-side with the old one.
 
 ## Voice connectivity (TURN)
 
@@ -188,7 +201,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 - **Mesh voice scales to ~2–6 people.** Every peer connects to every other peer; beyond that, CPU/bandwidth grows fast. The upgrade path is a LiveKit SFU — `voice.js` is isolated so the swap touches one module.
 - **TURN is best-effort by default.** The built-in static-auth Open Relay TURN works with no setup, but it is a free shared relay with no SLA. For reliable calls, set `METERED_SECRET_KEY` + `METERED_APP_DOMAIN` on Render (the server mints 24h TURN credentials via Metered's REST API) — see "Voice connectivity (TURN)".
-- **PWA only on mobile** — no native app yet. Install from the browser; mic access works in the PWA.
+- **PWA only on mobile** — the Windows desktop app (`.exe`, see above) is the only native build. Install from the browser on mobile; mic access works in the PWA.
 - **No screen share yet** — rooms + voice + chat + friends + DMs + roles only.
 - **Presence is in-memory.** A server restart clears "who's in a room" (correct behavior — presence is ephemeral), but chat history and rooms persist in Mongo.
 - Tests cover pure logic (room validation, presence, orb layout, password helpers). Route/socket integration tests need MongoDB and were **not** run in the sandbox — smoke-tested via module loads + live `/api/health` instead.
