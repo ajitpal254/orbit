@@ -26,6 +26,7 @@
 //     end to end; a TURN relay only forwards opaque packets and cannot
 //     decrypt them.
 import { getIceServers, FALLBACK_ICE_SERVERS } from './turnAuth.js';
+import { gainForDistance, distanceBetween, SPATIAL_AUDIO_ENABLED } from './proximity.js';
 const SPEAK_THRESHOLD = 0.02; // RMS of time-domain audio samples
 const SPEAK_POLL_MS = 150;
 
@@ -38,7 +39,7 @@ export function isOfferer(mySocketId, otherSocketId) {
 }
 
 export class VoiceEngine {
-  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs }) {
+  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs, spatialEnabled }) {
     this.socket = socket;
     this.roomId = roomId;
     this.selfId = selfId;
@@ -49,12 +50,21 @@ export class VoiceEngine {
     // If an offer goes unanswered (peer missed it, was backgrounded, ...),
     // re-offer once after this delay instead of staying silent forever.
     this.offerRetryMs = offerRetryMs ?? 5000;
-    this.peers = new Map(); // socketId -> { pc, audioEl, analyser, data, speaking, pendingCandidates, polite, makingOffer, ignoreOffer, offerRetries, retryTimer }
+    this.peers = new Map(); // socketId -> { pc, audioEl, analyser, data, speaking, pendingCandidates, polite, makingOffer, ignoreOffer, offerRetries, retryTimer, gainNode, elementSource, gain }
     // Socket ids known to be in the current room (from room-state and
     // user-joined). Defense-in-depth for audit H1: _onSignal ignores
     // anything from a socket id not in this set, so even if the server
     // relay ever forwarded a stray offer, the client will not answer it.
     this.occupants = new Set();
+    // Proximity audio (v0.6.0): orb positions in % of the room stage.
+    // A peer with no entry here has no position data and is heard at
+    // full gain (the non-spatial fallback — never silence). See
+    // frontend/src/proximity.js for the documented curve, audible
+    // radius, hysteresis, and the SPATIAL_AUDIO_ENABLED kill switch.
+    this.positions = new Map(); // socketId -> { x, y }
+    this.selfPosition = null; // { x, y } — my orb, set by the room view
+    this.spatialEnabled = spatialEnabled ?? SPATIAL_AUDIO_ENABLED;
+    this.spatialFailed = false; // set when the gain chain cannot be built
     this.localStream = null;
     this.localAnalyser = null;
     this.audioCtx = null;
@@ -123,6 +133,8 @@ export class VoiceEngine {
     this.socket.off('user-joined', this._onUserJoined);
     this.socket.emit('leave-room', { roomId: this.roomId });
     this.occupants.clear();
+    this.positions.clear();
+    this.selfPosition = null;
     for (const [id] of this.peers) this._removePeer(id);
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => t.stop());
@@ -146,6 +158,98 @@ export class VoiceEngine {
     this.deafened = deafened;
     for (const peer of this.peers.values()) {
       if (peer.audioEl) peer.audioEl.muted = deafened;
+    }
+  }
+
+  // --- proximity audio (v0.6.0) ---
+  //
+  // My orb moved (drag / arrow keys / reset) or a remote orb moved
+  // (orb-move relay). Gains are recomputed from the distance between
+  // my orb and each peer's orb — see proximity.js for the curve.
+  // Missing position data on either side means full gain (gain 1):
+  // a peer that never moved, or an old client that never sends
+  // orb-move, sounds exactly like before this feature existed.
+  setSelfPosition(x, y) {
+    this.selfPosition = { x, y };
+    this._applyProximityGains();
+  }
+
+  updateRemotePosition(socketId, x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    this.positions.set(socketId, { x, y });
+    this._applyProximityGains();
+  }
+
+  // Kill switch (runtime half of SPATIAL_AUDIO_ENABLED): false restores
+  // flat voice — every remote stream back to gain 1 — without touching
+  // the peer connections. True re-applies distance gains.
+  setSpatialEnabled(enabled) {
+    this.spatialEnabled = Boolean(enabled);
+    this._applyProximityGains();
+  }
+
+  // Gain for one peer right now, with hysteresis against its last gain
+  // so the volume does not flicker while orbs drift near a boundary.
+  _gainForPeer(socketId) {
+    const peer = this.peers.get(socketId);
+    if (!this.spatialEnabled || this.spatialFailed) return 1;
+    if (!this.selfPosition) return 1;
+    const pos = this.positions.get(socketId);
+    if (!pos) return 1; // no position data: hear normally (full gain)
+    return gainForDistance(distanceBetween(this.selfPosition, pos), peer?.gain ?? null);
+  }
+
+  _applyProximityGains() {
+    for (const [socketId, peer] of this.peers) {
+      const gain = this._gainForPeer(socketId);
+      peer.gain = gain;
+      if (peer.gainNode) {
+        try {
+          // Smooth the step so a drag does not click the audio.
+          if (typeof peer.gainNode.gain.setTargetAtTime === 'function') {
+            peer.gainNode.gain.setTargetAtTime(gain, peer.gainNode.context?.currentTime ?? 0, 0.08);
+          } else {
+            peer.gainNode.gain.value = gain;
+          }
+        } catch {
+          peer.gainNode.gain.value = gain;
+        }
+      }
+    }
+  }
+
+  // Route one remote stream through a GainNode so proximity can turn
+  // its volume down with distance. The analyser (speaking detection)
+  // keeps tapping the raw MediaStreamSource as before — the gain chain
+  // only affects what is heard, never what is measured.
+  // If any step throws (no AudioContext, element source unsupported),
+  // spatialFailed is set and the <audio> element keeps playing flat —
+  // conventional voice, never silence. The failure is sticky for the
+  // session: a half-built graph must not leave a peer inaudible.
+  _routeThroughGain(socketId, audioEl) {
+    const peer = this.peers.get(socketId);
+    if (!peer || !this.spatialEnabled || this.spatialFailed) return;
+    try {
+      const ctx = this._ensureAudioCtx();
+      const gainNode = ctx.createGain();
+      gainNode.gain.value = this._gainForPeer(socketId);
+      // Connect gain -> destination BEFORE creating the element source:
+      // once createMediaElementSource runs, the element's audio only
+      // flows through the graph, so the destination path must already
+      // exist or the peer would go silent on a later failure.
+      gainNode.connect(ctx.destination);
+      const elementSource = ctx.createMediaElementSource(audioEl);
+      elementSource.connect(gainNode);
+      peer.gainNode = gainNode;
+      peer.elementSource = elementSource;
+      peer.gain = gainNode.gain.value;
+    } catch {
+      this.spatialFailed = true;
+      if (peer) {
+        peer.gainNode = null;
+        peer.elementSource = null;
+        peer.gain = 1;
+      }
     }
   }
 
@@ -209,6 +313,10 @@ export class VoiceEngine {
       if (peer) {
         peer.audioEl = audioEl;
         peer.analyser = this._analyserFor(stream);
+        // Proximity gain: route the element through a GainNode. If
+        // the chain cannot be built, _routeThroughGain marks the
+        // session spatialFailed and the element plays flat as before.
+        this._routeThroughGain(socketId, audioEl);
       }
     };
     this.peers.set(socketId, {
@@ -226,7 +334,13 @@ export class VoiceEngine {
       ignoreOffer: false,
       offerRetries: 0,
       retryTimer: null,
-      candidateTypes: new Set()
+      candidateTypes: new Set(),
+      // Proximity audio: the GainNode this peer's stream routes
+      // through (null until ontrack builds it, or when spatial
+      // audio is off / failed — then the element plays flat).
+      gainNode: null,
+      elementSource: null,
+      gain: 1
     });
     return pc;
   }
@@ -362,6 +476,7 @@ export class VoiceEngine {
 
   _onUserLeft({ socketId }) {
     this.occupants.delete(socketId);
+    this.positions.delete(socketId);
     this._removePeer(socketId);
   }
 
@@ -370,6 +485,10 @@ export class VoiceEngine {
     if (!peer) return;
     if (peer.retryTimer) clearTimeout(peer.retryTimer);
     try { peer.pc.close(); } catch {}
+    // Tear down the proximity gain chain before dropping the element:
+    // a live GainNode holding a dead element source leaks the graph.
+    try { peer.elementSource?.disconnect(); } catch {}
+    try { peer.gainNode?.disconnect(); } catch {}
     if (peer.audioEl) {
       peer.audioEl.srcObject = null;
       peer.audioEl.remove();
