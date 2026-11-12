@@ -40,7 +40,7 @@ export function isOfferer(mySocketId, otherSocketId) {
 }
 
 export class VoiceEngine {
-  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs, spatialEnabled }) {
+  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs, spatialEnabled, onShareTrack, onShareEnded, onLocalShareEnded }) {
     this.socket = socket;
     this.roomId = roomId;
     this.selfId = selfId;
@@ -48,6 +48,15 @@ export class VoiceEngine {
     this.onMicError = onMicError || (() => {});
     this.onConnectionState = onConnectionState || (() => {});
     this.onPlaybackBlocked = onPlaybackBlocked || (() => {});
+    // Screen sharing (v0.8.0): the UI is told about an incoming video
+    // track (onShareTrack), a remote share ending (onShareEnded), and
+    // my own capture ending under me — e.g. the browser's own "Stop
+    // sharing" button (onLocalShareEnded). The engine never emits the
+    // socket screen-share events itself; RoomView owns that, so the
+    // claim / broadcast / rollback stays in one place.
+    this.onShareTrack = onShareTrack || (() => {});
+    this.onShareEnded = onShareEnded || (() => {});
+    this.onLocalShareEnded = onLocalShareEnded || (() => {});
     // If an offer goes unanswered (peer missed it, was backgrounded, ...),
     // re-offer once after this delay instead of staying silent forever.
     this.offerRetryMs = offerRetryMs ?? 5000;
@@ -86,6 +95,14 @@ export class VoiceEngine {
     this.micFailed = false;
     this.joined = false;
     this._pollTimer = null;
+    // Screen sharing (v0.8.0): my captured screen stream (video only —
+    // getDisplayMedia({ video: true, audio: false })) and, per peer,
+    // the RTCRtpSender carrying that video track, so stopping can
+    // removeTrack it from each connection. Audio is untouched: the
+    // mic track lives on localStream and is never re-added here.
+    this.shareStream = null;
+    this.shareSenders = new Map(); // socketId -> RTCRtpSender
+    this._onShareTrackEnded = this._onShareTrackEnded.bind(this);
     this.iceServers = null; // loaded in join() before any peer is created
     this._lastLevels = {};
     this._onSignal = this._onSignal.bind(this);
@@ -148,6 +165,11 @@ export class VoiceEngine {
     this.occupants.clear();
     this.positions.clear();
     this.selfPosition = null;
+    // Leaving stops my share outright: the captured tracks stop (the
+    // server also releases my slot on leave-room, so the room hears
+    // 'screen-share-stopped'). No renegotiation — the peer connections
+    // are closing below anyway.
+    this._stopShareTracks();
     for (const [id] of this.peers) this._removePeer(id);
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => t.stop());
@@ -172,6 +194,118 @@ export class VoiceEngine {
     for (const peer of this.peers.values()) {
       if (peer.audioEl) peer.audioEl.muted = deafened;
     }
+  }
+
+  // --- screen sharing (v0.8.0) ---
+  //
+  // getDisplayMedia({ video: true, audio: false }) captures the screen
+  // as a video-only stream; the track is added to every existing
+  // RTCPeerConnection (a renegotiation per peer — the same _offerTo the
+  // audio path uses, so the perfect-negotiation rules still apply) and
+  // to any peer created later (_createPeer). Audio negotiation is
+  // untouched: the mic track is never removed, replaced, or re-added
+  // here, and the video track rides its own sender per peer.
+  //
+  // The socket claim ('screen-share-started') is NOT emitted here —
+  // RoomView emits it after this returns ok, and rolls the local
+  // track back (stopScreenShare) if the server refuses the claim
+  // ("Someone is already sharing"). Returns { ok: true } or
+  // { ok: false, error } — a failed start never leaves a half-added
+  // track behind.
+  async startScreenShare() {
+    if (this.shareStream) return { ok: true };
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      return { ok: false, error: 'Screen sharing is not supported in this browser.' };
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    } catch (err) {
+      return {
+        ok: false,
+        error: err?.name === 'NotAllowedError'
+          ? 'Screen share was cancelled.'
+          : 'Could not start screen sharing.'
+      };
+    }
+    const track = stream.getVideoTracks()[0];
+    if (!track) {
+      stream.getTracks().forEach((t) => t.stop());
+      return { ok: false, error: 'Screen sharing gave no video track.' };
+    }
+    this.shareStream = stream;
+    // The browser's own "Stop sharing" button ends this track without
+    // telling the app — the ended event is the signal for RoomView to
+    // run the normal stop path (removeTrack + renegotiate + socket
+    // emit), so the room hears about it exactly like a dock stop.
+    track.addEventListener('ended', this._onShareTrackEnded);
+    for (const [socketId, peer] of this.peers) {
+      this._addShareTrackToPeer(socketId, peer);
+    }
+    for (const socketId of this.peers.keys()) {
+      await this._offerTo(socketId);
+    }
+    return { ok: true };
+  }
+
+  // Stop sharing: removeTrack the video sender from every peer and
+  // renegotiate (so the remote video track ends and the viewers' layer
+  // clears), then stop the captured tracks. Idempotent — stopping
+  // when not sharing is a no-op, so the browser-stop callback and the
+  // dock button can both call it safely.
+  async stopScreenShare() {
+    if (!this.shareStream) return;
+    const stream = this.shareStream;
+    this.shareStream = null;
+    for (const [socketId, sender] of this.shareSenders) {
+      const peer = this.peers.get(socketId);
+      try {
+        if (peer?.pc && sender) peer.pc.removeTrack(sender);
+      } catch {}
+    }
+    this.shareSenders.clear();
+    stream.getTracks().forEach((t) => {
+      try { t.removeEventListener('ended', this._onShareTrackEnded); } catch {}
+      t.stop();
+    });
+    for (const socketId of this.peers.keys()) {
+      await this._offerTo(socketId);
+    }
+  }
+
+  // My capture ended under me (browser chrome stop). The engine does
+  // not tear anything down itself — RoomView owns the stop path — it
+  // just reports it, so there is exactly one stop sequence.
+  _onShareTrackEnded() {
+    if (!this.shareStream) return;
+    this.onLocalShareEnded();
+  }
+
+  // Add the live share track to one peer connection (existing peer, or
+  // a peer created after sharing started). The sender is remembered
+  // per peer so stopScreenShare can removeTrack exactly that sender.
+  _addShareTrackToPeer(socketId, peer) {
+    if (!this.shareStream || !peer?.pc) return;
+    const track = this.shareStream.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      const sender = peer.pc.addTrack(track, this.shareStream);
+      if (sender) this.shareSenders.set(socketId, sender);
+    } catch {}
+  }
+
+  // Silent track stop for leave(): the senders die with their peer
+  // connections, so no removeTrack / renegotiation — just stop the
+  // capture so the OS releases the screen.
+  _stopShareTracks() {
+    if (!this.shareStream) return;
+    const stream = this.shareStream;
+    this.shareStream = null;
+    this.shareSenders.clear();
+    stream.getTracks().forEach((t) => {
+      try { t.removeEventListener('ended', this._onShareTrackEnded); } catch {}
+      t.stop();
+    });
   }
 
   // --- audio settings (v0.7.0) ---
@@ -396,6 +530,12 @@ export class VoiceEngine {
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream));
     }
+    // A peer created after sharing started (late joiner) gets the
+    // video track with the audio ones, so their first offer already
+    // carries the screen — no second renegotiation round needed.
+    if (this.shareStream) {
+      this._addShareTrackToPeer(socketId, { pc });
+    }
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         // Track which kinds of candidates we gathered: if 'relay' never
@@ -413,6 +553,20 @@ export class VoiceEngine {
       this._reportConnection(socketId);
     };
     pc.ontrack = (e) => {
+      // Screen sharing (v0.8.0): a video track is a shared screen, not
+      // voice — it never gets an <audio> element, a GainNode, or a
+      // speaking analyser. The UI renders it in the share layer
+      // (behind the orbs) and clears the layer when the track ends
+      // (the sharer stopped, or left). Audio tracks take the existing
+      // path below, untouched.
+      if (e.track?.kind === 'video') {
+        const stream = e.streams?.[0] || new MediaStream([e.track]);
+        this.onShareTrack(socketId, stream);
+        try {
+          e.track.addEventListener('ended', () => this.onShareEnded(socketId));
+        } catch {}
+        return;
+      }
       const stream = e.streams[0];
       const audioEl = new Audio();
       audioEl.autoplay = true;
@@ -607,6 +761,10 @@ export class VoiceEngine {
     const peer = this.peers.get(socketId);
     if (!peer) return;
     if (peer.retryTimer) clearTimeout(peer.retryTimer);
+    // Their share sender dies with the connection; the UI clears the
+    // share layer for this peer (they left, or their share ended).
+    this.shareSenders.delete(socketId);
+    this.onShareEnded(socketId);
     try { peer.pc.close(); } catch {}
     // Tear down the proximity gain chain before dropping the element:
     // a live GainNode holding a dead element source leaks the graph.
