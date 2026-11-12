@@ -192,7 +192,9 @@ test('M3: Home renders the stories row from the same presence data as the side p
   assert.ok(homeJsx.includes("import StoriesRow from './StoriesRow'"));
   // Home passes its single presence fetch (shared with the night sky
   // and the side panel) — the stories row must not fetch it a second time.
-  assert.ok(homeJsx.includes('<StoriesRow refreshTick={refreshTick} onJoin={onJoin} friends={presence} />'));
+  // v0.7.0: the join prop is tryJoin, the cap pre-flight wrapper around
+  // onJoin — the stories row still joins the same way, through Home.
+  assert.ok(homeJsx.includes('<StoriesRow refreshTick={refreshTick} onJoin={tryJoin} friends={presence} />'));
   assert.ok(storiesJsx.includes('friendsProp !== undefined ? friendsProp : ownFriends'), 'stories row must use the shared presence prop when provided');
   assert.ok(storiesJsx.includes("getFriendsPresence"), 'stories row must reuse GET /api/friends/presence');
   assert.ok(storiesJsx.includes("matchMedia('(max-width: 520px)')"), 'stories row must stay off-phone (desktop untouched)');
