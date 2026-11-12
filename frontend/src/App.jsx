@@ -3,6 +3,8 @@ import { apiFetch, apiJson, getDms, getFriends, getNotifications, joinViaInviteL
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound, playMuteSound } from './sounds';
 import { voiceSessionReducer, initialVoiceSessionState } from './voiceSession';
+import { buildPostcard } from './postcard';
+import RoomPostcard from './components/RoomPostcard';
 import MiniPlayer from './components/MiniPlayer';
 import MobileTabBar from './components/MobileTabBar';
 import { onUpdateAvailable, applyUpdate } from './pwa';
@@ -78,6 +80,10 @@ export default function App() {
   // Email-verification result from a #verify-email- link: shown in
   // the same banner spot as invite-link errors.
   const [verifyNotice, setVerifyNotice] = useState('');
+  // Room postcard: the recap of the room just left (room name, stay
+  // length, who was there). Built on leave, in-memory only — dismiss
+  // it (or join another room) and it is gone; nothing is persisted.
+  const [postcard, setPostcard] = useState(null);
   // Sliding tab pill: measured from the active tab button (offsetLeft /
   // offsetWidth) instead of CSS calc, so it tracks the active tab
   // exactly on every width and font.
@@ -206,22 +212,37 @@ export default function App() {
     if (room?.id === r.id) {
       // Already in this room's session — just show the room again
       // instead of restarting the call timer and resetting mute.
+      setPostcard(null);
       setView('rooms');
       setInRoom(true);
       return;
     }
+    setPostcard(null);
     setRoom(r);
     setInRoom(true);
     setView('rooms');
     dispatchSession({ type: 'join', joinedAt: Date.now() });
   }, [room]);
 
-  const leaveRoom = useCallback(() => {
+  // Leaving builds the postcard first (the session resets below, and
+  // with it joinedAt). RoomView hands over its sightings snapshot;
+  // a leave with no snapshot (kicked) or no session start shows no
+  // card — it just leaves.
+  const leaveRoom = useCallback((snapshot) => {
+    if (snapshot && session.joinedAt && room) {
+      setPostcard(buildPostcard({
+        roomName: room.name,
+        joinedAt: session.joinedAt,
+        leftAt: Date.now(),
+        seen: snapshot.seen,
+        selfId: user?.id
+      }));
+    }
     setRoom(null);
     setLockedRoom(null);
     setInRoom(false);
     dispatchSession({ type: 'leave' });
-  }, []);
+  }, [room, session.joinedAt, user]);
 
   // Navigate to a view without dropping the call: the room view hides,
   // RoomView stays mounted, and the mini-player appears.
@@ -409,6 +430,7 @@ export default function App() {
     disconnectSocket();
     setRoom(null);
     setLockedRoom(null);
+    setPostcard(null);
     setInRoom(false);
     dispatchSession({ type: 'leave' });
     setView('rooms');
@@ -522,6 +544,12 @@ export default function App() {
             <span>{verifyNotice}</span>
             <button className="btn btn-text btn-small" onClick={() => setVerifyNotice('')} aria-label="Dismiss">Dismiss</button>
           </div>
+        )}
+        {/* Room postcard: the recap of the room just left. In flow above
+            the rooms list (not a modal), so it never blocks re-joining
+            — the list and its Join buttons stay reachable below it. */}
+        {postcard && !room && view === 'rooms' && (
+          <RoomPostcard postcard={postcard} onDismiss={() => setPostcard(null)} />
         )}
         {room && (
           // The room view stays mounted at this one spot while a call is
