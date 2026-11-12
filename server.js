@@ -8,8 +8,9 @@ const path = require('path');
 const { Server } = require('socket.io');
 const apiRoutes = require('./routes/api');
 const { rateLimitMiddleware, csrfMiddleware } = require('./middleware/auth');
-const { attachSocket, emitRoomsChanged, clearMutedForRoom } = require('./lib/socket');
+const { attachSocket, emitRoomsChanged, clearMutedForRoom, clearFocusTimer } = require('./lib/socket');
 const { startCleanupWorker } = require('./lib/fadingRooms');
+const { focusSessions, clearSession } = require('./lib/focusSessions');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const RoomInvite = require('./models/RoomInvite');
@@ -124,6 +125,10 @@ if (require.main === module) {
         log: (fields, msg) => (fields && fields.err ? logger.error(fields, msg) : logger.info(fields, msg)),
         onClosed: async (room) => {
           const id = String(room._id);
+          // A faded campfire takes its focus session (and expiry timer)
+          // with it — the session dies with the room.
+          clearSession(focusSessions, id);
+          clearFocusTimer(id);
           io.to(id).emit('room-closed', { roomId: id });
           emitRoomsChanged(id);
         }

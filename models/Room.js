@@ -11,6 +11,11 @@ const roomSchema = new mongoose.Schema({
     enum: ACCENTS.map((a) => a.id),
     default: 'violet'
   },
+  // Together mode (playbook item 6): 'talk' is a normal voice room;
+  // 'focus' is a quiet room with a shared focus timer (the session
+  // itself lives in memory, lib/focusSessions.js — only the mode is
+  // persisted). Legacy rooms have no mode and behave as 'talk'.
+  mode: { type: String, enum: ['talk', 'focus'], default: 'talk' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   // Campfires (fading rooms, playbook item 4): a room created with the
   // "Campfire" toggle is deleted 60s after presence empties, unless

@@ -86,3 +86,17 @@ test('presence: removeSocketEverywhere leaves all rooms', () => {
   assert.equal(presence.occupancyCount('r1'), 0);
   presence.clearAll();
 });
+
+// Together mode: Room.mode validation (lib/rooms.js validateRoomInput).
+test('validateRoomInput defaults mode to talk and accepts focus', () => {
+  assert.equal(validateRoomInput({ name: 'Study' }).room.mode, 'talk');
+  assert.equal(validateRoomInput({ name: 'Study', mode: 'focus' }).room.mode, 'focus');
+  assert.equal(validateRoomInput({ name: 'Study', mode: 'talk' }).room.mode, 'talk');
+});
+
+test('validateRoomInput treats junk mode as talk (old clients stay talk rooms)', () => {
+  assert.equal(validateRoomInput({ name: 'Study', mode: 'FOCUS' }).room.mode, 'talk');
+  assert.equal(validateRoomInput({ name: 'Study', mode: '' }).room.mode, 'talk');
+  assert.equal(validateRoomInput({ name: 'Study', mode: true }).room.mode, 'talk');
+  assert.equal(validateRoomInput({ name: 'Study', mode: undefined }).room.mode, 'talk');
+});

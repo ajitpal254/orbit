@@ -1223,6 +1223,30 @@ input::placeholder { color: var(--muted); }
 .campfire-line .icon { width: 14px; height: 14px; flex-shrink: 0; }
 .campfire-line--kept { color: var(--muted); }
 
+/* Together mode (focus rooms): the room-mode switch and the shared
+   focus timer. The ring is an SVG whose stroke updates from React
+   state once a second — there is no CSS animation on it, only a 1s
+   linear transition so the stroke glides between ticks; the global
+   prefers-reduced-motion rule snaps that transition, so the ring
+   steps calmly instead of gliding. */
+.focus-badge { display: inline-flex; align-items: center; gap: 0.2rem; font-size: 0.8em; font-weight: 700; color: #a5b4fc; margin-right: 0.35rem; vertical-align: 0.05em; }
+.focus-badge .icon { width: 12px; height: 12px; }
+.mode-toggle { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0.6rem 0.2rem 0; font-size: 0.86rem; font-weight: 600; }
+.mode-toggle button { padding: 0.35rem 0.7rem; border-radius: 999px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--muted); font-weight: 700; font-size: 0.85rem; cursor: pointer; font-family: inherit; }
+.mode-toggle button.selected { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
+.mode-toggle button:disabled { opacity: 0.55; cursor: default; }
+.focus-panel { display: flex; align-items: center; gap: 0.9rem; margin: 0.7rem 0 0; padding: 0.7rem 0.9rem; }
+.focus-ring-wrap { position: relative; width: 72px; height: 72px; flex-shrink: 0; }
+.focus-ring { display: block; }
+.focus-ring-track { fill: none; stroke: rgba(255, 255, 255, 0.12); stroke-width: 6; }
+.focus-ring-fill { fill: none; stroke: var(--room-from, #8b5cf6); stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+.focus-time { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+.focus-info { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; flex: 1; }
+.focus-info .muted { font-size: 0.86rem; }
+.focus-controls { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+.focus-duration { display: flex; align-items: center; gap: 0.35rem; }
+.focus-duration select { background: rgba(255, 255, 255, 0.06); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 0.35rem 0.3rem; font-family: inherit; font-size: 0.9rem; }
+
 /* Locked room + knocks: a private room opened by a non-member, and the
    pending knocks in the members panel. The lock icon breathes gently;
    the global prefers-reduced-motion rule stills it like everything else. */
@@ -1356,6 +1380,11 @@ input::placeholder { color: var(--muted); }
    buttons collided with the name, and wide orbs were cut off at the
    room edge. Desktop is untouched: this only restructures ≤520px. */
 @media (max-width: 520px) {
+  /* Together mode: on phones the focus panel wraps (ring + text on
+     one row, controls on their own row, right-aligned) so the timer
+     never squeezes the ring or the duration picker. */
+  .focus-panel { flex-wrap: wrap; }
+  .focus-controls { width: 100%; justify-content: flex-end; }
   /* Mobile header: the sticky translucent topbar let the tab bar show
      through (and collide with the logo / Log out) when the page was
      scrolled even slightly. On mobile the topbar scrolls away with

@@ -25,6 +25,10 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
   const [topic, setTopic] = useState('');
   const [accent, setAccent] = useState('violet');
   const [isPrivate, setIsPrivate] = useState(false);
+  // Together mode: 'talk' is a normal voice room, 'focus' is a quiet
+  // room with a shared focus timer. Defaults to talk; the owner or a
+  // moderator can switch it later from inside the room.
+  const [mode, setMode] = useState('talk');
   // Campfire (fading room): on by default — the playbook makes rooms
   // temporary by default, and the owner can keep one anytime. The
   // server only treats an explicit true as ephemeral, so this toggle
@@ -100,12 +104,13 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
       const room = await apiJson('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, topic, accent, isPrivate, ephemeral: isCampfire })
+        body: JSON.stringify({ name, topic, accent, isPrivate, ephemeral: isCampfire, mode })
       });
       setName('');
       setTopic('');
       setIsPrivate(false);
       setIsCampfire(true);
+      setMode('talk');
       setShowCreate(false);
       onJoin(room);
     } catch (err) {
@@ -232,6 +237,27 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
           {isPrivate && (
             <p className="muted privacy-hint">
               Only people you invite can see or join this room. Invite friends from inside the room.
+            </p>
+          )}
+          <div className="privacy-toggle" role="group" aria-label="Room mode">
+            <button
+              type="button"
+              className={mode !== 'focus' ? 'selected' : ''}
+              onClick={() => setMode('talk')}
+            >
+              <Icon name="chat" size={15} /> Talk
+            </button>
+            <button
+              type="button"
+              className={mode === 'focus' ? 'selected' : ''}
+              onClick={() => setMode('focus')}
+            >
+              <Icon name="timer" size={15} /> Focus
+            </button>
+          </div>
+          {mode === 'focus' && (
+            <p className="muted privacy-hint">
+              A quiet room with a shared focus timer — the owner or a moderator starts it inside.
             </p>
           )}
           <label className="campfire-toggle">
@@ -376,6 +402,7 @@ function RoomCard({ room, index, onJoin, isHero }) {
           <strong className="room-name">
             {room.isPrivate && <span className="lock-badge" title="Private room"><Icon name="lock" size={12} /> </span>}
             {room.ephemeral && <span className="campfire-badge" title="Campfire — closes 1 min after the last person leaves"><Icon name="flame" size={12} /> Campfire</span>}
+            {room.mode === 'focus' && <span className="focus-badge" title="Focus room — shared focus timer"><Icon name="timer" size={12} /> Focus</span>}
             {room.name}
           </strong>
           {room.topic && <p className="room-topic">{room.topic}</p>}
