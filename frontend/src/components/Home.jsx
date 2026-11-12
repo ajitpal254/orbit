@@ -126,6 +126,10 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
     }
   };
 
+  // Dashed "+ New room" card (desktop polish): opens the existing
+  // create-room form — no new flow, just setShowCreate(true).
+  const openCreate = () => setShowCreate(true);
+
   const answerInvite = async (invite, accept) => {
     try {
       if (accept) {
@@ -388,6 +392,12 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
             {live.map((room, i) => (
               <RoomCard key={room.id} room={room} index={i} onJoin={tryJoin} isHero={heroRoom?.id === room.id} />
             ))}
+            {/* Dashed card lives here only when there is no quiet list
+                to host it; the live section hides on desktop when the
+                hero is the only live room, so no card then either. */}
+            {liveOthers.length > 0 && quiet.length === 0 && (
+              <NewRoomCard onOpen={openCreate} index={live.length} />
+            )}
           </div>
         </section>
       )}
@@ -399,6 +409,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
             {quiet.map((room, i) => (
               <RoomCard key={room.id} room={room} index={i} onJoin={tryJoin} />
             ))}
+            <NewRoomCard onOpen={openCreate} index={quiet.length} />
           </div>
         </section>
       )}
@@ -412,6 +423,27 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
           spanning the rows; hidden below 900px in CSS. */}
       <SidePanel refreshTick={refreshTick} onJoinRoom={tryJoin} onNavigate={onNavigate} friends={presence} />
     </div>
+  );
+}
+
+// Dashed "+ New room" card appended after the real room cards on
+// desktop (Plan v2 §2 fix ②). It opens the existing create-room form
+// via onOpen — no new flow. The aria-label is deliberately "Create a
+// room", not "+ New room": the smoke test selects the header button
+// with getByRole('button', { name: 'New room' }), and Playwright's
+// substring name matching would otherwise resolve to two buttons and
+// fail strict mode. Visible text stays "+ New room" per the plan.
+function NewRoomCard({ onOpen, index }) {
+  return (
+    <button
+      type="button"
+      className="room-card room-card--new stagger-in"
+      style={{ animationDelay: `${(index || 0) * 50}ms` }}
+      onClick={onOpen}
+      aria-label="Create a room"
+    >
+      + New room
+    </button>
   );
 }
 

@@ -38,6 +38,11 @@
 
 .room-list { display: flex; flex-direction: column; gap: 0.7rem; }
 
+/* Dashed "+ New room" card (desktop only): hidden below 900px so the
+   phone room list is untouched — desktop.css shows it inside the
+   min-width: 900px block. */
+.room-card--new { display: none; }
+
 /* --- Night-sky home: friends as stars instead of a list. Shown at
    the top of Home on phones, and on desktop in place of the hero when
    nobody is live (hasLiveHero hides it ≥900px, see below). Stars are
