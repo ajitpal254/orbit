@@ -19,14 +19,18 @@
 //     (orb positions, gradients, animation delays). style-src therefore
 //     needs 'unsafe-inline'; there is no inline <script> anywhere, so
 //     script-src stays tight without it.
-//   - No other external hosts: no analytics, no CDNs, no embeds.
+//   - Google Analytics 4 (v0.7.0, only when GA_MEASUREMENT_ID is set):
+//     gtag.js from https://www.googletagmanager.com, beacons to
+//     https://www.google-analytics.com. With no ID configured the
+//     client loads nothing from either host.
+//   - No other external hosts: no CDNs, no embeds.
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
-  "script-src 'self' https://accounts.google.com/gsi/client",
+  "script-src 'self' https://accounts.google.com/gsi/client https://www.googletagmanager.com",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: https://www.google-analytics.com",
   "font-src 'self'",
-  "connect-src 'self' ws: wss: https://accounts.google.com",
+  "connect-src 'self' ws: wss: https://accounts.google.com https://www.google-analytics.com",
   "frame-src https://accounts.google.com",
   "frame-ancestors 'none'",
   "object-src 'none'",

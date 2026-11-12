@@ -36,6 +36,15 @@ test('CSP: self + Google GSI script + ws/wss, frame-ancestors none', () => {
   assert.match(CONTENT_SECURITY_POLICY, /frame-ancestors 'none'/);
   assert.match(CONTENT_SECURITY_POLICY, /object-src 'none'/);
   assert.match(CONTENT_SECURITY_POLICY, /img-src 'self' data:/);
+  // GA4 (v0.7.0): ONLY these three additions — gtag.js script host,
+  // analytics beacons (connect + img). Nothing else loosened: no new
+  // frame-src, no unsafe-inline/eval for scripts, default-src still self.
+  assert.match(CONTENT_SECURITY_POLICY, /script-src [^;]*https:\/\/www\.googletagmanager\.com/);
+  assert.match(CONTENT_SECURITY_POLICY, /connect-src [^;]*https:\/\/www\.google-analytics\.com/);
+  assert.match(CONTENT_SECURITY_POLICY, /img-src [^;]*https:\/\/www\.google-analytics\.com/);
+  assert.match(CONTENT_SECURITY_POLICY, /default-src 'self'/);
+  assert.equal(CONTENT_SECURITY_POLICY.includes('googletagmanager.com/gtag'), false);
+  assert.equal(CONTENT_SECURITY_POLICY.includes('google-analytics.com/g/'), false);
   // style-src 'unsafe-inline' is deliberate, not an oversight: the
   // splash <style> block in index.html and React's inline style
   // attributes (orb positions, gradients) cannot work without it.
