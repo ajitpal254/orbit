@@ -111,6 +111,9 @@ export const leavePrivateRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/leave
 // --- Campfires (fading rooms) ---
 export const keepRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/keep`);
 
+// --- Together mode ---
+export const setRoomMode = (roomId, mode) => jsonPost(`/api/rooms/${roomId}/mode`, { mode });
+
 // --- Invite links (shareable join links) ---
 
 export const createInviteLink = (roomId) => jsonPost(`/api/rooms/${roomId}/invite-link`);

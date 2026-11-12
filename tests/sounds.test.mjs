@@ -3,7 +3,7 @@
 // never throws when audio is unavailable — that is tested too.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { playJoinSound, playMuteSound, playDeafenSound } from '../frontend/src/sounds.js';
+import { playJoinSound, playMuteSound, playDeafenSound, playFocusEndSound } from '../frontend/src/sounds.js';
 
 let lastCtx = null;
 
@@ -76,4 +76,11 @@ test('deafen plays two lower notes down, undeafen two notes up', () => {
   const before2 = lastCtx.oscs.length;
   playDeafenSound(false);
   assert.deepEqual(lastCtx.oscs.slice(before2).map((o) => o.freq), [220, 330]);
+});
+
+test('focus end plays a soft three-note rise', () => {
+  const before = lastCtx.oscs.length;
+  playFocusEndSound();
+  assert.deepEqual(lastCtx.oscs.slice(before).map((o) => o.freq), [523.25, 659.25, 783.99]);
+  assert.ok(lastCtx.oscs.slice(before).every((o) => o.started));
 });

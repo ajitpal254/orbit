@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock, setRoomMode } from '../api';
 import { buildInviteLinkUrl } from '../deepLink';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
-import { playJoinSound, playMuteSound, playDeafenSound } from '../sounds';
+import { playJoinSound, playMuteSound, playDeafenSound, playFocusEndSound } from '../sounds';
+import { remainingMs, focusProgress, formatFocusRemaining, FOCUS_PRESET_MINUTES } from '../focusTimer';
 import { orbPositions, initials, orbHue } from '../orbLayout';
+import { clusterHuddles, clampPosition, SPATIAL_AUDIO_ENABLED } from '../proximity';
 import Avatar from './Avatar';
 import { Icon, SignalBars } from './icons';
 
@@ -70,12 +72,46 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   // orb just got tapped (drives the one-shot .orb-tapped bounce).
   const [selectedOrb, setSelectedOrb] = useState(null);
   const [tapOrbId, setTapOrbId] = useState(null);
+  // Proximity audio (v0.6.0): user-draggable orb positions. Overrides
+  // hold positions that differ from the deterministic orbLayout
+  // defaults — mine (drag / arrow keys / reset) and remotes' (from
+  // the server's orb-move relay). Keyed by socketId ('self' is me).
+  const [orbOverrides, setOrbOverrides] = useState({});
+  const [spatialOn, setSpatialOn] = useState(SPATIAL_AUDIO_ENABLED);
+  const [dragging, setDragging] = useState(false);
+  const orbOverridesRef = useRef({});
+  const selfPosRef = useRef(null);
+  const prevHuddlesRef = useRef([]);
+  const dragRef = useRef({ active: false, moved: false });
+  const justDraggedRef = useRef(false);
+  const emitMoveRef = useRef({ last: 0, pending: null, timer: null });
   // Campfires (fading rooms): whether this room was kept permanent,
   // whether it faded under us, and the keep request state.
   const [kept, setKept] = useState(false);
   const [faded, setFaded] = useState(false);
   const [keepBusy, setKeepBusy] = useState(false);
   const [keepError, setKeepError] = useState('');
+  // Together mode: the room's mode (talk/focus) and the shared focus
+  // session. The session carries the server's startedAt + durationSec;
+  // remaining time is derived from those, so every client counts down
+  // in sync and late joiners see the same remaining time (room-state
+  // carries it). focusNow ticks once a second while a session runs —
+  // the tick only re-renders; the server's numbers are the truth.
+  const [mode, setMode] = useState(room.mode || 'talk');
+  const [focusSession, setFocusSession] = useState(null);
+  const [focusNow, setFocusNow] = useState(() => Date.now());
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [focusBusy, setFocusBusy] = useState(false);
+  const [focusError, setFocusError] = useState('');
+  const [modeBusy, setModeBusy] = useState(false);
+  // The end chime must play once per session even if both the local
+  // expiry and the server's focus-ended broadcast fire for it.
+  const chimedForRef = useRef(null);
+  // Muted/deafened as a ref: the socket handlers close over the mount
+  // render, so they read the live value from here instead of a stale
+  // one when deciding whether the end chime may play.
+  const soundOffRef = useRef(false);
+  soundOffRef.current = muted || deafened || modMuted;
   // "Connection details" popover: the per-peer ICE/debug line lives
   // here instead of always-on under the orbs (see below).
   const [showConnDetails, setShowConnDetails] = useState(false);
@@ -88,6 +124,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   // this, a wide orb near the edge is half cut off on narrow phones.
   const spaceRef = useRef(null);
   const [spaceSize, setSpaceSize] = useState({ width: 360, height: 480 });
+
+  // Play the focus-end chime once for a session (keyed by its
+  // startedAt). The chime is a UI sound, not voice: it stays off while
+  // the user is muted or deafened, per the spec.
+  const chimeFocusEnd = useCallback((startedAt) => {
+    if (startedAt != null && chimedForRef.current === startedAt) return;
+    chimedForRef.current = startedAt ?? 'local';
+    if (soundOffRef.current) return;
+    playFocusEndSound();
+  }, []);
 
   useEffect(() => {
     const el = spaceRef.current;
@@ -129,7 +175,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     // toggle mute while this view is hidden; cleared on teardown below.
     if (voiceEngineRef) voiceEngineRef.current = voice;
 
-    const onRoomState = ({ occupants: others, mutedByModerator }) => {
+    const onRoomState = ({ occupants: others, mutedByModerator, focusSession: fs }) => {
       setOccupants((prev) => {
         const next = { ...prev };
         for (const o of others || []) {
@@ -137,6 +183,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         }
         return next;
       });
+      // A focus session already running in this room arrives with
+      // room-state — a late joiner sees the same remaining time as
+      // everyone else. Absent means no session (or an expired one the
+      // server already dropped); the server is the source of truth.
+      setFocusSession(fs || null);
+      if (fs) setFocusBusy(false);
       // A moderator muted me before I (re)joined — start muted again.
       if (mutedByModerator) applyModeratorMute(true, '');
     };
@@ -149,6 +201,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     };
     const onUserLeft = ({ socketId }) => {
       setOccupants((prev) => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
+      // Their orb leaves with them — drop the position override.
+      setOrbOverrides((prev) => {
         const next = { ...prev };
         delete next[socketId];
         return next;
@@ -200,6 +258,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       voiceRef.current?.leave();
       setKicked(true);
     };
+    // A remote orb moved: the server already validated + clamped the
+    // position and checked membership — apply it to the override map
+    // and to the voice engine's gain math. My own moves come back
+    // only to others (socket.to), so no self echo to guard against.
+    const onOrbMove = ({ socketId, x, y }) => {
+      if (!socketId) return;
+      const pos = clampPosition(x, y);
+      setOrbOverrides((prev) => ({ ...prev, [socketId]: pos }));
+      voiceRef.current?.updateRemotePosition(socketId, pos.x, pos.y);
+    };
     // This campfire faded while I was still showing it: only possible
     // when my socket died without a leave (presence emptied, the
     // worker closed the room). Stop voice and show a notice.
@@ -208,16 +276,46 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       voiceRef.current?.leave();
       setFaded(true);
     };
+    // Together mode: the shared focus session started / stopped /
+    // ended, or the room's mode changed. focus-ended is the
+    // authoritative end — it chimes once (deduped by startedAt with
+    // the local-expiry path below). A mode change to talk clears any
+    // session; the server also sends focus-stopped for that case.
+    const onFocusStarted = (s) => {
+      if (!s || s.roomId !== room.id) return;
+      setFocusSession(s);
+      setFocusError('');
+      setFocusBusy(false);
+    };
+    const onFocusStopped = ({ roomId } = {}) => {
+      if (roomId !== room.id) return;
+      setFocusSession(null);
+    };
+    const onFocusEnded = (s) => {
+      if (!s || s.roomId !== room.id) return;
+      setFocusSession(null);
+      chimeFocusEnd(s.startedAt);
+    };
+    const onRoomModeChanged = ({ roomId, mode: m } = {}) => {
+      if (roomId !== room.id) return;
+      setMode(m);
+      if (m !== 'focus') setFocusSession(null);
+    };
 
     socket.on('room-state', onRoomState);
     socket.on('user-joined', onUserJoined);
     socket.on('user-left', onUserLeft);
     socket.on('mic-state', onMicState);
+    socket.on('orb-move', onOrbMove);
     socket.on('chat-message', onChatMessage);
     socket.on('moderator-muted', onModeratorMuted);
     socket.on('moderator-unmuted', onModeratorUnmuted);
     socket.on('room-kicked', onRoomKicked);
     socket.on('room-closed', onRoomClosed);
+    socket.on('focus-started', onFocusStarted);
+    socket.on('focus-stopped', onFocusStopped);
+    socket.on('focus-ended', onFocusEnded);
+    socket.on('room-mode-changed', onRoomModeChanged);
 
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
     voice.join();
@@ -229,11 +327,17 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       socket.off('user-joined', onUserJoined);
       socket.off('user-left', onUserLeft);
       socket.off('mic-state', onMicState);
+      socket.off('orb-move', onOrbMove);
+      if (emitMoveRef.current.timer) clearTimeout(emitMoveRef.current.timer);
       socket.off('chat-message', onChatMessage);
       socket.off('moderator-muted', onModeratorMuted);
       socket.off('moderator-unmuted', onModeratorUnmuted);
       socket.off('room-kicked', onRoomKicked);
       socket.off('room-closed', onRoomClosed);
+      socket.off('focus-started', onFocusStarted);
+      socket.off('focus-stopped', onFocusStopped);
+      socket.off('focus-ended', onFocusEnded);
+      socket.off('room-mode-changed', onRoomModeChanged);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
@@ -250,7 +354,38 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     setKept(false);
     setFaded(false);
     setKeepError('');
+    // Fresh room, fresh stage: drop every orb override and huddle.
+    setOrbOverrides({});
+    orbOverridesRef.current = {};
+    prevHuddlesRef.current = [];
+    setMode(room.mode || 'talk');
+    setFocusSession(null);
+    setFocusError('');
+    setFocusBusy(false);
+    chimedForRef.current = null;
   }, [room.id]);
+
+  // Tick the focus countdown once a second while a session runs. The
+  // displayed time is derived from the server's startedAt, not from a
+  // local countdown, so every client agrees — the tick only re-renders.
+  useEffect(() => {
+    if (!focusSession) return undefined;
+    const t = setInterval(() => setFocusNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [focusSession]);
+
+  // Local end-of-timer backstop: the server broadcasts focus-ended
+  // when the timer fires, but if that push is missed (reconnect, a
+  // backgrounded tab) the client still ends cleanly — and chimes once
+  // — when its own derived remaining time hits zero.
+  useEffect(() => {
+    if (!focusSession) return;
+    if (remainingMs(focusSession, focusNow) <= 0) {
+      const startedAt = focusSession.startedAt;
+      setFocusSession(null);
+      chimeFocusEnd(startedAt);
+    }
+  }, [focusSession, focusNow, chimeFocusEnd]);
 
   useEffect(() => {
     if (chatOpen && chatEndRef.current) {
@@ -295,6 +430,101 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     }));
   }, [muted]);
 
+  // Broadcast my orb position, throttled to ~10 Hz (playbook spec):
+  // the leading move goes out at once, the latest position during
+  // the 100ms window is flushed by a trailing timer, and the final
+  // position is sent immediately on pointer-up / reset.
+  const emitOrbMove = useCallback((x, y, immediate = false) => {
+    const socket = getSocket();
+    const st = emitMoveRef.current;
+    const now = Date.now();
+    if (immediate || now - st.last >= 100) {
+      if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+      st.last = now;
+      st.pending = null;
+      socket.emit('orb-move', { roomId: room.id, x, y });
+    } else {
+      st.pending = { x, y };
+      if (!st.timer) {
+        st.timer = setTimeout(() => {
+          st.timer = null;
+          if (st.pending) {
+            st.last = Date.now();
+            const p = st.pending;
+            st.pending = null;
+            socket.emit('orb-move', { roomId: room.id, x: p.x, y: p.y });
+          }
+        }, 100 - (now - st.last));
+      }
+    }
+  }, [room.id]);
+
+  // Move my orb (drag / arrow keys / reset): clamp into the room,
+  // update the override + the voice engine's gain math, and broadcast.
+  const moveSelf = useCallback((x, y, immediate = false) => {
+    const pos = clampPosition(x, y);
+    orbOverridesRef.current = { ...orbOverridesRef.current, self: pos };
+    setOrbOverrides((prev) => ({ ...prev, self: pos }));
+    voiceRef.current?.setSelfPosition(pos.x, pos.y);
+    emitOrbMove(pos.x, pos.y, immediate);
+  }, [emitOrbMove]);
+
+  // Reset my orb to its deterministic layout spot: drop the override
+  // (so a later join/leave reshuffle moves me with the layout again)
+  // and broadcast the default position at once.
+  const resetPosition = () => {
+    const defaults = orbPositions(Object.values(occupants), spaceSize);
+    const mine = defaults.find((p) => p.id === 'self');
+    const pos = mine ? { x: mine.x, y: mine.y } : { x: 50, y: 46 };
+    const next = { ...orbOverridesRef.current };
+    delete next.self;
+    orbOverridesRef.current = next;
+    setOrbOverrides(next);
+    voiceRef.current?.setSelfPosition(pos.x, pos.y);
+    emitOrbMove(pos.x, pos.y, true);
+  };
+
+  const toggleSpatial = () => {
+    const next = !spatialOn;
+    setSpatialOn(next);
+    voiceRef.current?.setSpatialEnabled(next);
+  };
+
+  // Drag my orb (pointer events, so mouse + touch share the path):
+  // pointer capture keeps moves flowing to the orb even off-stage,
+  // positions convert from client px to % of the room stage, and a
+  // drag that actually moved suppresses the tap that follows it (so
+  // dragging never opens the orb popover by accident).
+  const onSelfPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    dragRef.current = { active: true, moved: false };
+    setDragging(true);
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+  };
+  const onSelfPointerMove = (e) => {
+    if (!dragRef.current.active) return;
+    const el = spaceRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    const cur = selfPosRef.current || { x: 50, y: 46 };
+    if (Math.abs(x - cur.x) + Math.abs(y - cur.y) > 1) dragRef.current.moved = true;
+    moveSelf(x, y);
+  };
+  const onSelfPointerUp = () => {
+    if (!dragRef.current.active) return;
+    dragRef.current.active = false;
+    setDragging(false);
+    const cur = selfPosRef.current;
+    if (cur) emitOrbMove(cur.x, cur.y, true); // flush the final spot
+    if (dragRef.current.moved) {
+      justDraggedRef.current = true;
+      setTimeout(() => { justDraggedRef.current = false; }, 150);
+    }
+  };
+
   // Tap an orb: quick bounce + toggle its info popover. The class is
   // removed and re-added on a later frame so a fast double-tap replays
   // the bounce instead of being swallowed by the still-present class.
@@ -312,13 +542,24 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
 
   // Keyboard shortcuts (desktop only): M mute, D deafen, C chat,
   // Esc closes the chat sheet / invite picker / connection popover /
-  // orb popover. Ignored while typing (input, textarea,
-  // contenteditable) or with a modifier held.
+  // orb popover. Arrow keys move my orb (Shift = bigger step) —
+  // the keyboard path for proximity, mirroring the drag.
+  // Ignored while typing (input, textarea, contenteditable) or with
+  // a modifier held.
   useEffect(() => {
     const onKey = (e) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.key.startsWith('Arrow')) {
+        const step = e.shiftKey ? 6 : 2;
+        const cur = selfPosRef.current || { x: 50, y: 46 };
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        e.preventDefault();
+        moveSelf(cur.x + dx, cur.y + dy);
+        return;
+      }
       const key = e.key.toLowerCase();
       if (key === 'm') { toggleMute(); return; }
       if (key === 'd') { toggleDeafen(); return; }
@@ -333,7 +574,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showLink, showConnDetails, selectedOrb]);
+  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showLink, showConnDetails, selectedOrb, moveSelf]);
 
   const openInvite = async () => {
     setShowInvite((v) => !v);
@@ -431,6 +672,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const isOwner = myRole === 'owner';
   const isModerator = myRole === 'moderator';
   const canAnswerKnocks = isOwner || isModerator;
+  // Together mode control: owner or moderator — same people who answer
+  // knocks and mute. Public rooms have no member list, so the creator
+  // (who is the role-owner server-side) is covered by the createdBy
+  // check, exactly like the campfire "Keep this room" button.
+  const canControlFocusUi = isOwner || isModerator ||
+    String(room.createdBy) === String(user.id);
 
   // Pending knocks for this room, for the members panel. A 403 (plain
   // member) is expected and stays quiet — only owner/mods ever see it.
@@ -527,9 +774,77 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     getSocket().emit('chat-message', { roomId: room.id, text });
   };
 
+  // Together mode: start/stop the shared focus timer, and switch the
+  // room's mode. Start/stop go over the socket (the server broadcasts
+  // the result to the whole room); the mode switch is a REST call
+  // whose response carries the fresh room, and the server also
+  // broadcasts 'room-mode-changed' to the other members. Starting
+  // while one runs is a server-side conflict — the second start is
+  // refused, never a second session.
+  const startFocus = () => {
+    if (focusBusy) return;
+    setFocusError('');
+    setFocusBusy(true);
+    getSocket().emit('focus-start', { roomId: room.id, durationSec: focusMinutes * 60 });
+    // focus-started clears the spinner; the timeout covers the error
+    // path, where no session arrives to clear it.
+    setTimeout(() => setFocusBusy(false), 1500);
+  };
+  const stopFocus = () => {
+    getSocket().emit('focus-stop', { roomId: room.id });
+  };
+  const switchMode = async (next) => {
+    if (next === mode || modeBusy) return;
+    setModeBusy(true);
+    setFocusError('');
+    try {
+      const updated = await setRoomMode(room.id, next);
+      setMode(updated?.mode || next);
+    } catch (err) {
+      setFocusError(err.message);
+    } finally {
+      setModeBusy(false);
+    }
+  };
+
   const people = Object.values(occupants);
-  const positions = orbPositions(people, spaceSize);
+  // Effective orb positions: deterministic layout defaults, with
+  // drag/keyboard/remote overrides on top. A reshuffle (join/leave)
+  // moves only the orbs nobody has placed by hand.
+  const defaultPositions = orbPositions(people, spaceSize);
+  const positions = defaultPositions.map((p) => {
+    const ov = orbOverrides[p.id];
+    return ov ? { ...p, x: ov.x, y: ov.y } : p;
+  });
+  // Together mode, derived for render: remaining time from the
+  // server's startedAt (never a local countdown), the ring's elapsed
+  // fraction, and the wall-clock end time.
+  const focusRemaining = focusSession ? remainingMs(focusSession, focusNow) : 0;
+  const focusActive = !!focusSession && focusRemaining > 0;
+  const focusProg = focusSession ? focusProgress(focusSession, focusNow) : 0;
+  const focusEndsAt = focusSession
+    ? new Date(focusSession.startedAt + focusSession.durationSec * 1000)
+    : null;
   const posById = Object.fromEntries(positions.map((p) => [p.id, p]));
+
+  // Keep the voice engine's "my position" in step with the effective
+  // position — including layout reshuffles, which moveSelf never sees.
+  // (moveSelf already sets it on drag/keys/reset; this is idempotent.)
+  const selfPos = posById.self;
+  useEffect(() => {
+    if (!selfPos) return;
+    selfPosRef.current = { x: selfPos.x, y: selfPos.y };
+    voiceRef.current?.setSelfPosition(selfPos.x, selfPos.y);
+  }, [selfPos?.x, selfPos?.y]);
+
+  // Huddles: clusters of orbs closer than the threshold, with
+  // hysteresis from the previous frame so a bubble does not flicker
+  // while two orbs hover near the boundary.
+  const huddles = clusterHuddles(
+    positions.map((p) => ({ id: p.id, x: p.x, y: p.y })),
+    prevHuddlesRef.current
+  );
+  useEffect(() => { prevHuddlesRef.current = huddles; });
 
   // Avatar data for the other occupants (presence rows carry only id +
   // name). Self comes from App's user prop. Fetched once per membership
@@ -632,6 +947,101 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         </p>
       )}
       {keepError && <p className="mic-error">{keepError}</p>}
+
+      {/* Together mode: the room-mode switch (owner/moderators only)
+          and, in a focus room, the shared focus timer. The ring is a
+          plain SVG whose stroke updates from React state once a
+          second — no CSS animation on it, so it stays calm under
+          prefers-reduced-motion by construction (the global rule
+          stills its 1s transition too). */}
+      {canControlFocusUi && (
+        <div className="mode-toggle" role="group" aria-label="Room mode">
+          <span className="muted">Room mode:</span>
+          <button
+            type="button"
+            className={mode !== 'focus' ? 'selected' : ''}
+            disabled={modeBusy}
+            onClick={() => switchMode('talk')}
+          >
+            Talk
+          </button>
+          <button
+            type="button"
+            className={mode === 'focus' ? 'selected' : ''}
+            disabled={modeBusy}
+            onClick={() => switchMode('focus')}
+          >
+            Focus
+          </button>
+        </div>
+      )}
+      {mode === 'focus' && (
+        <div className="focus-panel card">
+          <div className="focus-ring-wrap">
+            <svg
+              className="focus-ring"
+              width="72"
+              height="72"
+              viewBox="0 0 72 72"
+              role="img"
+              aria-label={focusActive ? `Focus timer, ${formatFocusRemaining(focusRemaining)} remaining` : 'No focus session running'}
+            >
+              <circle className="focus-ring-track" cx="36" cy="36" r="30" />
+              <circle
+                className="focus-ring-fill"
+                cx="36"
+                cy="36"
+                r="30"
+                strokeDasharray="188.5"
+                strokeDashoffset={188.5 * (1 - focusProg)}
+                transform="rotate(-90 36 36)"
+              />
+            </svg>
+            <span className="focus-time" aria-hidden="true">
+              {focusActive ? formatFocusRemaining(focusRemaining) : '—'}
+            </span>
+          </div>
+          <div className="focus-info">
+            <strong>{focusActive ? 'Focusing together' : 'Focus room'}</strong>
+            <span className="muted">
+              {focusActive
+                ? 'Quiet time — everyone is here, working. The timer ends with a soft chime.'
+                : 'A quiet room. The owner or a moderator starts a shared timer.'}
+            </span>
+            {focusActive && focusEndsAt && (
+              <span className="muted">
+                Ends {focusEndsAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </div>
+          {canControlFocusUi && (
+            <div className="focus-controls">
+              {focusActive ? (
+                <button className="btn btn-text" onClick={stopFocus}>Stop timer</button>
+              ) : (
+                <>
+                  <label className="focus-duration">
+                    <span className="muted">Timer</span>
+                    <select
+                      value={focusMinutes}
+                      onChange={(e) => setFocusMinutes(Number(e.target.value))}
+                      aria-label="Focus duration in minutes"
+                    >
+                      {FOCUS_PRESET_MINUTES.map((m) => (
+                        <option key={m} value={m}>{m} min</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button className="btn btn-primary btn-small" disabled={focusBusy} onClick={startFocus}>
+                    {focusBusy ? 'Starting…' : 'Start focus'}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {focusError && <p className="error">{focusError}</p>}
 
       {micError && <p className="mic-error">{micError}</p>}
 
@@ -836,6 +1246,31 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           className="room-halo"
           style={{ background: `radial-gradient(circle, ${accent.from}33, transparent 65%)` }}
         />
+        {/* Huddle bubbles: a soft dashed ring around each cluster of
+            close orbs, with a text label naming who is in it. The
+            dashed border + label are the non-colour cue — a huddle is
+            never colour alone — and the bubble has no animation, so
+            prefers-reduced-motion needs nothing extra here. */}
+        {huddles.map((h) => {
+          const w = (h.radius * 2 / 100) * spaceSize.width;
+          const cx = (h.cx / 100) * spaceSize.width;
+          const cy = (h.cy / 100) * spaceSize.height;
+          const names = h.ids
+            .map((id) => (occupants[id] ? occupants[id].name.split(' ')[0] : ''))
+            .filter(Boolean)
+            .join(' & ');
+          return (
+            <div
+              key={h.ids.join('-')}
+              className="huddle-bubble"
+              style={{ left: cx - w / 2, top: cy - w / 2, width: w, height: w }}
+              role="group"
+              aria-label={`Huddle: ${names}`}
+            >
+              <span className="huddle-bubble-label">Huddle · {names}</span>
+            </div>
+          );
+        })}
         {people.map((person) => {
           const pos = posById[person.socketId];
           if (!pos) return null;
@@ -857,7 +1292,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           return (
             <div
               key={person.socketId}
-              className={`orb-wrap ${selected ? 'selected' : ''}`}
+              className={`orb-wrap ${selected ? 'selected' : ''}${person.isSelf ? ' orb-wrap--draggable' : ''}${person.isSelf && dragging ? ' orb-wrap--dragging' : ''}`}
               style={{
                 '--tx': `${px}px`,
                 '--ty': `${py}px`,
@@ -866,12 +1301,19 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               }}
               onClick={(e) => {
                 e.stopPropagation();
+                // A drag that moved the orb must not open its popover.
+                if (justDraggedRef.current) return;
                 tapOrb(person.socketId);
                 setSelectedOrb(selected ? null : person.socketId);
               }}
+              onPointerDown={person.isSelf ? onSelfPointerDown : undefined}
+              onPointerMove={person.isSelf ? onSelfPointerMove : undefined}
+              onPointerUp={person.isSelf ? onSelfPointerUp : undefined}
+              onPointerCancel={person.isSelf ? onSelfPointerUp : undefined}
               role="button"
-              aria-label={person.name}
-              title={person.name}
+              tabIndex={0}
+              aria-label={person.isSelf ? `${person.name} — your orb, drag or use arrow keys to move` : person.name}
+              title={person.isSelf ? `${person.name} — drag to move` : person.name}
             >
               <div
                 className="orb-bob"
@@ -954,8 +1396,26 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         </div>
       )}
       <p className="shortcuts-hint">
-        <kbd>M</kbd> mute · <kbd>D</kbd> deafen · <kbd>C</kbd> chat · <kbd>Esc</kbd> close
+        <kbd>M</kbd> mute · <kbd>D</kbd> deafen · <kbd>C</kbd> chat · <kbd>Esc</kbd> close · <kbd>←↑↓→</kbd> move your orb
       </p>
+      {/* Proximity controls: reset my orb to its layout spot, and the
+          spatial-audio switch (the runtime half of the
+          SPATIAL_AUDIO_ENABLED kill switch — off restores flat voice).
+          The hint states the deal in one line: closer = louder. */}
+      <div className="proximity-controls">
+        <button className="btn btn-text btn-small" onClick={resetPosition}>
+          Reset position
+        </button>
+        <button
+          className="btn btn-text btn-small"
+          onClick={toggleSpatial}
+          aria-pressed={spatialOn}
+          title={spatialOn ? 'Spatial audio on — closer sounds louder' : 'Spatial audio off — everyone at full volume'}
+        >
+          Spatial audio: {spatialOn ? 'On' : 'Off'}
+        </button>
+        <span className="muted proximity-note">Drag your orb to move closer — louder up close, quieter far away.</span>
+      </div>
       {playBlocked && (
         <button
           className="btn btn-primary sound-btn"
