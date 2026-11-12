@@ -9,6 +9,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { updateProfile, apiJson, resendVerificationEmail } from '../api';
 import { AVATAR_PRESETS, AVATAR_CHARACTERS } from '../avatars';
 import Avatar from './Avatar';
+import MoodPicker from './MoodPicker';
+import { normalizeMood } from '../mood';
 import { Icon } from './icons';
 import { isPushSupported, getPushState, subscribeToPush, unsubscribeFromPush } from '../push';
 
@@ -49,6 +51,8 @@ const downscalePhoto = (file) =>
 export default function Profile({ user, onSaved, onOpenAbout }) {
   const [name, setName] = useState(user.name || '');
   const [bio, setBio] = useState(user.bio || '');
+  // Mood glow (v0.7.0): the orb colour + pulse friends see in rooms.
+  const [mood, setMood] = useState(normalizeMood(user.mood));
   const [avatarPreset, setAvatarPreset] = useState(user.avatarPreset || null);
   const [avatarImage, setAvatarImage] = useState(user.avatarImage || '');
   const [saving, setSaving] = useState(false);
@@ -114,7 +118,7 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
     setSaved(false);
     setSaving(true);
     try {
-      const data = await updateProfile({ name, bio, avatarPreset, avatarImage });
+      const data = await updateProfile({ name, bio, avatarPreset, avatarImage, mood });
       setSaved(true);
       if (onSaved) onSaved(data.user);
     } catch (err) {
@@ -285,6 +289,10 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
           placeholder="A line about you (optional)"
         />
         <p className="muted char-count">{bio.length}/140</p>
+
+        <p className="section-title">Mood — your orb glows with it in rooms</p>
+        <MoodPicker value={mood} onChange={setMood} label="Mood" />
+        <p className="muted profile-hint">Free, busy or chilling — no status text to maintain. Changing it here applies from your next room; in a room, use the picker under the orbs to change it live.</p>
 
         {error && <p className="error">{error}</p>}
         {saved && <p className="saved-note"><Icon name="check" size={14} /> Profile saved</p>}

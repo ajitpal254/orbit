@@ -21,6 +21,9 @@ import IconRail from './components/IconRail';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
 import LockedRoom from './components/LockedRoom';
+import Onboarding from './components/Onboarding';
+import { daypartFor } from './daypart';
+import './daypart.css';
 import { Icon } from './components/icons';
 
 // Boot timeout per /api/auth/me attempt. Render's free tier sleeps when
@@ -79,6 +82,34 @@ export default function App() {
   // Email-verification result from a #verify-email- link: shown in
   // the same banner spot as invite-link errors.
   const [verifyNotice, setVerifyNotice] = useState('');
+  // Time-of-day background (v0.7.0): the ambient palette follows
+  // the viewer's local time — dawn / day / dusk / night (see
+  // daypart.js + daypart.css). Re-checked every 5 minutes, so a
+  // boundary crossing lands without a reload; night is the base
+  // palette, so the class is always present and never flashes.
+  const [daypart, setDaypart] = useState(() => daypartFor(new Date()));
+  useEffect(() => {
+    const t = window.setInterval(() => setDaypart(daypartFor(new Date())), 5 * 60 * 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  useEffect(() => {
+    document.body.dataset.daypart = daypart;
+    return () => { delete document.body.dataset.daypart; };
+  }, [daypart]);
+  // First-run onboarding (v0.7.0): mic test + mood, once per device.
+  // Skippable, never blocking, and never shown to returning users
+  // (the flag is per device, set on Continue or Skip).
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  useEffect(() => {
+    if (!user) return;
+    try {
+      if (!window.localStorage.getItem('orbit:onboarded:v1')) setShowOnboarding(true);
+    } catch {}
+  }, [user]);
+  const finishOnboarding = useCallback(() => {
+    try { window.localStorage.setItem('orbit:onboarded:v1', '1'); } catch {}
+    setShowOnboarding(false);
+  }, []);
   // Sliding tab pill: measured from the active tab button (offsetLeft /
   // offsetWidth) instead of CSS calc, so it tracks the active tab
   // exactly on every width and font.
@@ -450,7 +481,10 @@ export default function App() {
   }
 
   return (
-    <div className={`app${room && !inRoom ? ' app--in-call' : ''}`}>
+    <div className={`app daypart-${daypart}${room && !inRoom ? ' app--in-call' : ''}`}>
+      {showOnboarding && (
+        <Onboarding user={user} onSaved={setUser} onDone={finishOnboarding} />
+      )}
       {/* Desktop 3-zone icon rail (hidden below 900px in CSS, and while
           inside a room — same rule as the tab bar it replaces). It is
           a flex sibling of .app-body, so on desktop it docks to the
@@ -552,6 +586,7 @@ export default function App() {
               session={session}
               dispatchSession={dispatchSession}
               voiceEngineRef={voiceEngineRef}
+              onUserChange={setUser}
             />
           </div>
         )}

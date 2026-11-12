@@ -1,0 +1,58 @@
+/* Onboarding (v0.7.0) — first-run overlay. Centred card over a
+   dimmed backdrop; the card itself is in normal flow inside the
+   overlay, so it scrolls on small screens instead of clipping.
+   No animation beyond the shared pop-in — nothing here moves
+   continuously, so prefers-reduced-motion needs nothing extra. */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(5, 5, 15, 0.72);
+  overflow-y: auto;
+}
+.onboarding-card {
+  width: 100%;
+  max-width: 30rem;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.onboarding-card h2 {
+  margin: 0;
+}
+.onboarding-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.8rem;
+}
+.onboarding-step h3 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+}
+.onboarding-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.onboarding-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
