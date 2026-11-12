@@ -25,7 +25,10 @@ const inviteLinkSchema = new mongoose.Schema({
   // AES-256-GCM ciphertext of the token (see above) — re-display only,
   // never used for lookup.
   token: { type: String, required: true },
-  expiresAt: { type: Date, default: null, index: true }
+  // NOTE: no `index: true` here — the TTL index is declared explicitly
+  // below. Declaring both produced Mongoose's "Duplicate schema index"
+  // warning at boot and the TTL options were silently dropped.
+  expiresAt: { type: Date, default: null }
 }, { timestamps: true });
 
 // Expired private-room links are removed by MongoDB's TTL monitor.
