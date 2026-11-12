@@ -1,4 +1,38 @@
 {
+  "build": {
+    "appId": "com.orbit.app",
+    "directories": {
+      "output": "dist"
+    },
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "nsis": {
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "oneClick": true,
+      "shortcutName": "Orbit"
+    },
+    "productName": "Orbit",
+    "publish": null,
+    "win": {
+      "icon": "electron/assets/icon.ico",
+      "target": [
+        {
+          "arch": [
+            "x64"
+          ],
+          "target": "nsis"
+        }
+      ]
+    }
+  },
   "dependencies": {
     "compression": "^1.8.2",
     "cors": "^2.8.6",
@@ -11,19 +45,24 @@
     "socket.io": "^4.8.1",
     "web-push": "^4.0.0"
   },
-  "description": "Orbit — spatial voice chat for friends. Rooms, not servers; people as floating orbs.",
+  "description": "Orbit \u2014 spatial voice chat for friends. Rooms, not servers; people as floating orbs.",
+  "devDependencies": {
+    "electron": "45.3.1",
+    "electron-builder": "26.18.0",
+    "mongodb-memory-server": "^10.4.3",
+    "playwright": "^1.65.0"
+  },
   "engines": {
     "node": "24.x"
   },
   "main": "server.js",
   "name": "orbit",
   "scripts": {
+    "desktop:dev": "electron electron/main.js",
+    "desktop:dist": "node electron/sync-version.js && electron-builder --win",
+    "desktop:sync-version": "node electron/sync-version.js",
     "start": "node server.js",
     "test": "node --test tests/*.test.js tests/*.test.mjs"
   },
-  "version": "1.0.0",
-  "devDependencies": {
-    "mongodb-memory-server": "^10.4.3",
-    "playwright": "^1.65.0"
-  }
+  "version": "0.7.0"
 }
