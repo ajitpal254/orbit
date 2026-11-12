@@ -1,25 +1,44 @@
 # Orbit Windows release — create a GitHub Release with the .exe installer.
 #
-# HOW THIS FILE GETS INTO THE REPO (do it once, in the GitHub web UI):
+# HOW THIS FILE GETS INTO THE REPO (update, in the GitHub web UI):
 # The token used for PRs cannot push workflow files, so this file is NOT
-# committed by the PR that introduces the desktop app. Ajit adds it by hand:
-#   1. GitHub repo → Actions tab → "New workflow" (or "set up a workflow yourself")
-#   2. Name the file `.github/workflows/release.yml` (top-right filename box)
-#   3. Paste this whole file into the editor
-#   4. Commit directly to `main` (Commit changes → Commit directly to the main branch)
+# committed by any PR. Ajit updates it by hand:
+#   1. GitHub repo → .github/workflows/release.yml → Edit (pencil icon)
+#   2. Select all, paste this whole file over it
+#   3. Commit directly to `main`
+#
+# STATUS (2026-11-12): the file is already on main, but it is the
+# PRE-RESTRUCTURE version (it only installs the root deps and looks for
+# dist/*.exe). The packaging toolchain has since moved into its own
+# electron/package.json, so this updated file installs electron/ too and
+# reads the installer from electron/dist/.
+# RECOMMENDED ORDER: merge the restructure PR first, THEN paste this
+# file. The merge push runs the old workflow, which fails at the build
+# step (it never installs electron/) — that failure is expected and
+# harmless. The file-update push then runs this workflow on the new
+# layout and creates the v0.7.1 release. Updating the file BEFORE
+# merging would fail that run (no electron/package.json on main yet).
 #
 # WHAT IT DOES:
 # On every push to main it reads the app version from frontend/package.json.
 # If a GitHub Release for tag v<version> already exists, it does nothing
 # (so hotfix pushes to main do not spam releases). If the tag does not exist
-# yet, it builds the Windows installer with electron-builder and creates a
-# full (not draft, not prerelease) GitHub Release titled
-# "Orbit v<version> — Windows installer" with the .exe attached.
+# yet, it installs the electron/ packaging project, builds the Windows
+# installer with electron-builder and creates a full (not draft, not
+# prerelease) GitHub Release titled "Orbit v<version> — Windows installer"
+# with the .exe attached.
 #
-# SEQUENCING NOTE (2026-11-12): PR #10 (v0.7.0) merged BEFORE this workflow
-# existed, so no v0.7.0 release was auto-created. The first auto-release
-# will be triggered by the merge of the Windows-packaging PR itself
-# (version is still 0.7.0, so the tag guard will create v0.7.0 then).
+# LAYOUT NOTE: the packaging toolchain (Electron + electron-builder) lives
+# in its own electron/package.json — the root install never touches it, so
+# the root install log stays free of the toolchain's deprecated-dependency
+# warnings and Render never downloads the Electron binary. This workflow
+# is the only place that installs electron/ (npm ci --prefix electron).
+#
+# RELEASE STATUS (2026-11-12): v0.7.0 is already released
+# (Orbit.Setup.0.7.0.exe attached) — the PR #11 merge triggered the old
+# workflow and it succeeded. The restructure PR also bumped the version
+# to 0.7.1 (Google sign-in fix: plain Chrome user agent), so this file's
+# first run creates the v0.7.1 release with the fixed installer.
 #
 # The installer is UNSIGNED (no code-signing certificate exists): Windows
 # SmartScreen will warn on first install — click "More info" → "Run anyway".
@@ -46,9 +65,13 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             frontend/package-lock.json
+            electron/package-lock.json
 
       - name: Install root dependencies
         run: npm ci
+
+      - name: Install packaging toolchain
+        run: npm ci --prefix electron
 
       - name: Read app version
         id: version
@@ -75,7 +98,7 @@ jobs:
         if: steps.exists.outputs.exists == 'false'
         shell: bash
         run: |
-          EXE=$(ls dist/*.exe | head -n 1)
+          EXE=$(ls electron/dist/*.exe | head -n 1)
           gh release create "v${{ steps.version.outputs.version }}" "$EXE" \
             --title "Orbit v${{ steps.version.outputs.version }} — Windows installer" \
             --notes "Windows installer for Orbit v${{ steps.version.outputs.version }}. Download the .exe, run it, and sign in — the app loads the hosted Orbit site. Unsigned: Windows SmartScreen will warn on first install; click 'More info' then 'Run anyway'."
