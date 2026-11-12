@@ -7,8 +7,8 @@
 //   the hosted Orbit origin; everything else denied;
 // - the single-window config (size, light-footprint settings);
 // - the version plumbing: frontend/package.json is the single source
-//   of truth, the root version is synced from it, and the two must
-//   agree in the committed tree.
+//   of truth, the root version AND the electron/package.json version are
+//   synced from it, and all three must agree in the committed tree.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -22,7 +22,7 @@ const {
   buildWindowConfig,
   getAppVersion,
 } = require('../electron/app-config');
-const { syncVersion } = require('../electron/sync-version');
+const { syncVersion, syncFile } = require('../electron/sync-version');
 
 const ORBIT = 'https://orbit-3lzs.onrender.com';
 const ORBIT_ROOM = 'https://orbit-3lzs.onrender.com/#room-abc123';
@@ -107,6 +107,25 @@ test('syncVersion throws on a non-semver frontend version', () => {
   assert.throws(() => syncVersion(undefined, { version: '1.0.0' }), /Invalid frontend version/);
 });
 
+test('syncFile rewrites a stale package.json, leaves a current one alone', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orbit-electron-'));
+  const stale = path.join(dir, 'package.json');
+  fs.writeFileSync(stale, JSON.stringify({ name: 'orbit-desktop', version: '1.0.0' }, null, 2));
+  assert.equal(syncFile(stale, '0.7.0'), true);
+  assert.equal(JSON.parse(fs.readFileSync(stale, 'utf8')).version, '0.7.0');
+  assert.equal(syncFile(stale, '0.7.0'), false);
+  assert.equal(JSON.parse(fs.readFileSync(stale, 'utf8')).version, '0.7.0');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('syncFile throws on a bad frontend version', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orbit-electron-'));
+  const file = path.join(dir, 'package.json');
+  fs.writeFileSync(file, JSON.stringify({ name: 'orbit-desktop', version: '0.7.0' }));
+  assert.throws(() => syncFile(file, 'v0.7'), /Invalid frontend version/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('committed root version matches the frontend version', () => {
   const rootPkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   const frontendPkg = JSON.parse(
@@ -116,5 +135,19 @@ test('committed root version matches the frontend version', () => {
     rootPkg.version,
     frontendPkg.version,
     'root package.json version must be synced from frontend/package.json (run npm run desktop:sync-version)'
+  );
+});
+
+test('committed electron/package.json version matches the frontend version', () => {
+  const electronPkg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'electron', 'package.json'), 'utf8')
+  );
+  const frontendPkg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'frontend', 'package.json'), 'utf8')
+  );
+  assert.equal(
+    electronPkg.version,
+    frontendPkg.version,
+    'electron/package.json version must be synced from frontend/package.json (run npm run desktop:sync-version)'
   );
 });
