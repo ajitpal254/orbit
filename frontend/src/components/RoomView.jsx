@@ -146,6 +146,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   // one when deciding whether the end chime may play.
   const soundOffRef = useRef(false);
   soundOffRef.current = muted || deafened || modMuted;
+  // Audio settings (v0.7.0): the device picker + volume panel.
+  // (Restored: the v0.8.0 screen-share commit dropped this declaration
+  // while keeping its four usages, so any room render threw
+  // `ReferenceError: showAudio is not defined` — caught by the smoke
+  // test's "no uncaught page errors" assertion.)
+  const [showAudio, setShowAudio] = useState(false);
   // Screen sharing (v0.8.0): the incoming remote share ({ socketId,
   // stream }) for the share layer, and whether this viewport is a
   // phone — sharing is view-only on phones, so the Share button never
