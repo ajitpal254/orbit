@@ -62,6 +62,10 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [members, setMembers] = useState(room.members || []);
   const [memberError, setMemberError] = useState('');
   const [kicked, setKicked] = useState(false);
+  // Room cap (v0.7.0): the server refuses join-room with code
+  // 'room-full' when 8 people are already inside — stop voice and
+  // show the full-room card instead of the stage, like kicked/faded.
+  const [roomFull, setRoomFull] = useState(false);
   // Knocks (private rooms): pending knocks for the owner/moderators to
   // answer. Loaded only for owner/mods; quiet by default — the section
   // only renders while someone is knocking.
@@ -258,6 +262,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       voiceRef.current?.leave();
       setKicked(true);
     };
+    // Room cap (v0.7.0): the server refused my join-room because 8
+    // people are already in here — stop voice (it never got past
+    // join-room, so there are no peers to tear down) and show the
+    // friendly full-room card. Other 'error' events (focus, room
+    // gone) are not join refusals and are left alone.
+    const onJoinError = ({ code } = {}) => {
+      if (code !== 'room-full') return;
+      voiceRef.current?.leave();
+      setRoomFull(true);
+    };
     // A remote orb moved: the server already validated + clamped the
     // position and checked membership — apply it to the override map
     // and to the voice engine's gain math. My own moves come back
@@ -316,6 +330,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     socket.on('focus-stopped', onFocusStopped);
     socket.on('focus-ended', onFocusEnded);
     socket.on('room-mode-changed', onRoomModeChanged);
+    socket.on('error', onJoinError);
 
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
     voice.join();
@@ -338,6 +353,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       socket.off('focus-stopped', onFocusStopped);
       socket.off('focus-ended', onFocusEnded);
       socket.off('room-mode-changed', onRoomModeChanged);
+      socket.off('error', onJoinError);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
@@ -896,6 +912,18 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         <div className="card kicked-card">
           <h2>This campfire faded</h2>
           <p className="muted">“{room.name}” closed 1 minute after the last person left. Campfires are temporary — create a new one anytime.</p>
+          <button className="btn btn-primary" onClick={onLeave}>Back to rooms</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (roomFull) {
+    return (
+      <div className="room-view">
+        <div className="card kicked-card">
+          <h2>“{room.name}” is full</h2>
+          <p className="muted">8 people are already in here — voice works best with a small group. Try again when someone leaves.</p>
           <button className="btn btn-primary" onClick={onLeave}>Back to rooms</button>
         </div>
       </div>
