@@ -16,6 +16,8 @@ const frontend = await import('../frontend/src/avatars.js');
 const characters = await import('../frontend/src/characters.js');
 const { validateProfileUpdate } = require('../lib/profile.js');
 
+import { readCssBundle } from './cssBundle.js';
+
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 
 const CHARACTER_MOTIONS = new Set([
@@ -159,8 +161,9 @@ test('reduced motion: character CSS stills every animation', () => {
   for (const id of characters.CHARACTER_IDS) {
     assert.ok(css.includes(`.char-${id}`), `${id} has a CSS animation rule`);
   }
-  // No new CSS leaked into the shared stylesheet.
-  assert.equal(read('../frontend/src/index.css').includes('char-art'), false, 'index.css untouched by characters');
+  // No new CSS leaked into the shared stylesheet (now the split
+  // css/ bundle read via main.jsx — see tests/cssBundle.js).
+  assert.equal(readCssBundle().includes('char-art'), false, 'shared CSS untouched by characters');
 });
 
 test('Profile picker lists all 8 characters alongside the gradients', () => {

@@ -218,6 +218,18 @@ async function signUp(user) {
   await page.getByRole('button', { name: 'Create account' }).click();
   // Home: the "New room" button is the logged-in landmark.
   await page.getByRole('button', { name: 'New room' }).waitFor({ timeout: 30000 });
+  // First-run onboarding (v0.7.0) overlays home for a brand-new user
+  // and covers the room UI — dismiss it via the real Skip path so the
+  // room UI is clickable. Returning users never see it; the wait times
+  // out quietly for them.
+  const onboarding = page.getByRole('dialog', { name: 'Welcome to Orbit' });
+  try {
+    await onboarding.waitFor({ timeout: 3000 });
+    await page.getByRole('button', { name: 'Skip for now' }).click();
+    await onboarding.waitFor({ state: 'detached', timeout: 5000 });
+  } catch {
+    // No onboarding overlay — nothing to dismiss.
+  }
   return page;
 }
 
