@@ -27,6 +27,7 @@
 //     decrypt them.
 import { getIceServers, FALLBACK_ICE_SERVERS } from './turnAuth.js';
 import { gainForDistance, distanceBetween, SPATIAL_AUDIO_ENABLED } from './proximity.js';
+import { clampVolume, supportsOutputSelection } from './audioDevices.js';
 const SPEAK_THRESHOLD = 0.02; // RMS of time-domain audio samples
 const SPEAK_POLL_MS = 150;
 
@@ -70,6 +71,18 @@ export class VoiceEngine {
     this.audioCtx = null;
     this.muted = false;
     this.deafened = false;
+    // Audio settings (v0.7.0): master + per-peer volume, and the
+    // chosen speaker. Volume rides on the <audio> element (element
+    // volume × proximity GainNode = what is heard), so it never
+    // touches the gain routing. Per-peer volumes are keyed by
+    // socketId and survive re-renders; a peer with no entry plays at
+    // master volume. The speaker id is re-applied to every new
+    // <audio> element in ontrack, so a mid-call device change sticks
+    // for joiners too.
+    this.masterVolume = 1;
+    this.peerVolumes = new Map(); // socketId -> 0..1
+    this.speakerDeviceId = '';
+    this.micDeviceId = '';
     this.micFailed = false;
     this.joined = false;
     this._pollTimer = null;
@@ -159,6 +172,108 @@ export class VoiceEngine {
     for (const peer of this.peers.values()) {
       if (peer.audioEl) peer.audioEl.muted = deafened;
     }
+  }
+
+  // --- audio settings (v0.7.0) ---
+  //
+  // Master volume (0..1) multiplies every remote stream; a per-peer
+  // volume (0..1) multiplies that peer only. The element volume is
+  // master × peer, clamped — so a quiet friend can be turned up
+  // without touching anyone else, and the master slider never
+  // silences a peer the proximity gain already quieted (the gain
+  // chain is untouched; element volume and GainNode multiply).
+  setMasterVolume(v) {
+    this.masterVolume = clampVolume(v);
+    this._applyVolumes();
+  }
+
+  setPeerVolume(socketId, v) {
+    if (!socketId) return;
+    this.peerVolumes.set(socketId, clampVolume(v));
+    this._applyVolumes(socketId);
+  }
+
+  _applyVolumes(onlySocketId) {
+    for (const [socketId, peer] of this.peers) {
+      if (onlySocketId && socketId !== onlySocketId) continue;
+      if (!peer.audioEl) continue;
+      const peerVol = this.peerVolumes.get(socketId) ?? 1;
+      try {
+        peer.audioEl.volume = clampVolume(this.masterVolume * peerVol);
+      } catch {}
+    }
+  }
+
+  // Switch the microphone mid-call: grab a stream from the chosen
+  // device, swap the track into every live peer connection
+  // (replaceTrack — no renegotiation, no dropped call), and rebuild
+  // the local speaking analyser on the new track. On failure the old
+  // mic keeps running and the caller gets { ok: false, error } —
+  // a failed switch must never leave the user mic-less.
+  async setMicDevice(deviceId) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return { ok: false, error: 'Microphone selection is not supported in this browser.' };
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {})
+        },
+        video: false
+      });
+    } catch (err) {
+      return { ok: false, error: err?.name === 'NotFoundError'
+        ? 'That microphone is no longer available.'
+        : 'Could not switch microphone.' };
+    }
+    const newTrack = stream.getAudioTracks()[0];
+    if (!newTrack) {
+      stream.getTracks().forEach((t) => t.stop());
+      return { ok: false, error: 'That microphone gave no audio track.' };
+    }
+    const oldStream = this.localStream;
+    this.localStream = stream;
+    this.micDeviceId = deviceId || '';
+    this.micFailed = false;
+    for (const peer of this.peers.values()) {
+      const sender = peer.pc?.getSenders?.().find((s) => s.track?.kind === 'audio');
+      if (sender) {
+        try { await sender.replaceTrack(newTrack); } catch {}
+      }
+    }
+    // The old track stops after the swap so the old device releases.
+    if (oldStream && oldStream !== stream) {
+      oldStream.getTracks().forEach((t) => t.stop());
+    }
+    this._setupLocalAnalyser();
+    return { ok: true };
+  }
+
+  // Switch the speaker (output device). Returns { supported } false
+  // where the browser has no setSinkId (Safari, Firefox) — the UI
+  // then hides the picker with an explanation instead of a broken
+  // control. Applied to every live <audio> element and remembered
+  // for joiners (ontrack re-applies it). A per-element failure does
+  // not fail the whole switch: the result counts what applied.
+  async setSpeakerDevice(deviceId) {
+    if (!supportsOutputSelection()) {
+      return { supported: false, applied: 0, failed: 0 };
+    }
+    this.speakerDeviceId = deviceId || '';
+    let applied = 0;
+    let failed = 0;
+    for (const peer of this.peers.values()) {
+      if (!peer.audioEl?.setSinkId) { failed += 1; continue; }
+      try {
+        await peer.audioEl.setSinkId(this.speakerDeviceId);
+        applied += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return { supported: true, applied, failed };
   }
 
   // --- proximity audio (v0.6.0) ---
@@ -313,6 +428,14 @@ export class VoiceEngine {
       if (peer) {
         peer.audioEl = audioEl;
         peer.analyser = this._analyserFor(stream);
+        // Audio settings (v0.7.0): a speaker picked earlier in the
+        // call applies to this new element too, and the stored
+        // master / per-peer volumes — otherwise a joiner would
+        // always arrive at full volume on the default speaker.
+        if (this.speakerDeviceId && audioEl.setSinkId) {
+          audioEl.setSinkId(this.speakerDeviceId).catch(() => {});
+        }
+        this._applyVolumes(socketId);
         // Proximity gain: route the element through a GainNode. If
         // the chain cannot be built, _routeThroughGain marks the
         // session spatialFailed and the element plays flat as before.

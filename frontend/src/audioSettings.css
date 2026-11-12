@@ -1,0 +1,60 @@
+/* Audio settings (v0.7.0) — the in-room device picker + volume
+   panel. In-flow card (never absolute), so it can never hide
+   behind the voice bar. Sliders are native range inputs: keyboard
+   accessible by construction. */
+.audio-settings {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.audio-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.audio-settings select,
+.audio-settings input[type="range"] {
+  width: 100%;
+}
+.audio-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.audio-row select {
+  flex: 1;
+  min-width: 0;
+}
+.audio-peers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.audio-peer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.audio-peer-name {
+  min-width: 4.5rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-peer-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+.audio-peer-pct {
+  min-width: 2.6rem;
+  text-align: right;
+  font-size: 0.85rem;
+}
+.audio-mic-test {
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+  margin-top: 0.2rem;
+}

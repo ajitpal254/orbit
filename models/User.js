@@ -19,6 +19,13 @@ const userSchema = new mongoose.Schema({
   bio: { type: String, trim: true, maxlength: [140, 'Bio too long'], default: '' },
   avatarPreset: { type: String, default: null },
   avatarImage: { type: String, default: '' },
+  // Mood glow (v0.7.0): free / busy / chilling — a colour + pulse on
+  // the user's orb, replacing status text (playbook p.5). Public
+  // profile data like bio/avatar, shown to room members via
+  // presence. Legacy rows have no field and read as 'free' (see
+  // lib/mood.js normalizeMood); the enum keeps hand-rolled clients
+  // from storing a state the UI has no style for.
+  mood: { type: String, enum: ['free', 'busy', 'chilling'], default: 'free' },
   // Google account id for one-tap sign-in. Sparse + unique: password-only
   // users have no googleId, and one Google account links to one user.
   googleId: { type: String, unique: true, sparse: true, index: true, default: undefined },

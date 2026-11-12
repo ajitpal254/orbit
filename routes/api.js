@@ -17,6 +17,7 @@ const DirectMessage = require('../models/DirectMessage');
 const Notification = require('../models/Notification');
 const PushSubscription = require('../models/PushSubscription');
 const { validateProfileUpdate, profileJson } = require('../lib/profile');
+const { normalizeMood } = require('../lib/mood');
 const { notificationJson, recordNotification } = require('../lib/notifications');
 const { getVapidPublicKey, isPushConfigured, sendPushToUser, pushPayloadFor } = require('../lib/push');
 const { turnUrls } = require('../lib/turnCredentials');
@@ -56,7 +57,8 @@ const isObjectId = (v) => mongoose.Types.ObjectId.isValid(v);
 // (≤200KB, usually ~10–30KB), so carrying it in list rows is fine.
 const userJson = (u) => ({
   id: String(u._id), name: u.name, email: u.email,
-  avatarPreset: u.avatarPreset || null, avatarImage: u.avatarImage || ''
+  avatarPreset: u.avatarPreset || null, avatarImage: u.avatarImage || '',
+  mood: normalizeMood(u.mood)
 });
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

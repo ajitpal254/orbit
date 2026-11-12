@@ -1,8 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock, setRoomMode } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock, setRoomMode, updateProfile } from '../api';
 import { buildInviteLinkUrl } from '../deepLink';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
+import { normalizeMood, moodLabel, MOOD_META } from '../mood';
+import MoodPicker from './MoodPicker';
+import AudioSettings from './AudioSettings';
 import { playJoinSound, playMuteSound, playDeafenSound, playFocusEndSound } from '../sounds';
 import { remainingMs, focusProgress, formatFocusRemaining, FOCUS_PRESET_MINUTES } from '../focusTimer';
 import { orbPositions, initials, orbHue } from '../orbLayout';
@@ -20,10 +23,10 @@ const knockAge = (iso) => {
   return `${Math.floor(s / 3600)}h ago`;
 };
 
-export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef }) {
+export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef, onUserChange }) {
   const { muted, deafened, modMuted, modMutedBy } = session;
   const [occupants, setOccupants] = useState(() => ({
-    self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true }
+    self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true, mood: normalizeMood(user.mood) }
   }));
   const [speaking, setSpeaking] = useState({ selfSpeaking: false, levels: {} });
   const [connState, setConnState] = useState({});
@@ -112,6 +115,8 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   // one when deciding whether the end chime may play.
   const soundOffRef = useRef(false);
   soundOffRef.current = muted || deafened || modMuted;
+  // Audio settings (v0.7.0): the device picker + volume panel.
+  const [showAudio, setShowAudio] = useState(false);
   // "Connection details" popover: the per-peer ICE/debug line lives
   // here instead of always-on under the orbs (see below).
   const [showConnDetails, setShowConnDetails] = useState(false);
@@ -179,7 +184,9 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       setOccupants((prev) => {
         const next = { ...prev };
         for (const o of others || []) {
-          next[o.socketId] = { socketId: o.socketId, userId: o.userId, name: o.name, muted: false };
+          // Mood rides with presence (lib/socket.js): the orb glows
+          // with it, no second fetch.
+          next[o.socketId] = { socketId: o.socketId, userId: o.userId, name: o.name, muted: false, mood: normalizeMood(o.mood) };
         }
         return next;
       });
@@ -192,12 +199,22 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       // A moderator muted me before I (re)joined — start muted again.
       if (mutedByModerator) applyModeratorMute(true, '');
     };
-    const onUserJoined = ({ socketId, userId, name }) => {
+    const onUserJoined = ({ socketId, userId, name, mood }) => {
       setOccupants((prev) => ({
         ...prev,
-        [socketId]: { socketId, userId, name, muted: false }
+        [socketId]: { socketId, userId, name, muted: false, mood: normalizeMood(mood) }
       }));
       playJoinSound();
+    };
+    // Mood glow (v0.7.0): someone changed their mood mid-room —
+    // re-glow their orb at once. The server already validated the
+    // mood and the sender's membership before relaying it.
+    const onMoodChanged = ({ socketId, mood } = {}) => {
+      if (!socketId) return;
+      setOccupants((prev) => {
+        if (!prev[socketId]) return prev;
+        return { ...prev, [socketId]: { ...prev[socketId], mood: normalizeMood(mood) } };
+      });
     };
     const onUserLeft = ({ socketId }) => {
       setOccupants((prev) => {
@@ -305,6 +322,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     socket.on('room-state', onRoomState);
     socket.on('user-joined', onUserJoined);
     socket.on('user-left', onUserLeft);
+    socket.on('mood-changed', onMoodChanged);
     socket.on('mic-state', onMicState);
     socket.on('orb-move', onOrbMove);
     socket.on('chat-message', onChatMessage);
@@ -326,6 +344,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       socket.off('room-state', onRoomState);
       socket.off('user-joined', onUserJoined);
       socket.off('user-left', onUserLeft);
+      socket.off('mood-changed', onMoodChanged);
       socket.off('mic-state', onMicState);
       socket.off('orb-move', onOrbMove);
       if (emitMoveRef.current.timer) clearTimeout(emitMoveRef.current.timer);
@@ -402,6 +421,21 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     voiceRef.current?.setMuted(isMuted);
     dispatchSession({ type: 'set-mod-muted', muted: isMuted, by: by || '' });
   }, [dispatchSession]);
+
+  // Mood glow (v0.7.0): my mood, set from the picker below. The orb
+  // re-glows at once (local state), the room hears it live (socket
+  // 'mood' — the server validates + relays it), and the profile
+  // PATCH persists it for the next room. A failed save stays local
+  // for this session and never blocks the room.
+  const setMood = useCallback(async (m) => {
+    const mood = normalizeMood(m);
+    setOccupants((prev) => ({ ...prev, self: { ...prev.self, mood } }));
+    getSocket().emit('mood', { mood });
+    try {
+      const data = await updateProfile({ mood });
+      if (data?.user && onUserChange) onUserChange(data.user);
+    } catch {}
+  }, [onUserChange]);
 
   const toggleMute = useCallback(() => {
     // While a moderator has me muted, the button is disabled — but
@@ -566,6 +600,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       if (key === 'c') { openChat(); return; }
       if (e.key === 'Escape') {
         if (chatOpen) setChatOpen(false);
+        else if (showAudio) setShowAudio(false);
         else if (showInvite) setShowInvite(false);
         else if (showLink) setShowLink(false);
         else if (showConnDetails) setShowConnDetails(false);
@@ -574,7 +609,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleMute, toggleDeafen, chatOpen, showInvite, showLink, showConnDetails, selectedOrb, moveSelf]);
+  }, [toggleMute, toggleDeafen, chatOpen, showAudio, showInvite, showLink, showConnDetails, selectedOrb, moveSelf]);
 
   const openInvite = async () => {
     setShowInvite((v) => !v);
@@ -808,6 +843,9 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   };
 
   const people = Object.values(occupants);
+  // My mood: the live presence row wins (it just changed in-room);
+  // the profile is the fallback for the first render.
+  const myMood = normalizeMood(occupants.self?.mood ?? user.mood);
   // Effective orb positions: deterministic layout defaults, with
   // drag/keyboard/remote overrides on top. A reshuffle (join/leave)
   // moves only the orbs nobody has placed by hand.
@@ -1283,6 +1321,11 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           const py = (pos.y / 100) * spaceSize.height;
           const role = person.isSelf ? myRole : roleOf(person.userId);
           const selected = selectedOrb === person.socketId;
+          // Mood glow (v0.7.0): my mood from the live row, theirs
+          // from presence. The class sets the ring + pulse speed
+          // (mood.css); the popover + aria-label carry the text, so
+          // the state is never colour alone.
+          const mood = person.isSelf ? myMood : normalizeMood(person.mood);
           // Photo in the orb when the person has one (self from App's
           // user, others from the occupant avatar lookup); otherwise
           // initials over the room accent, as before. A photo skips the
@@ -1312,20 +1355,21 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               onPointerCancel={person.isSelf ? onSelfPointerUp : undefined}
               role="button"
               tabIndex={0}
-              aria-label={person.isSelf ? `${person.name} — your orb, drag or use arrow keys to move` : person.name}
-              title={person.isSelf ? `${person.name} — drag to move` : person.name}
+              aria-label={person.isSelf ? `${person.name} — your orb, ${moodLabel(mood)}, drag or use arrow keys to move` : `${person.name}, ${moodLabel(mood)}`}
+              title={person.isSelf ? `${person.name} — ${moodLabel(mood)}, drag to move` : `${person.name} — ${moodLabel(mood)}`}
             >
               <div
                 className="orb-bob"
                 style={{ animationDelay: `${pos.delay}s`, animationDuration: `${pos.duration}s` }}
               >
                 <div
-                  className={`orb ${speakingNow ? 'speaking' : ''} ${person.muted ? 'is-muted' : ''} ${tapOrbId === person.socketId ? 'orb-tapped' : ''}`}
+                  className={`orb mood-${mood} ${speakingNow ? 'speaking' : ''} ${person.muted ? 'is-muted' : ''} ${tapOrbId === person.socketId ? 'orb-tapped' : ''}`}
                   style={photo
-                    ? { backgroundImage: `url(${photo})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                    ? { backgroundImage: `url(${photo})`, backgroundSize: 'cover', backgroundPosition: 'center', '--mood-pulse': `${MOOD_META[mood].pulseSeconds}s` }
                     : {
                         background: `linear-gradient(135deg, ${accent.from}, ${accent.to})`,
-                        filter: `hue-rotate(${orbHue(person.userId)}deg)`
+                        filter: `hue-rotate(${orbHue(person.userId)}deg)`,
+                        '--mood-pulse': `${MOOD_META[mood].pulseSeconds}s`
                       }}
                 >
                   {!photo && <span className="orb-initials">{initials(person.name)}</span>}
@@ -1346,6 +1390,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
                   <span>
                     {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
                   </span>
+                  <span className="orb-mood-label">{moodLabel(mood)}</span>
                   {role === 'owner' && <span className="role-badge role-owner"><Icon name="crown" size={11} /> Owner</span>}
                   {role === 'moderator' && <span className="role-badge role-mod"><Icon name="shield" size={11} /> Mod</span>}
                   {person.muted && <span><Icon name="mic-off" size={13} /> Muted</span>}
@@ -1416,6 +1461,28 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         </button>
         <span className="muted proximity-note">Drag your orb to move closer — louder up close, quieter far away.</span>
       </div>
+      {/* Mood + audio settings (v0.7.0): my mood picker lives here
+          (the orb popover is pointer-events: none, so it cannot hold
+          buttons), and the audio panel opens in flow below it. */}
+      <div className="mood-row">
+        <span className="muted">My mood:</span>
+        <MoodPicker value={myMood} onChange={setMood} label="My mood" />
+        <button
+          className="btn btn-text btn-small"
+          onClick={() => setShowAudio((v) => !v)}
+          aria-expanded={showAudio}
+          title="Microphone, speaker and volume settings"
+        >
+          <Icon name="settings" size={14} /> Audio settings
+        </button>
+      </div>
+      {showAudio && (
+        <AudioSettings
+          voiceRef={voiceRef}
+          peers={people.filter((p) => !p.isSelf).map((p) => ({ socketId: p.socketId, name: p.name }))}
+          onClose={() => setShowAudio(false)}
+        />
+      )}
       {playBlocked && (
         <button
           className="btn btn-primary sound-btn"
