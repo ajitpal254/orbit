@@ -59,6 +59,18 @@ function buildWindowConfig({ devTools = false } = {}) {
   };
 }
 
+// Google sign-in rejects Electron's default user agent: it carries an
+// "Electron/x.y.z" token, and Google treats the shell as an embedded
+// browser — the account chooser loads, then the sign-in step fails with
+// a 400 ("The server cannot process the request because it is
+// malformed"). Strip the Electron token so the shell presents as plain
+// Chrome. Pure function: returns the input unchanged when there is no
+// Electron token (or the input is not a usable string).
+function chromeUserAgent(defaultUa) {
+  if (typeof defaultUa !== 'string' || !defaultUa) return defaultUa;
+  return defaultUa.replace(/ ?Electron\/[^\s]+/g, '');
+}
+
 // Read the app version from frontend/package.json — the single source
 // of truth for the version (the release workflow tags from it too).
 // Throws on a missing file or a non-semver version.
@@ -79,5 +91,6 @@ module.exports = {
   isOrbitOrigin,
   shouldAllowPermission,
   buildWindowConfig,
+  chromeUserAgent,
   getAppVersion,
 };

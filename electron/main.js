@@ -12,7 +12,7 @@
 // (see electron/app-config.js shouldAllowPermission).
 const { app, BrowserWindow, session } = require('electron');
 const path = require('node:path');
-const { APP_URL, shouldAllowPermission, buildWindowConfig } = require('./app-config');
+const { APP_URL, shouldAllowPermission, buildWindowConfig, chromeUserAgent } = require('./app-config');
 
 // Modest renderer JS heap cap. Voice + a single room view do not need
 // more; the cap keeps a runaway page from eating the machine.
@@ -39,6 +39,16 @@ function createWindow() {
   ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
     return shouldAllowPermission(requestingOrigin, permission);
   });
+
+  // Google sign-in rejects Electron's default user agent (see
+  // chromeUserAgent in app-config.js): the account chooser loads, then
+  // the sign-in step 400s. Send a plain Chrome user agent instead —
+  // on the session (covers the Google popup windows too) and on this
+  // window. The shell only ever loads the hosted Orbit site, so a
+  // Chrome user agent everywhere is the honest one here.
+  const chromeUa = chromeUserAgent(ses.getUserAgent());
+  ses.setUserAgent(chromeUa);
+  win.webContents.setUserAgent(chromeUa);
 
   win.once('ready-to-show', () => win.show());
 
