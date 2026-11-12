@@ -33,6 +33,16 @@ function tone({ freq, at = 0, dur = 0.12, type = 'sine', vol = 0.12 }) {
   osc.stop(t0 + dur + 0.05);
 }
 
+  // Focus end: a soft three-note rise (C5 -> E5 -> G5), quieter than
+  // the join chime — it closes a quiet session, it should not startle
+  // one. RoomView only plays it when the user is neither muted nor
+  // deafened (see chimeFocusEnd).
+export function playFocusEndSound() {
+  tone({ freq: 523.25, dur: 0.18, vol: 0.08 });
+  tone({ freq: 659.25, at: 0.16, dur: 0.18, vol: 0.08 });
+  tone({ freq: 783.99, at: 0.32, dur: 0.3, vol: 0.08 });
+}
+
 // Someone joined the room: bright two-note chime (E5 -> A5).
 export function playJoinSound() {
   tone({ freq: 659.25, dur: 0.12 });

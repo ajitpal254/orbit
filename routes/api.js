@@ -37,7 +37,8 @@ const {
   expiryForKnock, isKnockPending, isKnockRateLimited,
   canKnock, knockBlockReason, canAnswerKnock, knockJson, notExpiredKnockFilter
 } = require('../lib/knock');
-const { emitToUser, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, kickSocketsFromRoom } = require('../lib/socket');
+const { emitToUser, emitToRoom, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, clearFocusTimer, kickSocketsFromRoom } = require('../lib/socket');
+const { focusSessions, stopSession, clearSession, canControlFocus } = require('../lib/focusSessions');
 const { buildFriendPresence } = require('../lib/friendPresence');
 const presence = require('../lib/presence');
 
@@ -522,6 +523,10 @@ const roomJson = (room, meId, profiles = new Map()) => {
     name: room.name,
     topic,
     accent: accentById(room.accent),
+    // Together mode: 'focus' rooms run a shared timer (the session
+    // itself lives in memory — see lib/focusSessions.js); legacy rooms
+    // send 'talk'.
+    mode: room.mode === 'focus' ? 'focus' : 'talk',
     createdBy: String(room.createdBy),
     createdAt: room.createdAt,
     // Campfire state (fading rooms): ephemeral rooms carry their
@@ -672,6 +677,41 @@ router.post('/rooms/:id/keep', authMiddleware, friendLimit, asyncHandler(async (
   res.json(await freshRoomJson(room._id, req.user._id));
 }));
 
+// POST /api/rooms/:id/mode — the room owner or a moderator switches
+// a room between 'talk' and 'focus' (Together mode). Switching a focus
+// room back to 'talk' ends any running focus session: the session is
+// cleared and 'focus-stopped' (reason 'mode-changed') is broadcast, so
+// every client clears its ring at once. The mode change itself is
+// broadcast as 'room-mode-changed' to the room, and 'rooms-changed'
+// refreshes home lists (room cards carry a Focus badge).
+router.post('/rooms/:id/mode', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
+  if (!canSeeRoom(room, req.user._id)) return res.status(403).json({ error: 'This room is private' });
+  if (!canControlFocus(room, req.user._id)) {
+    return res.status(403).json({ error: 'Only the room owner or a moderator can change the room mode' });
+  }
+  const mode = req.body?.mode;
+  if (mode !== 'talk' && mode !== 'focus') return res.status(400).json({ error: 'Mode must be talk or focus' });
+  if ((room.mode || 'talk') !== mode) {
+    await Room.updateOne({ _id: room._id }, { $set: { mode } });
+    if (mode === 'talk') {
+      const stopped = stopSession(focusSessions, room._id);
+      if (stopped) {
+        clearFocusTimer(room._id);
+        emitToRoom(room._id, 'focus-stopped', {
+          roomId: String(room._id),
+          stoppedBy: String(req.user._id),
+          reason: 'mode-changed'
+        });
+      }
+    }
+    emitToRoom(room._id, 'room-mode-changed', { roomId: String(room._id), mode });
+    emitRoomsChanged(room._id);
+  }
+  res.json(await freshRoomJson(room._id, req.user._id));
+}));
+
 router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -684,6 +724,9 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   await InviteLink.deleteMany({ room: room._id });
   await Knock.deleteMany({ room: room._id });
   clearMutedForRoom(room._id);
+  // A deleted room takes its focus session (and expiry timer) with it.
+  clearSession(focusSessions, room._id);
+  clearFocusTimer(room._id);
   emitRoomsChanged(room._id); // home screens drop the deleted room live
   res.json({ message: 'Room deleted' });
 }));
