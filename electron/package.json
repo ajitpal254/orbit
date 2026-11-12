@@ -45,5 +45,5 @@
     "dist": "node sync-version.js && electron-builder --win",
     "sync-version": "node sync-version.js"
   },
-  "version": "0.7.1"
+  "version": "0.8.0"
 }

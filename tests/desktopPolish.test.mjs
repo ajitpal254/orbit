@@ -46,7 +46,9 @@ const desktop = desktopBlocks(css);
 
 test('desktop blocks: the main desktop block lives in desktop.css', () => {
   const count = (css.match(/@media \(min-width: 900px\)/g) || []).length;
-  assert.equal(count, 2, 'expected the desktop.css block plus the small room.css shortcuts block');
+  // desktop.css (main layout) + room.css (shortcuts hint) + share.css
+  // (v0.8.0 screen-share fullscreen-button position).
+  assert.equal(count, 3, 'expected the desktop.css block plus the small room.css shortcuts block plus the share.css block');
 });
 
 // --- Fix ①: sky flex-fills the centre column --------------------------
