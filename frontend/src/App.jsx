@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useLayoutEffect, useRef, useReducer } from 'react';
+import React, { useEffect, useState, useCallback, useLayoutEffect, useRef, useReducer, Suspense, lazy } from 'react';
 import { apiFetch, apiJson, getDms, getFriends, getNotifications, joinViaInviteLink, verifyEmail } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound, playMuteSound } from './sounds';
@@ -15,9 +15,14 @@ import Home from './components/Home';
 import RoomView from './components/RoomView';
 import Friends from './components/Friends';
 import DirectMessages from './components/DirectMessages';
-import Profile from './components/Profile';
-import About from './components/About';
-import Notifications from './components/Notifications';
+// Lazy-loaded views (v0.7.0): Profile / About / Notifications are not
+// on the first screen, so their code (incl. the avatar picker and
+// character art) ships in separate chunks loaded on demand when the
+// user navigates to them. The main bundle stays lean for the first
+// paint; each chunk loads behind a small fallback.
+const Profile = lazy(() => import('./components/Profile'));
+const About = lazy(() => import('./components/About'));
+const Notifications = lazy(() => import('./components/Notifications'));
 import Avatar from './components/Avatar';
 import IconRail from './components/IconRail';
 import Splash from './components/Splash';
@@ -633,16 +638,22 @@ export default function App() {
             onMessagesRead={() => setRefreshTick((t) => t + 1)}
           />
         ) : view === 'profile' ? (
-          <Profile user={user} onSaved={setUser} onOpenAbout={() => goTo('about')} />
+          <Suspense fallback={<p className="muted" role="status">Loading…</p>}>
+            <Profile user={user} onSaved={setUser} onOpenAbout={() => goTo('about')} />
+          </Suspense>
         ) : view === 'about' ? (
-          <About onBack={() => goTo('rooms')} />
+          <Suspense fallback={<p className="muted" role="status">Loading…</p>}>
+            <About onBack={() => goTo('rooms')} />
+          </Suspense>
         ) : view === 'notifications' ? (
-          <Notifications
-            refreshTick={refreshTick}
-            onNavigate={handleNotifNavigate}
-            onBack={() => goTo('rooms')}
-            onRead={() => setRefreshTick((t) => t + 1)}
-          />
+          <Suspense fallback={<p className="muted" role="status">Loading…</p>}>
+            <Notifications
+              refreshTick={refreshTick}
+              onNavigate={handleNotifNavigate}
+              onBack={() => goTo('rooms')}
+              onRead={() => setRefreshTick((t) => t + 1)}
+            />
+          </Suspense>
         ) : lockedRoom ? (
           <LockedRoom
             room={lockedRoom}
