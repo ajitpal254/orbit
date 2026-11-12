@@ -195,5 +195,41 @@ export const getDms = () => apiJson('/api/dms');
 
 export const getDmThread = (userId) => apiJson(`/api/dms/${userId}`);
 
-export const sendDm = (userId, text) =>
-  jsonPost(`/api/dms/${userId}`, { text });
+export const sendDm = (userId, text, media) =>
+  jsonPost(`/api/dms/${userId}`, media ? { text, media } : { text });
+
+// --- Media sharing ---
+
+// Upload an image with progress events (fetch has no upload progress,
+// so this uses XHR). Returns the media object the message payload
+// needs ({ url, type, width, height, name }). Throws an Error with
+// the server's message on failure.
+export const uploadImage = async (file, { width, height, onProgress } = {}) => {
+  await ensureCsrfToken();
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (width) form.append('width', String(width));
+    if (height) form.append('height', String(height));
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload', true);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('x-csrf-token', getCookie('csrfToken'));
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || '{}'); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || 'Upload failed'));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed — check your connection'));
+    xhr.send(form);
+  });
+};
+
+// Server-side Open Graph unfurl (never fetched from the client, to
+// avoid CORS). The server answers 200 with an all-null preview when
+// the target page cannot be fetched, so callers show no card.
+export const unfurlUrl = (url) => jsonPost('/api/unfurl', { url });
