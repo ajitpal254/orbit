@@ -9,6 +9,8 @@ import { trackEvent } from '../analytics';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import { clusterHuddles, clampPosition, SPATIAL_AUDIO_ENABLED } from '../proximity';
 import Avatar from './Avatar';
+import CharacterArt from './CharacterAvatar';
+import { avatarCharacterById } from '../avatars';
 import { Icon, SignalBars } from './icons';
 
 // Short relative age for a knock row ("just now", "5m ago", "3h ago") —
@@ -1319,9 +1321,12 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           // Photo in the orb when the person has one (self from App's
           // user, others from the occupant avatar lookup); otherwise
           // initials over the room accent, as before. A photo skips the
-          // hue-rotate so it is not tinted.
+          // hue-rotate so it is not tinted. An animated character
+          // (v0.7.0) fills the orb on its own gradient backdrop — also
+          // without the hue-rotate, which would tint the character.
           const personAvatar = person.isSelf ? user : occupantAvatars[person.userId];
           const photo = personAvatar?.avatarImage || '';
+          const character = !photo ? avatarCharacterById(personAvatar?.avatarPreset) : null;
           return (
             <div
               key={person.socketId}
@@ -1356,12 +1361,19 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
                   className={`orb ${speakingNow ? 'speaking' : ''} ${person.muted ? 'is-muted' : ''} ${tapOrbId === person.socketId ? 'orb-tapped' : ''}`}
                   style={photo
                     ? { backgroundImage: `url(${photo})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-                    : {
+                    : character
+                      ? { background: `linear-gradient(135deg, ${character.from}, ${character.to})` }
+                      : {
                         background: `linear-gradient(135deg, ${accent.from}, ${accent.to})`,
                         filter: `hue-rotate(${orbHue(person.userId)}deg)`
                       }}
                 >
-                  {!photo && <span className="orb-initials">{initials(person.name)}</span>}
+                  {!photo && !character && <span className="orb-initials">{initials(person.name)}</span>}
+                  {!photo && character && (
+                    <span className="orb-character">
+                      <CharacterArt characterId={character.id} label={`${character.name} avatar`} />
+                    </span>
+                  )}
                   <span className="orb-name">
                     {person.name.split(' ')[0]}{person.isSelf ? ' (you)' : ''}
                   </span>

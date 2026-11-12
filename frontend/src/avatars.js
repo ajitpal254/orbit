@@ -22,5 +22,36 @@ export const AVATAR_PRESET_IDS = AVATAR_PRESETS.map((p) => p.id);
 export const avatarPresetById = (id) =>
   AVATAR_PRESETS.find((p) => p.id === id) || null;
 
+// Animated CHARACTER avatars (v0.7.0) — frontend copy of the backend
+// list in lib/avatars.js. Same storage as the gradient presets: one
+// string field, `avatarPreset`, on the user — a character id is a preset
+// id with a `char-` prefix, so the type is encoded in the key itself
+// (no schema change, no migration). The hand-drawn SVG art for each
+// character lives in ./characters.js; this list is only the metadata
+// (id, name, backdrop gradient, looping motion) shared with the server
+// for validation. Keep identical to lib/avatars.js.
+export const AVATAR_CHARACTERS = [
+  { id: 'char-fox', name: 'Foxy', from: '#f97316', to: '#ef4444', motion: 'bob' },
+  { id: 'char-robot', name: 'Bolt', from: '#64748b', to: '#38bdf8', motion: 'glow' },
+  { id: 'char-alien', name: 'Zorp', from: '#22c55e', to: '#a3e635', motion: 'float' },
+  { id: 'char-cat', name: 'Miso', from: '#f59e0b', to: '#fbbf24', motion: 'sway' },
+  { id: 'char-astro', name: 'Astro', from: '#e2e8f0', to: '#94a3b8', motion: 'drift' },
+  { id: 'char-panda', name: 'Bobo', from: '#f8fafc', to: '#94a3b8', motion: 'bounce' },
+  { id: 'char-frog', name: 'Hopper', from: '#4ade80', to: '#16a34a', motion: 'hop' },
+  { id: 'char-ghost', name: 'Boo', from: '#e0e7ff', to: '#a5b4fc', motion: 'wobble' }
+];
+
+export const AVATAR_CHARACTER_IDS = AVATAR_CHARACTERS.map((c) => c.id);
+
+export const avatarCharacterById = (id) =>
+  AVATAR_CHARACTERS.find((c) => c.id === id) || null;
+
+export const isAvatarCharacter = (id) =>
+  typeof id === 'string' && AVATAR_CHARACTER_IDS.includes(id);
+
+// A preset id is valid if it names a gradient preset OR a character.
+// Gradient ids are unchanged, so every existing user's avatar keeps
+// resolving exactly as before.
 export const isValidAvatarPreset = (id) =>
-  typeof id === 'string' && AVATAR_PRESET_IDS.includes(id);
+  typeof id === 'string' &&
+  (AVATAR_PRESET_IDS.includes(id) || AVATAR_CHARACTER_IDS.includes(id));
