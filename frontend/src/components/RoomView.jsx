@@ -31,6 +31,17 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [occupants, setOccupants] = useState(() => ({
     self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true, mood: normalizeMood(user.mood) }
   }));
+  // Postcard sightings: everyone the client saw in this room during my
+  // stay, in first-seen order, keyed by user id (a rejoin on a new
+  // socket is the same person). Handed to App on leave, which builds
+  // the postcard from it — nothing here is sent to the server. Self is
+  // recorded too and filtered out when the card is built.
+  const seenRef = useRef(new Map([[String(user.id), {
+    id: String(user.id),
+    name: user.name,
+    avatarPreset: user.avatarPreset || '',
+    avatarImage: user.avatarImage || ''
+  }]]));
   const [speaking, setSpeaking] = useState({ selfSpeaking: false, levels: {} });
   const [connState, setConnState] = useState({});
   const [iceState, setIceState] = useState({});
@@ -401,6 +412,14 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     setFocusError('');
     setFocusBusy(false);
     chimedForRef.current = null;
+    // Same reset for the postcard sightings: a new room is a new stay.
+    seenRef.current = new Map([[String(user.id), {
+      id: String(user.id),
+      name: user.name,
+      avatarPreset: user.avatarPreset || '',
+      avatarImage: user.avatarImage || ''
+    }]]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
 
   // Tick the focus countdown once a second while a session runs. The
@@ -813,7 +832,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     setLeaving(true);
     try {
       await leavePrivateRoom(room.id);
-      onLeave();
+      onLeave(buildSnapshot());
     } catch (err) {
       setInviteError(err.message);
       setLeaving(false);
@@ -932,12 +951,57 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     return () => { cancelled = true; };
   }, [occupantIds]);
 
+  // Record every occupant sighting for the postcard: someone who was
+  // here for part of my stay counts even if they left before I did,
+  // so the list is the whole stay, not just the moment I leave. First
+  // sighting wins per user id; avatar data merges in when the lookup
+  // above resolves (photos/presets render via the shared Avatar).
+  useEffect(() => {
+    for (const person of Object.values(occupants)) {
+      if (!person?.userId) continue;
+      const id = String(person.userId);
+      const avatar = person.isSelf ? user : occupantAvatars[person.userId];
+      const prev = seenRef.current.get(id);
+      seenRef.current.set(id, {
+        id,
+        name: person.name || prev?.name || 'Unnamed',
+        avatarPreset: avatar?.avatarPreset || prev?.avatarPreset || '',
+        avatarImage: avatar?.avatarImage || prev?.avatarImage || ''
+      });
+    }
+  }, [occupants, occupantAvatars, user]);
+
   const isSpeaking = (person) => {
     if (person.isSelf) return speaking.selfSpeaking;
     return (speaking.levels[person.socketId] || 0) > 0.25;
   };
   // Private-room role for the orb popover (owner / moderator / member).
   const roleOf = (userId) => (members.find((m) => m.id === userId) || {}).role || null;
+
+  // The postcard handover: the sightings list, with the freshest
+  // avatar data merged in, plus the room's effective campfire state.
+  // App builds the card from this + the voice session's joinedAt;
+  // a leave with no snapshot (kicked, logout) simply shows no card.
+  // `ephemeral` is the effective state at leave time: a campfire the
+  // owner kept (kept) is permanent now, so it gets a card; a campfire
+  // that was never kept does not. The faded screen below never passes
+  // a snapshot at all, so a campfire fading under you shows no card
+  // either — its hard-delete promise is untouched.
+  const buildSnapshot = useCallback(() => ({
+    ephemeral: room.ephemeral && !kept,
+    seen: [...seenRef.current.values()].map((person) => {
+      const avatar = occupantAvatars[person.id];
+      return {
+        ...person,
+        avatarPreset: avatar?.avatarPreset || person.avatarPreset || '',
+        avatarImage: avatar?.avatarImage || person.avatarImage || ''
+      };
+    })
+  }), [occupantAvatars, kept, room.ephemeral]);
+
+  const handleLeave = useCallback(() => {
+    onLeave(buildSnapshot());
+  }, [onLeave, buildSnapshot]);
 
   if (kicked) {
     return (
@@ -957,6 +1021,9 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         <div className="card kicked-card">
           <h2>This campfire faded</h2>
           <p className="muted">“{room.name}” closed 1 minute after the last person left. Campfires are temporary — create a new one anytime.</p>
+          {/* No snapshot here, by design: campfires never get a
+              postcard (permanent rooms only), and the room is gone —
+              the faded notice is the whole goodbye. */}
           <button className="btn btn-primary" onClick={onLeave}>Back to rooms</button>
         </div>
       </div>
@@ -978,7 +1045,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   return (
     <div className="room-view" style={{ '--room-from': accent.from, '--room-to': accent.to }}>
       <div className="room-header">
-        <button className="btn btn-text" onClick={onLeave}><Icon name="chevron-left" size={16} /> Rooms</button>
+        <button className="btn btn-text" onClick={handleLeave}><Icon name="chevron-left" size={16} /> Rooms</button>
         <div className="room-title">
           <strong>
             {room.isPrivate && <span className="lock-badge" title="Private room"><Icon name="lock" size={12} /> </span>}
@@ -1596,7 +1663,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           <Icon name="chat" size={26} />
           {unread > 0 && <span className="unread-badge">{unread}</span>}
         </button>
-        <button className="voice-btn leave" onClick={onLeave} title="Leave room" aria-label="Leave room">
+        <button className="voice-btn leave" onClick={handleLeave} title="Leave room" aria-label="Leave room">
           <Icon name="phone" size={26} />
         </button>
       </div>
