@@ -50,6 +50,11 @@ export class VoiceEngine {
     // re-offer once after this delay instead of staying silent forever.
     this.offerRetryMs = offerRetryMs ?? 5000;
     this.peers = new Map(); // socketId -> { pc, audioEl, analyser, data, speaking, pendingCandidates, polite, makingOffer, ignoreOffer, offerRetries, retryTimer }
+    // Socket ids known to be in the current room (from room-state and
+    // user-joined). Defense-in-depth for audit H1: _onSignal ignores
+    // anything from a socket id not in this set, so even if the server
+    // relay ever forwarded a stray offer, the client will not answer it.
+    this.occupants = new Set();
     this.localStream = null;
     this.localAnalyser = null;
     this.audioCtx = null;
@@ -87,7 +92,7 @@ export class VoiceEngine {
     }
 
     // Load ICE servers before joining: the account TURN (if configured
-    // via /api/config), the no-signup static-auth TURN, then Google STUN.
+    // via /api/turn), the no-signup static-auth TURN, then Google STUN.
     // Peers are only created after join-room, so this always lands first.
     await this._loadIceServers();
 
@@ -117,6 +122,7 @@ export class VoiceEngine {
     this.socket.off('room-state', this._onRoomState);
     this.socket.off('user-joined', this._onUserJoined);
     this.socket.emit('leave-room', { roomId: this.roomId });
+    this.occupants.clear();
     for (const [id] of this.peers) this._removePeer(id);
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => t.stop());
@@ -269,13 +275,16 @@ export class VoiceEngine {
     // A colliding offer from the other side is resolved by perfect
     // negotiation in _onSignal, so offering unconditionally is safe.
     for (const occ of occupants || []) {
+      this.occupants.add(occ.socketId);
       await this._offerTo(occ.socketId);
     }
   }
 
   async _onUserJoined({ socketId }) {
     // An existing occupant learns a newcomer joined: offer to them too.
-    if (socketId) await this._offerTo(socketId);
+    if (!socketId) return;
+    this.occupants.add(socketId);
+    await this._offerTo(socketId);
   }
 
   // ICE candidates that arrive before the remote description is set would
@@ -300,6 +309,13 @@ export class VoiceEngine {
   }
 
   async _onSignal({ from, type, data }) {
+    // H1 defense-in-depth: ignore signaling from socket ids that are not
+    // in the current room. The server relay already enforces this, but a
+    // stray or malicious offer must never reach createPeer/answer here.
+    // Legitimate senders are always known first: the server sends
+    // room-state (occupants) to the joiner before any offer can arrive,
+    // and user-joined to existing occupants before the newcomer offers.
+    if (!this.occupants.has(from)) return;
     try {
       if (type === 'offer') {
         let peer = this.peers.get(from);
@@ -345,6 +361,7 @@ export class VoiceEngine {
   }
 
   _onUserLeft({ socketId }) {
+    this.occupants.delete(socketId);
     this._removePeer(socketId);
   }
 

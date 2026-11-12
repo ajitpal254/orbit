@@ -73,6 +73,13 @@ const jsonPost = (url, body) =>
     body: JSON.stringify(body || {})
   });
 
+// --- Email verification ---
+export const verifyEmail = (token) =>
+  jsonPost('/api/auth/verify-email', { token });
+
+export const resendVerificationEmail = () =>
+  jsonPost('/api/auth/resend-verification', {});
+
 // --- Friends ---
 
 export const searchUsers = (q) =>
@@ -114,7 +121,7 @@ export const revokeInviteLink = (roomId) =>
   apiJson(`/api/rooms/${roomId}/invite-link`, { method: 'DELETE' });
 
 export const joinViaInviteLink = (token) =>
-  jsonPost(`/api/invite-links/${encodeURIComponent(token)}/join`);
+  jsonPost('/api/invite-links/join', { token });
 
 // --- Knocks on private rooms ---
 

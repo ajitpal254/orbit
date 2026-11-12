@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useLayoutEffect, useRef, useReducer } from 'react';
-import { apiFetch, apiJson, getDms, getFriends, getNotifications, joinViaInviteLink } from './api';
+import { apiFetch, apiJson, getDms, getFriends, getNotifications, joinViaInviteLink, verifyEmail } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound, playMuteSound } from './sounds';
 import { voiceSessionReducer, initialVoiceSessionState } from './voiceSession';
@@ -75,6 +75,9 @@ export default function App() {
   // expired / not a friend of the sharer): shown as a dismissible
   // banner over the rooms list instead of a bare error page.
   const [inviteLinkError, setInviteLinkError] = useState('');
+  // Email-verification result from a #verify-email- link: shown in
+  // the same banner spot as invite-link errors.
+  const [verifyNotice, setVerifyNotice] = useState('');
   // Sliding tab pill: measured from the active tab button (offsetLeft /
   // offsetWidth) instead of CSS calc, so it tracks the active tab
   // exactly on every width and font.
@@ -293,7 +296,9 @@ export default function App() {
   // Deep links from push taps: the service worker opens the app at
   // /#friends, /#room-<id>, /#dm-<userId> or /#notifications. Invite
   // links arrive the same way, as /#invite-<token> — shared by a room
-  // member, redeemed here via POST /api/invite-links/:token/join.
+  // member, redeemed here via POST /api/invite-links/join { token }.
+  // Email-verification links arrive as /#verify-email-<token> and are
+  // redeemed here via POST /api/auth/verify-email.
   // Read the hash once the user is known (room/DM/invite targets need
   // auth + a fetch), and on hashchange for taps while a tab is already
   // open (the SW navigates that tab in place instead of opening a new
@@ -319,6 +324,22 @@ export default function App() {
           // Stay in the current call when already in one — the banner
           // above the room view explains the failed link.
           if (!roomRef.current) goTo('rooms');
+        }
+        return;
+      }
+      if (target.verifyEmailToken) {
+        // The emailed verification link, redeemed with the token in
+        // the POST body (never in a URL — the token must not reach
+        // the server logs). Works signed out too: the token itself
+        // is the credential.
+        try {
+          await verifyEmail(target.verifyEmailToken);
+          if (cancelled) return;
+          setUser((u) => (u ? { ...u, emailVerified: true } : u));
+          setVerifyNotice('Your email is verified — welcome to Orbit.');
+        } catch (err) {
+          if (cancelled) return;
+          setVerifyNotice(err.message || 'That verification link did not work.');
         }
         return;
       }
@@ -494,6 +515,12 @@ export default function App() {
           <div className="invite-error" role="alert">
             <span>{inviteLinkError}</span>
             <button className="btn btn-text btn-small" onClick={() => setInviteLinkError('')} aria-label="Dismiss">Dismiss</button>
+          </div>
+        )}
+        {verifyNotice && (
+          <div className="invite-error" role="status">
+            <span>{verifyNotice}</span>
+            <button className="btn btn-text btn-small" onClick={() => setVerifyNotice('')} aria-label="Dismiss">Dismiss</button>
           </div>
         )}
         {room && (

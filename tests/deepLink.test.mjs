@@ -46,6 +46,24 @@ test('parseDeepLinkHash maps invite links to a room join', () => {
   );
 });
 
+test('parseDeepLinkHash maps email-verification links to a verify token', () => {
+  const token = 'b'.repeat(64);
+  assert.deepEqual(
+    parseDeepLinkHash(`#verify-email-${token}`),
+    { view: 'rooms', verifyEmailToken: token }
+  );
+  assert.deepEqual(
+    parseDeepLinkHash(`verify-email-${token}`),
+    { view: 'rooms', verifyEmailToken: token }
+  );
+  // A malformed token still parses — the verify endpoint answers 400
+  // and App shows its friendly error instead of ignoring the link.
+  assert.deepEqual(
+    parseDeepLinkHash('#verify-email-not-a-real-token'),
+    { view: 'rooms', verifyEmailToken: 'not-a-real-token' }
+  );
+});
+
 test('parseDeepLinkHash rejects anything it does not know', () => {
   assert.equal(parseDeepLinkHash(''), null);
   assert.equal(parseDeepLinkHash('#'), null);
@@ -55,6 +73,8 @@ test('parseDeepLinkHash rejects anything it does not know', () => {
   assert.equal(parseDeepLinkHash('#room'), null);
   assert.equal(parseDeepLinkHash('#invite-'), null);
   assert.equal(parseDeepLinkHash('#invite'), null);
+  assert.equal(parseDeepLinkHash('#verify-email-'), null);
+  assert.equal(parseDeepLinkHash('#verify-email'), null);
   assert.equal(parseDeepLinkHash(null), null);
   assert.equal(parseDeepLinkHash(undefined), null);
 });

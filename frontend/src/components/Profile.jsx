@@ -6,7 +6,7 @@
 // still enforces the 200KB cap. Choosing a preset clears a photo and
 // uploading a photo clears the preset — one avatar source at a time.
 import React, { useEffect, useRef, useState } from 'react';
-import { updateProfile, apiJson } from '../api';
+import { updateProfile, apiJson, resendVerificationEmail } from '../api';
 import { AVATAR_PRESETS } from '../avatars';
 import Avatar from './Avatar';
 import { Icon } from './icons';
@@ -67,6 +67,25 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
   // without needing a second user (POST /api/push/test).
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState('');
+
+  // Email verification (audit M1): an unverified account cannot be
+  // found in search, send invites, or create rooms. The resend
+  // button requests a fresh verification email (24h, single-use).
+  const [resendBusy, setResendBusy] = useState(false);
+  const [resendResult, setResendResult] = useState('');
+
+  const resendVerification = async () => {
+    setResendResult('');
+    setResendBusy(true);
+    try {
+      const data = await resendVerificationEmail();
+      setResendResult(data.message || 'Verification email sent — check your inbox.');
+    } catch (err) {
+      setResendResult(err.message || 'Could not send a verification email');
+    } finally {
+      setResendBusy(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -172,6 +191,26 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
         <h2><Icon name="user" size={22} /> Profile</h2>
         <p className="muted">How friends see you in rooms and chats.</p>
       </div>
+
+      {user.emailVerified === false && (
+        <div className="card" role="alert">
+          <h3 className="section-title">Verify your email</h3>
+          <p className="muted">
+            We sent a verification email to {user.email}. Until you verify,
+            friends cannot find you in search and you cannot send invites
+            or create rooms.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary btn-small"
+            disabled={resendBusy}
+            onClick={resendVerification}
+          >
+            {resendBusy ? 'Sending…' : 'Resend verification email'}
+          </button>
+          {resendResult && <p className="muted">{resendResult}</p>}
+        </div>
+      )}
 
       <form className="card profile-card" onSubmit={save}>
         <div className="profile-avatar-row">
