@@ -1,7 +1,24 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-import './index.css';
+// Styles are split into per-area files under ./css (v0.7.0 refactor of
+// the old monolithic index.css). Import order matters: it preserves the
+// original cascade exactly, so keep these in this order.
+import './css/base.css';
+import './css/shell.css';
+import './css/components.css';
+import './css/auth.css';
+import './css/home.css';
+import './css/room.css';
+import './css/voice.css';
+import './css/nav.css';
+import './css/friends.css';
+import './css/members.css';
+import './css/chat.css';
+import './css/splash.css';
+import './css/motion.css';
+import './css/profile.css';
+import './css/desktop.css';
 // Self-hosted fonts (no Google Fonts CDN — the PWA must stay
 // offline-friendly). Space Grotesk = display/headings/wordmark,
 // Inter = body. Only the weights the app uses, latin subset only

@@ -4,7 +4,7 @@
 // tests/orbLayout.test.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readCssBundle } from './cssBundle.js';
 import {
   starPosition, starState, starStatusText, starLabel, canJoin,
   outCount, visibleStars, MAX_STARS,
@@ -166,7 +166,7 @@ test('ambientStarClass: layer picks the class, missing layer falls back to mid',
 });
 
 test('reduced motion: the ambient twinkle is stilled, and the star keeps its own brightness', () => {
-  const css = readFileSync(new URL('../frontend/src/index.css', import.meta.url), 'utf8');
+  const css = readCssBundle();
   const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
   assert.ok(reduced.includes('.ambient-star'), 'reduced-motion block must mention .ambient-star');
   assert.match(reduced, /\.ambient-star\s*\{\s*animation:\s*none;\s*\}/, 'reduced motion must disable the ambient-star animation');

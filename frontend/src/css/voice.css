@@ -1,0 +1,136 @@
+/* Floating voice bar */
+.voice-bar {
+  position: fixed;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.6rem 0.7rem;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid color-mix(in srgb, var(--room-from, #8b5cf6) 25%, var(--border));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-md);
+  z-index: 30;
+  animation: bar-up var(--dur-med) var(--ease-spring) backwards;
+}
+@keyframes bar-up {
+  from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.voice-btn {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 1.35rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--dur-fast) var(--ease-out), background var(--dur-fast), box-shadow var(--dur-fast);
+  font-family: inherit;
+}
+.voice-btn:active { transform: scale(0.93); }
+.voice-btn.off {
+  background: rgba(248, 113, 113, 0.25);
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.5), 0 0 18px rgba(248, 113, 113, 0.35);
+}
+/* The icon swaps on toggle — remounting the span (keyed in JSX) pops
+   the new icon in with a spring. */
+.voice-ico { display: inline-block; animation: ico-pop var(--dur-med) var(--ease-spring); }
+@keyframes ico-pop {
+  0% { transform: scale(0.5); }
+  60% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+.voice-btn.leave { background: rgba(248, 113, 113, 0.9); transform: rotate(135deg); }
+/* Mini-player: the call keeps going while you browse another view.
+   Fixed at the bottom like the voice bar (App only ever renders one
+   of the two, so they can never overlap), above the tab bar / bottom
+   area, clear of the gesture bar via safe-area-inset-bottom. */
+.mini-player {
+  position: fixed;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: min(480px, calc(100vw - 2rem));
+  padding: 0.55rem 0.6rem 0.55rem 1rem;
+  border-radius: 999px;
+  background: rgba(18, 13, 36, 0.92);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+  animation: bar-up var(--dur-med) var(--ease-spring) backwards;
+}
+.mini-player-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 10px #34d399;
+  flex-shrink: 0;
+  animation: mini-pulse 2s infinite;
+}
+@keyframes mini-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.mini-player-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.mini-player-info strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.95rem;
+}
+.mini-player-time {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.mini-player .voice-btn { width: 44px; height: 44px; font-size: 1.2rem; flex-shrink: 0; }
+
+/* Hidden room view: the session stays mounted (voice keeps running)
+   while another view is on screen — only its rendering is off. */
+.room-view-hidden { display: none; }
+
+/* While a call runs in the background, give the other views room at
+   the bottom so the mini-player never covers their last row. */
+.app--in-call .main { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
+
+/* Chat / leave buttons hold a bare Icon (not a .voice-ico span). */
+.voice-bar .voice-btn > .icon { width: 26px; height: 26px; }
+.unread-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+}
+
