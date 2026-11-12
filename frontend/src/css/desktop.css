@@ -153,9 +153,15 @@
     position: sticky;
     top: 5rem;
     min-width: 0;
+    /* Desktop polish (Plan v2 §2 fix ③): stretch with the centre
+       column so the panel doesn't end abruptly above the fold. */
+    min-height: 100%;
   }
   .side-section { display: flex; flex-direction: column; gap: 0.6rem; }
   .side-empty { margin: 0; font-size: 0.88rem; line-height: 1.5; }
+  /* Dim line under the last activity item when the night is quiet
+     (empty list or a single item) — see SidePanel.jsx. */
+  .side-quiet { margin: 0.1rem 0 0; font-size: 0.85rem; opacity: 0.7; }
   .presence-dot {
     width: 9px;
     height: 9px;
@@ -236,10 +242,16 @@
   .hero-empty p { margin: 0; font-size: 0.92rem; max-width: 420px; }
   .hero-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
 
-  /* Night-sky home on desktop: taller stage, and hidden entirely
-     while a live hero exists — the sky is the quiet-moment home, not
-     a second hero. (Phones have no hero, so the sky always shows.) */
-  .night-sky-stage { height: 216px; }
+  /* Night-sky home on desktop: flex-fills the remaining centre-column
+     height instead of a fixed box, so the star field reads as the
+     centrepiece, not a placeholder widget (Plan v2 §2 fix ①). The
+     section stretches within its grid row — the side panel spanning
+     all rows is what makes that row taller than the sky's content —
+     and the stage fills the section. Phones keep the fixed 168px
+     stage in home.css. Keep .night-sky--has-hero AFTER this rule: same
+     specificity, so its display:none must win while a live hero exists. */
+  .night-sky { display: flex; flex-direction: column; flex: 1; min-height: 220px; align-self: stretch; }
+  .night-sky-stage { flex: 1; min-height: 220px; height: auto; }
   .night-sky--has-hero { display: none; }
 
   /* Home: greeting + New room button share a header row, and rooms
@@ -254,6 +266,29 @@
      ~220px. auto-fill keeps cards ≥260px and never stretches a lone
      card full-width (unlike auto-fit, which collapses empty tracks). */
   .room-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.9rem; }
+  /* Dashed "+ New room" card (Plan v2 §2 fix ②): closes the visual gap
+     after the last real room card. Hidden below 900px (home.css) so
+     phones keep their list untouched. */
+  .room-card--new {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    min-height: 120px;
+    border: 1px dashed rgba(255, 255, 255, 0.25);
+    border-left: 1px dashed rgba(255, 255, 255, 0.25);
+    background: transparent;
+    box-shadow: none;
+    opacity: 0.45;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+  .room-card--new:hover {
+    opacity: 0.85;
+    border-color: rgba(255, 255, 255, 0.45);
+    box-shadow: none;
+  }
   /* The hero room is also in the Live-now list — hide its duplicate
      card on desktop, and hide the whole section when the hero is the
      only live room. Phones have no hero, so the list stays complete. */

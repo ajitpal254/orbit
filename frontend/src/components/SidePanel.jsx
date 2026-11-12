@@ -178,6 +178,12 @@ export default function SidePanel({ refreshTick, onJoinRoom, onNavigate, friends
             ))}
           </div>
         )}
+        {/* Desktop polish (Plan v2 §2 fix ③): a dim line under the last
+            activity item when the night is quiet — empty list or a
+            single item — so the panel doesn't end abruptly. */}
+        {groupedActivity.length < 2 && (
+          <p className="muted side-quiet">Quiet tonight</p>
+        )}
       </section>
     </aside>
   );
