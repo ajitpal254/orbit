@@ -27,6 +27,9 @@ jobs:
             package-lock.json
             frontend/package-lock.json
 
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
       - name: Install root dependencies
         run: npm ci
 
