@@ -6,6 +6,7 @@ import { voiceSessionReducer, initialVoiceSessionState } from './voiceSession';
 import MiniPlayer from './components/MiniPlayer';
 import MobileTabBar from './components/MobileTabBar';
 import { onUpdateAvailable, applyUpdate } from './pwa';
+import { initAnalytics, getGaMeasurementId, trackPageView, trackEvent } from './analytics';
 import { parseDeepLinkHash } from './deepLink';
 import Auth from './components/Auth';
 import Home from './components/Home';
@@ -91,6 +92,11 @@ export default function App() {
   // slow cold start left the app on "Loading…" forever.
   useEffect(() => {
     apiFetch('/api/auth/csrf-token').catch(() => {});
+    // GA4 (runtime config): load gtag.js only when the server reports a
+    // Measurement ID. With none configured this is a complete no-op.
+    apiJson('/api/config')
+      .then((cfg) => { initAnalytics(getGaMeasurementId(cfg)); })
+      .catch(() => {});
     let cancelled = false;
     const boot = async () => {
       for (let attempt = 0; attempt < BOOT_ATTEMPTS; attempt += 1) {
@@ -213,6 +219,7 @@ export default function App() {
     setRoom(r);
     setInRoom(true);
     setView('rooms');
+    trackEvent('room_joined');
     dispatchSession({ type: 'join', joinedAt: Date.now() });
   }, [room]);
 
@@ -220,6 +227,7 @@ export default function App() {
     setRoom(null);
     setLockedRoom(null);
     setInRoom(false);
+    trackEvent('room_left');
     dispatchSession({ type: 'leave' });
   }, []);
 
@@ -395,6 +403,13 @@ export default function App() {
   useLayoutEffect(() => {
     measurePill();
   }, [view, room, inRoom, measurePill]);
+
+  // GA4 SPA page_view on every view/tab change (and room enter/leave,
+  // reported as the 'room' view). No-op until gtag is loaded; the
+  // payload carries only the view name, never the URL.
+  useEffect(() => {
+    trackPageView(inRoom ? 'room' : view);
+  }, [view, inRoom]);
 
   useEffect(() => {
     window.addEventListener('resize', measurePill);

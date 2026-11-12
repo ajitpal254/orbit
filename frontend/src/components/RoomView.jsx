@@ -5,6 +5,7 @@ import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { playJoinSound, playMuteSound, playDeafenSound, playFocusEndSound } from '../sounds';
 import { remainingMs, focusProgress, formatFocusRemaining, FOCUS_PRESET_MINUTES } from '../focusTimer';
+import { trackEvent } from '../analytics';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import { clusterHuddles, clampPosition, SPATIAL_AUDIO_ENABLED } from '../proximity';
 import Avatar from './Avatar';
@@ -802,6 +803,10 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     setFocusError('');
     setFocusBusy(true);
     getSocket().emit('focus-start', { roomId: room.id, durationSec: focusMinutes * 60 });
+    // GA4: the initiator's click only (the 'focus-started' broadcast
+    // reaches every occupant, so tracking there would count once per
+    // person in the room). Coarse numeric param only — no room/user id.
+    trackEvent('focus_started', { duration_minutes: focusMinutes });
     // focus-started clears the spinner; the timeout covers the error
     // path, where no session arrives to clear it.
     setTimeout(() => setFocusBusy(false), 1500);

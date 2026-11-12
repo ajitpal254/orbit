@@ -91,8 +91,22 @@ const requireVerifiedEmail = (req, res) => {
 // session auth at GET /api/turn (see lib/meteredTurn.js); the static
 // credential is never sent to a client. Rotate it on the provider side
 // — assume the old one is public.
+// Google Analytics 4 Measurement ID (runtime config only — never a
+// build-time define). GA_MEASUREMENT_ID comes from the GA4 property
+// (Admin → Data Streams → Measurement ID, G-XXXXXXXXXX). When unset or
+// malformed the field is omitted from /api/config entirely and the
+// client stays a complete no-op: no gtag.js, no network calls.
+const GA_MEASUREMENT_ID_PATTERN = /^G-[A-Z0-9]{4,}$/i;
+const getGaMeasurementId = () => {
+  const id = (process.env.GA_MEASUREMENT_ID || '').trim().toUpperCase();
+  return GA_MEASUREMENT_ID_PATTERN.test(id) ? id : null;
+};
+
 router.get('/config', (req, res) => {
-  res.json({ googleClientId: getGoogleClientId(), turn: { urls: turnUrls() }, vapidPublicKey: getVapidPublicKey() });
+  const config = { googleClientId: getGoogleClientId(), turn: { urls: turnUrls() }, vapidPublicKey: getVapidPublicKey() };
+  const gaMeasurementId = getGaMeasurementId();
+  if (gaMeasurementId) config.gaMeasurementId = gaMeasurementId;
+  res.json(config);
 });
 
 // GET /api/turn — session-authenticated: serve the cached Metered
