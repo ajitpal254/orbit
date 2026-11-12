@@ -1,0 +1,57 @@
+/* Auth */
+.auth-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+.auth-card { width: 100%; max-width: 380px; text-align: center; }
+.auth-card h1 { margin: 0.4rem 0 0.3rem; font-size: 1.9rem; letter-spacing: -0.03em; }
+.auth-card p { margin: 0 0 1.1rem; font-size: 0.92rem; }
+.auth-orb {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: var(--accent-grad);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  box-shadow: 0 0 40px rgba(139, 92, 246, 0.55);
+  animation: float 6s ease-in-out infinite;
+}
+.auth-tabs { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; }
+.auth-tabs button {
+  flex: 1;
+  padding: 0.6rem;
+  border-radius: 10px;
+  border: none;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+.auth-tabs button.active { background: var(--accent-grad); color: #fff; }
+
+/* Google one-tap button (rendered by Google Identity Services) + divider */
+.google-btn { display: flex; justify-content: center; min-height: 44px; margin-bottom: 0.9rem; }
+.google-btn:empty { display: none; }
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.auth-divider::before, .auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.auth-divider span { white-space: nowrap; }
+

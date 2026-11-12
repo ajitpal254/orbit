@@ -1,0 +1,139 @@
+/* Animated character avatars (v0.7.0) — CharacterAvatar.jsx.
+   SVG + CSS only. This file is the ONLY new CSS for the feature;
+   index.css is untouched. The .char-art wrapper fills whatever round
+   container holds it (.avatar span, Profile picker button, room orb)
+   and the svg inside scales to fill it. The character art is drawn on
+   a circular gradient backdrop (see characters.js), so no clipping is
+   needed anywhere it renders. */
+
+/* Wrapper + svg sizing: fill the parent, never overflow it. */
+.char-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  line-height: 0;
+}
+.char-art svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* In the room orb the character floats over the orb surface, above the
+   gradient but below the name/mute badges (those are siblings, not
+   children, of this span — see RoomView.jsx). */
+.orb-character {
+  position: absolute;
+  inset: 0;
+  display: block;
+  line-height: 0;
+  pointer-events: none;
+}
+.orb-character .char-art {
+  width: 100%;
+  height: 100%;
+}
+
+/* Animated parts need their own transform origin (the shape's own
+   centre) so blinks / sways / pulses pivot naturally instead of around
+   the whole 64x64 canvas. */
+.char-art svg .char-eyes,
+.char-art svg .char-tail,
+.char-art svg .char-light,
+.char-art svg .char-glint,
+.char-art svg .char-throat,
+.char-art svg .char-mouth,
+.char-art svg .char-twinkle {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* --- Root motion: one looping move per character, varied so the set
+   feels like a cast rather than one animation re-skinned. --- */
+.char-art svg.char-char-fox { animation: char-bob 2.6s ease-in-out infinite; }
+.char-art svg.char-char-robot { animation: char-bob 3s ease-in-out infinite; }
+.char-art svg.char-char-alien { animation: char-float 3.4s ease-in-out infinite; }
+.char-art svg.char-char-cat { animation: char-bob 3s ease-in-out infinite; }
+.char-art svg.char-char-astro { animation: char-drift 4s ease-in-out infinite; }
+.char-art svg.char-char-panda { animation: char-bounce 2.8s ease-in-out infinite; }
+.char-art svg.char-char-frog { animation: char-hop 2.4s ease-in-out infinite; }
+.char-art svg.char-char-ghost { animation: char-wobble 3.6s ease-in-out infinite; }
+
+/* --- Part motion --- */
+/* Blink: shut briefly, most of the cycle open. */
+.char-art svg .char-eyes { animation: char-blink 4s ease-in-out infinite; }
+.char-art svg.char-char-alien .char-eyes { animation-duration: 4.5s; }
+/* Robot / alien lights + astronaut beacon: soft glow pulse. */
+.char-art svg .char-light { animation: char-glow 1.6s ease-in-out infinite; }
+/* Astronaut visor glint: shimmer. */
+.char-art svg .char-glint { animation: char-twinkle 2.4s ease-in-out infinite; }
+/* Cat tail: lazy sway. */
+.char-art svg .char-tail { animation: char-sway 2.2s ease-in-out infinite; }
+/* Frog throat: croak pulse, in time with the hop. */
+.char-art svg .char-throat { animation: char-throat 2.4s ease-in-out infinite; }
+/* Ghost mouth: gentle open/close. */
+.char-art svg .char-mouth { animation: char-mouth 3.6s ease-in-out infinite; }
+/* Ghost sparkles: twinkle out of phase with each other. */
+.char-art svg .char-twinkle { animation: char-twinkle 2s ease-in-out infinite; }
+.char-art svg .char-twinkle:last-of-type { animation-delay: 1s; }
+
+@keyframes char-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+@keyframes char-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@keyframes char-drift {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2.5px); }
+}
+@keyframes char-bounce {
+  0%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-2.5px); }
+  55% { transform: translateY(0); }
+  75% { transform: translateY(-1px); }
+}
+@keyframes char-hop {
+  0%, 55%, 100% { transform: translateY(0); }
+  25% { transform: translateY(-4px); }
+}
+@keyframes char-wobble {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-3px) rotate(-2deg); }
+}
+@keyframes char-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.08); }
+}
+@keyframes char-glow {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@keyframes char-twinkle {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+@keyframes char-sway {
+  0%, 100% { transform: rotate(-8deg); }
+  50% { transform: rotate(8deg); }
+}
+@keyframes char-throat {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+@keyframes char-mouth {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15, 0.85); }
+}
+
+/* Reduced motion: every character renders as a static frame. The svg
+   keeps its drawn pose (no animation) so the avatar still reads as the
+   character, just still — same promise as the gradient presets. */
+@media (prefers-reduced-motion: reduce) {
+  .char-art svg,
+  .char-art svg * {
+    animation: none !important;
+  }
+}

@@ -138,6 +138,11 @@ export const ICON_PATHS = {
     { el: 'circle', cx: 8.5, cy: 8.5, r: 1.5 },
     { el: 'polyline', points: '21 15 16 10 5 21' }
   ],
+  download: [
+    { el: 'path', d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' },
+    { el: 'polyline', points: '7 10 12 15 17 10' },
+    { el: 'line', x1: 12, y1: 15, x2: 12, y2: 3 }
+  ],
   volume: [
     { el: 'polygon', points: '11 5 6 9 2 9 2 15 6 15 11 19 11 5' },
     { el: 'path', d: 'M15.54 8.46a5 5 0 0 1 0 7.07' }

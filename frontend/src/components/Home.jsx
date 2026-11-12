@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { apiJson, getInvites, acceptInvite, declineInvite, getFriendsPresence } from '../api';
+import { apiJson, getInvites, acceptInvite, declineInvite, getFriendsPresence, joinRoom as joinRoomPreflight } from '../api';
 import { getSocket } from '../socket';
 import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
@@ -15,6 +15,12 @@ import { Icon } from './icons';
 // Guarded so the file doesn't break if the define is ever missing.
 // Shared with the About section, which displays the same beta number.
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
+
+// Room cap (v0.7.0): rooms hold at most 8 people — keep in sync with
+// MAX_ROOM_OCCUPANTS in lib/roomCap.js. The list's occupantCount can
+// go stale, so this only decides when to pre-flight; the server is
+// still the gate, and RoomView shows the full-room card on a race.
+const ROOM_CAP = 8;
 
 export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigate, notifUnread, onOpenNotifications }) {
   const [rooms, setRooms] = useState([]);
@@ -135,6 +141,27 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
     }
   };
 
+  // Room cap (v0.7.0): when the list already shows a room full, ask
+  // the server first (POST /api/rooms/:id/join) instead of mounting
+  // the room view and being refused on the socket. A slot may have
+  // freed since the list loaded, in which case the pre-flight succeeds
+  // and the join goes ahead; when it is still full the server's
+  // friendly message lands in the home error line. Rooms below the
+  // cap join directly — the socket handler enforces the cap there,
+  // and RoomView shows the full-room card if a race fills it first.
+  const tryJoin = async (room) => {
+    setError('');
+    if ((room.occupantCount || 0) >= ROOM_CAP) {
+      try {
+        await joinRoomPreflight(room.id);
+      } catch (err) {
+        setError(err.message || 'This room is full right now.');
+        return;
+      }
+    }
+    onJoin(room);
+  };
+
   const live = rooms.filter((r) => r.occupantCount > 0);
   const quiet = rooms.filter((r) => r.occupantCount === 0);
   // The hero room (busiest live room) is also in `live` — the Live-now
@@ -149,7 +176,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
           top of Home; tap an in-room friend to join their room. Shares
           Home's single presence fetch with the night sky and the side
           panel (no second GET /api/friends/presence). */}
-      <StoriesRow refreshTick={refreshTick} onJoin={onJoin} friends={presence} />
+      <StoriesRow refreshTick={refreshTick} onJoin={tryJoin} friends={presence} />
       <div className="home-head">
       <div className="greeting">
         <p className="date-line">Your orbit</p>
@@ -189,7 +216,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
         friends={presence}
         loading={presence === null && !presenceError}
         error={presenceError}
-        onJoin={onJoin}
+        onJoin={tryJoin}
         onNavigate={onNavigate}
         onRetry={loadPresence}
         hasLiveHero={!!heroRoom}
@@ -304,7 +331,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
       {!loading && heroRoom && (
         <HeroCard
           room={heroRoom}
-          onJoin={onJoin}
+          onJoin={tryJoin}
           onStartRoom={() => setShowCreate(true)}
           onGoFriends={() => onNavigate && onNavigate({ view: 'friends' })}
         />
@@ -359,7 +386,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
           <h3 className="section-title"><span className="live-dot" /> Live now</h3>
           <div className="room-list">
             {live.map((room, i) => (
-              <RoomCard key={room.id} room={room} index={i} onJoin={onJoin} isHero={heroRoom?.id === room.id} />
+              <RoomCard key={room.id} room={room} index={i} onJoin={tryJoin} isHero={heroRoom?.id === room.id} />
             ))}
           </div>
         </section>
@@ -370,7 +397,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
           <h3 className="section-title">Rooms</h3>
           <div className="room-list">
             {quiet.map((room, i) => (
-              <RoomCard key={room.id} room={room} index={i} onJoin={onJoin} />
+              <RoomCard key={room.id} room={room} index={i} onJoin={tryJoin} />
             ))}
           </div>
         </section>
@@ -383,7 +410,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
       {/* Desktop 3-zone right column: friends presence + activity.
           Rendered last so the ≥900px grid can place it in column 2
           spanning the rows; hidden below 900px in CSS. */}
-      <SidePanel refreshTick={refreshTick} onJoinRoom={onJoin} onNavigate={onNavigate} friends={presence} />
+      <SidePanel refreshTick={refreshTick} onJoinRoom={tryJoin} onNavigate={onNavigate} friends={presence} />
     </div>
   );
 }
@@ -410,7 +437,7 @@ function RoomCard({ room, index, onJoin, isHero }) {
         {room.occupantCount > 0 && (
           <span className="room-count">
             <span className={`count-dot ${speaking ? 'speaking' : ''}`} />
-            {room.occupantCount} in room
+            {room.occupantCount >= ROOM_CAP ? `Full · ${room.occupantCount}/8` : `${room.occupantCount} in room`}
           </span>
         )}
       </div>

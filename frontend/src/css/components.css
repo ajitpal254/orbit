@@ -1,0 +1,63 @@
+/* Cards & buttons */
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Inline SVG icons (components/icons.jsx): stroke/currentColor, sized
+   by the component; inline contexts align them with the text. */
+.icon { display: inline-block; vertical-align: middle; flex-shrink: 0; }
+.logo .icon { width: 20px; height: 20px; }
+.icon-btn .icon { width: 20px; height: 20px; }
+.auth-orb .icon { width: 34px; height: 34px; color: #fff; }
+.about-logo .icon { width: 34px; height: 34px; }
+.splash-wordmark .icon { width: 28px; height: 28px; vertical-align: -0.12em; }
+.greeting h2 .icon { vertical-align: -0.1em; margin-right: 0.15rem; }
+.section-title .icon { width: 15px; height: 15px; }
+.lock-badge .icon { width: 12px; height: 12px; vertical-align: -0.05em; }
+.role-badge .icon { width: 11px; height: 11px; vertical-align: -0.05em; margin-right: 0.15rem; }
+.notif-icon .icon { width: 20px; height: 20px; }
+.saved-note .icon { width: 14px; height: 14px; vertical-align: -0.1em; margin-right: 0.15rem; }
+.orb-muted .icon { width: 13px; height: 13px; }
+.mod-muted-note .icon, .orb-mod-muted .icon { width: 12px; height: 12px; vertical-align: -0.1em; }
+.mini-orb .icon { width: 14px; height: 14px; color: #fff; }
+.voice-ico .icon { width: 26px; height: 26px; }
+.chat-head .icon, .update-toast .icon { width: 16px; height: 16px; }
+
+.btn {
+  border: none;
+  border-radius: 14px;
+  padding: 0.75rem 1.2rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast), box-shadow var(--dur-fast);
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary { background: var(--accent-grad); color: #fff; box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4); }
+.btn-primary:hover { box-shadow: 0 6px 28px rgba(139, 92, 246, 0.6); }
+.btn-block { width: 100%; }
+.btn-text { background: none; color: var(--muted); padding: 0.5rem 0.6rem; }
+.btn-text:hover { color: var(--text); }
+.btn:disabled { opacity: 0.6; cursor: default; }
+
+input {
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  margin: 0.35rem 0;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.95rem;
+  font-family: inherit;
+  outline: none;
+}
+input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+input::placeholder { color: var(--muted); }
+

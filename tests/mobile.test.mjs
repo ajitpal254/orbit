@@ -1,13 +1,14 @@
 // Tests for the v0.3.0 mobile basics (M1–M3): the ≤520px layout rules
-// in frontend/src/index.css and the small pure helpers in
-// frontend/src/desktop.js / mobileNav.js. No React, no DOM — the CSS
-// is asserted by extracting the media block, the same file-reading
-// approach as tests/visualSystem.test.mjs.
+// in frontend/src/css/* (see tests/cssBundle.js) and the small pure
+// helpers in frontend/src/desktop.js / mobileNav.js. No React, no DOM
+// — the CSS is asserted by extracting the media block, the same
+// file-reading approach as tests/visualSystem.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readCssBundle } from './cssBundle.js';
 
-const css = readFileSync(new URL('../frontend/src/index.css', import.meta.url), 'utf8');
+const css = readCssBundle();
 const roomViewJsx = readFileSync(new URL('../frontend/src/components/RoomView.jsx', import.meta.url), 'utf8');
 
 // The one `@media (max-width: 520px)` block: every phone rule must
@@ -16,7 +17,7 @@ const roomViewJsx = readFileSync(new URL('../frontend/src/components/RoomView.js
 // nested rules.
 export function phoneBlock(source) {
   const start = source.indexOf('@media (max-width: 520px)');
-  assert.notEqual(start, -1, 'no max-width: 520px block in index.css');
+  assert.notEqual(start, -1, 'no max-width: 520px block in the CSS bundle');
   const open = source.indexOf('{', start);
   let depth = 0;
   for (let i = open; i < source.length; i += 1) {
@@ -191,7 +192,9 @@ test('M3: Home renders the stories row from the same presence data as the side p
   assert.ok(homeJsx.includes("import StoriesRow from './StoriesRow'"));
   // Home passes its single presence fetch (shared with the night sky
   // and the side panel) — the stories row must not fetch it a second time.
-  assert.ok(homeJsx.includes('<StoriesRow refreshTick={refreshTick} onJoin={onJoin} friends={presence} />'));
+  // v0.7.0: the join prop is tryJoin, the cap pre-flight wrapper around
+  // onJoin — the stories row still joins the same way, through Home.
+  assert.ok(homeJsx.includes('<StoriesRow refreshTick={refreshTick} onJoin={tryJoin} friends={presence} />'));
   assert.ok(storiesJsx.includes('friendsProp !== undefined ? friendsProp : ownFriends'), 'stories row must use the shared presence prop when provided');
   assert.ok(storiesJsx.includes("getFriendsPresence"), 'stories row must reuse GET /api/friends/presence');
   assert.ok(storiesJsx.includes("matchMedia('(max-width: 520px)')"), 'stories row must stay off-phone (desktop untouched)');

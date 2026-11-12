@@ -98,14 +98,21 @@ export default function NightSky({ friends, loading, error, onJoin, onNavigate, 
     }
   };
 
+  // Computed once per mount: ambientStars is deterministic, so this
+  // is only about not rebuilding the array on every presence refresh.
+  // It MUST sit above the early return below: a hook after a
+  // conditional return breaks the rules of hooks — a fresh account
+  // with no friends rendered the memo while loading, then hit the
+  // early return once presence resolved empty, and React unmounted
+  // the whole app to a blank screen ("Rendered fewer hooks than
+  // expected"). Caught by the Playwright smoke test, 2026-11-12.
+  const ambient = useMemo(() => ambientStars(), []);
+
   // No friends at all: nothing to show as a sky.
   if (!loading && !error && (!friends || friends.length === 0)) return null;
 
   const out = outCount(friends || []);
   const { stars, overflow } = visibleStars(friends || []);
-  // Computed once per mount: ambientStars is deterministic, so this
-  // is only about not rebuilding the array on every presence refresh.
-  const ambient = useMemo(() => ambientStars(), []);
   const positions = Object.fromEntries(
     stars.map((f, i) => [f.id, starPosition(f, i)])
   );

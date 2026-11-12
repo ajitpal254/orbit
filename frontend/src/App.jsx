@@ -1,25 +1,36 @@
-import React, { useEffect, useState, useCallback, useLayoutEffect, useRef, useReducer } from 'react';
+import React, { useEffect, useState, useCallback, useLayoutEffect, useRef, useReducer, Suspense, lazy } from 'react';
 import { apiFetch, apiJson, getDms, getFriends, getNotifications, joinViaInviteLink, verifyEmail } from './api';
 import { getSocket, disconnectSocket } from './socket';
 import { playJoinSound, playMuteSound } from './sounds';
 import { voiceSessionReducer, initialVoiceSessionState } from './voiceSession';
+import { buildPostcard } from './postcard';
+import RoomPostcard from './components/RoomPostcard';
 import MiniPlayer from './components/MiniPlayer';
 import MobileTabBar from './components/MobileTabBar';
 import { onUpdateAvailable, applyUpdate } from './pwa';
+import { initAnalytics, getGaMeasurementId, trackPageView, trackEvent } from './analytics';
 import { parseDeepLinkHash } from './deepLink';
 import Auth from './components/Auth';
 import Home from './components/Home';
 import RoomView from './components/RoomView';
 import Friends from './components/Friends';
 import DirectMessages from './components/DirectMessages';
-import Profile from './components/Profile';
-import About from './components/About';
-import Notifications from './components/Notifications';
+// Lazy-loaded views (v0.7.0): Profile / About / Notifications are not
+// on the first screen, so their code (incl. the avatar picker and
+// character art) ships in separate chunks loaded on demand when the
+// user navigates to them. The main bundle stays lean for the first
+// paint; each chunk loads behind a small fallback.
+const Profile = lazy(() => import('./components/Profile'));
+const About = lazy(() => import('./components/About'));
+const Notifications = lazy(() => import('./components/Notifications'));
 import Avatar from './components/Avatar';
 import IconRail from './components/IconRail';
 import Splash from './components/Splash';
 import UpdateToast from './components/UpdateToast';
 import LockedRoom from './components/LockedRoom';
+import Onboarding from './components/Onboarding';
+import { daypartFor } from './daypart';
+import './daypart.css';
 import { Icon } from './components/icons';
 
 // Boot timeout per /api/auth/me attempt. Render's free tier sleeps when
@@ -78,6 +89,38 @@ export default function App() {
   // Email-verification result from a #verify-email- link: shown in
   // the same banner spot as invite-link errors.
   const [verifyNotice, setVerifyNotice] = useState('');
+  // Time-of-day background (v0.7.0): the ambient palette follows
+  // the viewer's local time — dawn / day / dusk / night (see
+  // daypart.js + daypart.css). Re-checked every 5 minutes, so a
+  // boundary crossing lands without a reload; night is the base
+  // palette, so the class is always present and never flashes.
+  const [daypart, setDaypart] = useState(() => daypartFor(new Date()));
+  useEffect(() => {
+    const t = window.setInterval(() => setDaypart(daypartFor(new Date())), 5 * 60 * 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  useEffect(() => {
+    document.body.dataset.daypart = daypart;
+    return () => { delete document.body.dataset.daypart; };
+  }, [daypart]);
+  // First-run onboarding (v0.7.0): mic test + mood, once per device.
+  // Skippable, never blocking, and never shown to returning users
+  // (the flag is per device, set on Continue or Skip).
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  useEffect(() => {
+    if (!user) return;
+    try {
+      if (!window.localStorage.getItem('orbit:onboarded:v1')) setShowOnboarding(true);
+    } catch {}
+  }, [user]);
+  const finishOnboarding = useCallback(() => {
+    try { window.localStorage.setItem('orbit:onboarded:v1', '1'); } catch {}
+    setShowOnboarding(false);
+  }, []);
+  // Room postcard: the recap of the room just left (room name, stay
+  // length, who was there). Built on leave, in-memory only — dismiss
+  // it (or join another room) and it is gone; nothing is persisted.
+  const [postcard, setPostcard] = useState(null);
   // Sliding tab pill: measured from the active tab button (offsetLeft /
   // offsetWidth) instead of CSS calc, so it tracks the active tab
   // exactly on every width and font.
@@ -91,6 +134,11 @@ export default function App() {
   // slow cold start left the app on "Loading…" forever.
   useEffect(() => {
     apiFetch('/api/auth/csrf-token').catch(() => {});
+    // GA4 (runtime config): load gtag.js only when the server reports a
+    // Measurement ID. With none configured this is a complete no-op.
+    apiJson('/api/config')
+      .then((cfg) => { initAnalytics(getGaMeasurementId(cfg)); })
+      .catch(() => {});
     let cancelled = false;
     const boot = async () => {
       for (let attempt = 0; attempt < BOOT_ATTEMPTS; attempt += 1) {
@@ -206,22 +254,43 @@ export default function App() {
     if (room?.id === r.id) {
       // Already in this room's session — just show the room again
       // instead of restarting the call timer and resetting mute.
+      setPostcard(null);
       setView('rooms');
       setInRoom(true);
       return;
     }
+    setPostcard(null);
     setRoom(r);
     setInRoom(true);
     setView('rooms');
+    trackEvent('room_joined');
     dispatchSession({ type: 'join', joinedAt: Date.now() });
   }, [room]);
 
-  const leaveRoom = useCallback(() => {
+  // Leaving builds the postcard first (the session resets below, and
+  // with it joinedAt). RoomView hands over its sightings snapshot;
+  // a leave with no snapshot (kicked) or no session start shows no
+  // card — it just leaves. Permanent rooms only: a campfire
+  // (snapshot.ephemeral, as computed by RoomView — a kept campfire
+  // counts as permanent) never gets a card, so the fading-rooms
+  // hard-delete promise holds and there is no tombstone or archive.
+  const leaveRoom = useCallback((snapshot) => {
+    if (snapshot && session.joinedAt && room) {
+      setPostcard(buildPostcard({
+        roomName: room.name,
+        joinedAt: session.joinedAt,
+        leftAt: Date.now(),
+        seen: snapshot.seen,
+        selfId: user?.id,
+        ephemeral: snapshot.ephemeral
+      }));
+    }
     setRoom(null);
     setLockedRoom(null);
     setInRoom(false);
+    trackEvent('room_left');
     dispatchSession({ type: 'leave' });
-  }, []);
+  }, [room, session.joinedAt, user]);
 
   // Navigate to a view without dropping the call: the room view hides,
   // RoomView stays mounted, and the mini-player appears.
@@ -396,6 +465,13 @@ export default function App() {
     measurePill();
   }, [view, room, inRoom, measurePill]);
 
+  // GA4 SPA page_view on every view/tab change (and room enter/leave,
+  // reported as the 'room' view). No-op until gtag is loaded; the
+  // payload carries only the view name, never the URL.
+  useEffect(() => {
+    trackPageView(inRoom ? 'room' : view);
+  }, [view, inRoom]);
+
   useEffect(() => {
     window.addEventListener('resize', measurePill);
     if (document.fonts?.ready) document.fonts.ready.then(measurePill).catch(() => {});
@@ -409,6 +485,7 @@ export default function App() {
     disconnectSocket();
     setRoom(null);
     setLockedRoom(null);
+    setPostcard(null);
     setInRoom(false);
     dispatchSession({ type: 'leave' });
     setView('rooms');
@@ -435,7 +512,10 @@ export default function App() {
   }
 
   return (
-    <div className={`app${room && !inRoom ? ' app--in-call' : ''}`}>
+    <div className={`app daypart-${daypart}${room && !inRoom ? ' app--in-call' : ''}`}>
+      {showOnboarding && (
+        <Onboarding user={user} onSaved={setUser} onDone={finishOnboarding} />
+      )}
       {/* Desktop 3-zone icon rail (hidden below 900px in CSS, and while
           inside a room — same rule as the tab bar it replaces). It is
           a flex sibling of .app-body, so on desktop it docks to the
@@ -523,6 +603,12 @@ export default function App() {
             <button className="btn btn-text btn-small" onClick={() => setVerifyNotice('')} aria-label="Dismiss">Dismiss</button>
           </div>
         )}
+        {/* Room postcard: the recap of the room just left. In flow above
+            the rooms list (not a modal), so it never blocks re-joining
+            — the list and its Join buttons stay reachable below it. */}
+        {postcard && !room && view === 'rooms' && (
+          <RoomPostcard postcard={postcard} onDismiss={() => setPostcard(null)} />
+        )}
         {room && (
           // The room view stays mounted at this one spot while a call is
           // active — hiding it (display: none) instead of unmounting it
@@ -537,6 +623,7 @@ export default function App() {
               session={session}
               dispatchSession={dispatchSession}
               voiceEngineRef={voiceEngineRef}
+              onUserChange={setUser}
             />
           </div>
         )}
@@ -551,16 +638,22 @@ export default function App() {
             onMessagesRead={() => setRefreshTick((t) => t + 1)}
           />
         ) : view === 'profile' ? (
-          <Profile user={user} onSaved={setUser} onOpenAbout={() => goTo('about')} />
+          <Suspense fallback={<p className="muted" role="status">Loading…</p>}>
+            <Profile user={user} onSaved={setUser} onOpenAbout={() => goTo('about')} />
+          </Suspense>
         ) : view === 'about' ? (
-          <About onBack={() => goTo('rooms')} />
+          <Suspense fallback={<p className="muted" role="status">Loading…</p>}>
+            <About onBack={() => goTo('rooms')} />
+          </Suspense>
         ) : view === 'notifications' ? (
-          <Notifications
-            refreshTick={refreshTick}
-            onNavigate={handleNotifNavigate}
-            onBack={() => goTo('rooms')}
-            onRead={() => setRefreshTick((t) => t + 1)}
-          />
+          <Suspense fallback={<p className="muted" role="status">Loading…</p>}>
+            <Notifications
+              refreshTick={refreshTick}
+              onNavigate={handleNotifNavigate}
+              onBack={() => goTo('rooms')}
+              onRead={() => setRefreshTick((t) => t + 1)}
+            />
+          </Suspense>
         ) : lockedRoom ? (
           <LockedRoom
             room={lockedRoom}

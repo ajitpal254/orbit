@@ -96,6 +96,14 @@ export const declineFriendRequest = (userId) => jsonPost('/api/friends/decline',
 export const removeFriend = (userId) =>
   apiJson(`/api/friends/${userId}`, { method: 'DELETE' });
 
+// --- Joining a room ---
+
+// HTTP pre-flight for joining: answers whether I may join right now
+// (409 + the friendly message when 8 people are already inside).
+// Voice presence itself is socket-only — the socket join-room handler
+// re-checks the same cap, so this is only ever a fast friendly no.
+export const joinRoom = (roomId) => jsonPost(`/api/rooms/${roomId}/join`);
+
 // --- Room invites ---
 
 export const getInvites = () => apiJson('/api/invites');

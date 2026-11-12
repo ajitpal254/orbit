@@ -75,13 +75,15 @@ test('profileJson shapes the public profile', () => {
   assert.deepEqual(profileJson(u), {
     id: 'aaaaaaaaaaaaaaaaaaaaaaaa', name: 'Ajit', email: 'a@b.c',
     bio: 'hi', avatarPreset: 'tide', avatarImage: smallPng,
+    // No mood field: a legacy account reads as the default ('free').
+    mood: 'free',
     // No emailVerified field: a pre-verification account counts as verified.
     emailVerified: true
   });
   // Missing fields degrade to empty defaults, never undefined.
   assert.deepEqual(
     profileJson({ _id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '', email: 'x@y.z' }),
-    { id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '', email: 'x@y.z', bio: '', avatarPreset: null, avatarImage: '', emailVerified: true }
+    { id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '', email: 'x@y.z', bio: '', avatarPreset: null, avatarImage: '', mood: 'free', emailVerified: true }
   );
   // An explicit false stays false — the client shows the verify prompt.
   assert.equal(

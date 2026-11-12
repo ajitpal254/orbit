@@ -1,0 +1,113 @@
+/* Mood glow (v0.7.0) — orb colour + pulse by mood, replacing status
+   text. Three states (playbook p.5); the speaking glow (green,
+   index.css .orb.speaking) still wins while someone is talking —
+   mood is the idle state, so these rules sit BEFORE .speaking in
+   specificity only by load order: .orb.speaking is defined in
+   index.css and these mood classes never set animation on .speaking.
+   Non-colour cue: each mood pulses at a different speed AND has a
+   text label (orb popover, aria-label) — the state is never colour
+   alone. Reduced motion: the pulse stills, the coloured ring stays.
+   (index.css has a global prefers-reduced-motion rule that kills
+   animations; the explicit block below is belt-and-braces for this
+   file's own keyframes.) */
+
+/* The glow is a coloured ring + soft halo on the orb's existing
+   box-shadow. --mood-color / --mood-pulse are set inline from
+   MOOD_META in RoomView. */
+.orb.mood-free {
+  box-shadow:
+    0 0 0 2px rgba(52, 211, 153, 0.55),
+    0 0 26px rgba(52, 211, 153, 0.35),
+    0 0 32px rgba(0, 0, 0, 0.5),
+    inset 0 -8px 20px rgba(0, 0, 0, 0.25),
+    inset 0 6px 14px rgba(255, 255, 255, 0.25);
+  animation: mood-pulse var(--mood-pulse, 2.4s) ease-in-out infinite;
+}
+.orb.mood-busy {
+  box-shadow:
+    0 0 0 2px rgba(251, 191, 36, 0.55),
+    0 0 26px rgba(251, 191, 36, 0.32),
+    0 0 32px rgba(0, 0, 0, 0.5),
+    inset 0 -8px 20px rgba(0, 0, 0, 0.25),
+    inset 0 6px 14px rgba(255, 255, 255, 0.25);
+  animation: mood-pulse var(--mood-pulse, 4.2s) ease-in-out infinite;
+}
+.orb.mood-chilling {
+  box-shadow:
+    0 0 0 2px rgba(167, 139, 250, 0.55),
+    0 0 26px rgba(167, 139, 250, 0.35),
+    0 0 32px rgba(0, 0, 0, 0.5),
+    inset 0 -8px 20px rgba(0, 0, 0, 0.25),
+    inset 0 6px 14px rgba(255, 255, 255, 0.25);
+  animation: mood-pulse var(--mood-pulse, 3.2s) ease-in-out infinite;
+}
+/* Speaking overrides mood: while talking, the green speaking glow
+   + rings are the signal, and the mood pulse stops so the two
+   animations never fight. */
+.orb.speaking.mood-free,
+.orb.speaking.mood-busy,
+.orb.speaking.mood-chilling {
+  animation: speak-pulse 0.9s ease-in-out infinite;
+}
+@keyframes mood-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+
+/* Mood label inside the orb popover (the text half of the
+   non-colour cue). */
+.orb-mood-label {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+/* The picker: three radio buttons with a coloured dot each. */
+.mood-picker {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.mood-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mood-btn.selected {
+  border-color: var(--mood-color);
+  box-shadow: 0 0 0 1px var(--mood-color), 0 0 12px -2px var(--mood-color);
+}
+.mood-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--mood-color);
+  box-shadow: 0 0 6px var(--mood-color);
+  flex: none;
+}
+.mood-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.mood-row .muted {
+  font-size: 0.85rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb.mood-free,
+  .orb.mood-busy,
+  .orb.mood-chilling {
+    animation: none;
+  }
+}

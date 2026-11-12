@@ -17,6 +17,7 @@ const DirectMessage = require('../models/DirectMessage');
 const Notification = require('../models/Notification');
 const PushSubscription = require('../models/PushSubscription');
 const { validateProfileUpdate, profileJson } = require('../lib/profile');
+const { normalizeMood } = require('../lib/mood');
 const { notificationJson, recordNotification } = require('../lib/notifications');
 const { getVapidPublicKey, isPushConfigured, sendPushToUser, pushPayloadFor } = require('../lib/push');
 const { turnUrls } = require('../lib/turnCredentials');
@@ -42,6 +43,7 @@ const { emitToUser, emitToRoom, emitRoomsChanged, onlineUserIds, isMutedInRoom, 
 const { focusSessions, stopSession, clearSession, canControlFocus } = require('../lib/focusSessions');
 const { buildFriendPresence } = require('../lib/friendPresence');
 const presence = require('../lib/presence');
+const { ROOM_FULL_MESSAGE, isRoomFull } = require('../lib/roomCap');
 
 const router = express.Router();
 
@@ -56,7 +58,8 @@ const isObjectId = (v) => mongoose.Types.ObjectId.isValid(v);
 // (≤200KB, usually ~10–30KB), so carrying it in list rows is fine.
 const userJson = (u) => ({
   id: String(u._id), name: u.name, email: u.email,
-  avatarPreset: u.avatarPreset || null, avatarImage: u.avatarImage || ''
+  avatarPreset: u.avatarPreset || null, avatarImage: u.avatarImage || '',
+  mood: normalizeMood(u.mood)
 });
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -90,8 +93,22 @@ const requireVerifiedEmail = (req, res) => {
 // session auth at GET /api/turn (see lib/meteredTurn.js); the static
 // credential is never sent to a client. Rotate it on the provider side
 // — assume the old one is public.
+// Google Analytics 4 Measurement ID (runtime config only — never a
+// build-time define). GA_MEASUREMENT_ID comes from the GA4 property
+// (Admin → Data Streams → Measurement ID, G-XXXXXXXXXX). When unset or
+// malformed the field is omitted from /api/config entirely and the
+// client stays a complete no-op: no gtag.js, no network calls.
+const GA_MEASUREMENT_ID_PATTERN = /^G-[A-Z0-9]{4,}$/i;
+const getGaMeasurementId = () => {
+  const id = (process.env.GA_MEASUREMENT_ID || '').trim().toUpperCase();
+  return GA_MEASUREMENT_ID_PATTERN.test(id) ? id : null;
+};
+
 router.get('/config', (req, res) => {
-  res.json({ googleClientId: getGoogleClientId(), turn: { urls: turnUrls() }, vapidPublicKey: getVapidPublicKey() });
+  const config = { googleClientId: getGoogleClientId(), turn: { urls: turnUrls() }, vapidPublicKey: getVapidPublicKey() };
+  const gaMeasurementId = getGaMeasurementId();
+  if (gaMeasurementId) config.gaMeasurementId = gaMeasurementId;
+  res.json(config);
 });
 
 // GET /api/turn — session-authenticated: serve the cached Metered
@@ -651,6 +668,30 @@ router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
     // stumbles on its id. The frontend reads it off the thrown error
     // (see apiJson: err.room).
     return res.status(403).json({ error: 'This room is private', room: { id: String(room._id), name: room.name, isPrivate: true } });
+  }
+  const profiles = await memberProfilesFor([room]);
+  res.json(roomJson(room, req.user._id, profiles));
+}));
+
+// POST /api/rooms/:id/join — the HTTP pre-flight for joining a room.
+// It does NOT put anyone in the room (voice presence is socket-only);
+// it answers whether this user may join right now, so the client can
+// show a friendly "room is full" instead of mounting the room view
+// and being refused on the socket. The socket join-room handler is
+// still the authoritative gate — occupancy can change between this
+// check and the join, and it re-checks the same cap (lib/roomCap.js).
+// Same gates, same order as GET above, plus the cap: 404 for a missing
+// or faded campfire, 403 (with the locked stub) for a private room the
+// caller cannot see, 409 with the friendly message when 8 people are
+// already inside. No exemption for the owner or moderators.
+router.post('/rooms/:id/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const room = await Room.findById(req.params.id).lean();
+  if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
+  if (!canSeeRoom(room, req.user._id)) {
+    return res.status(403).json({ error: 'This room is private', room: { id: String(room._id), name: room.name, isPrivate: true } });
+  }
+  if (isRoomFull(room._id)) {
+    return res.status(409).json({ error: ROOM_FULL_MESSAGE, code: 'room-full' });
   }
   const profiles = await memberProfilesFor([room]);
   res.json(roomJson(room, req.user._id, profiles));
