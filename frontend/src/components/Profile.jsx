@@ -7,7 +7,7 @@
 // uploading a photo clears the preset — one avatar source at a time.
 import React, { useEffect, useRef, useState } from 'react';
 import { updateProfile, apiJson, resendVerificationEmail } from '../api';
-import { AVATAR_PRESETS } from '../avatars';
+import { AVATAR_PRESETS, AVATAR_CHARACTERS } from '../avatars';
 import Avatar from './Avatar';
 import { Icon } from './icons';
 import { isPushSupported, getPushState, subscribeToPush, unsubscribeFromPush } from '../push';
@@ -249,6 +249,24 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
             >
               <Avatar user={{ name: name || user.name, avatarPreset: p.id }} size="md" />
               <span>{p.name}</span>
+            </button>
+          ))}
+        </div>
+
+        <p className="section-title">Or pick a character</p>
+        <div className="preset-grid" role="radiogroup" aria-label="Avatar characters">
+          {AVATAR_CHARACTERS.map((c) => (
+            <button
+              type="button"
+              key={c.id}
+              role="radio"
+              aria-checked={avatarPreset === c.id && !avatarImage}
+              className={`preset-btn ${avatarPreset === c.id && !avatarImage ? 'selected' : ''}`}
+              onClick={() => { setAvatarPreset(c.id); setAvatarImage(''); }}
+              title={c.name}
+            >
+              <Avatar user={{ name: name || user.name, avatarPreset: c.id }} size="md" />
+              <span>{c.name}</span>
             </button>
           ))}
         </div>
