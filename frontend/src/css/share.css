@@ -1,0 +1,119 @@
+/* Screen sharing (v0.8.0).
+   The share layer is a fixed element behind the orbs: it fills the
+   viewport with the shared screen while the orbs (z-index:2, room.css)
+   keep floating in front of it. The voice bar (z-index:30) and the
+   chat sheet (z-index:25) stay above it too. While a share is live
+   the room header / panels are raised above the layer (z-index:3) so
+   the room chrome is never hidden behind the video.
+   No animation or transition lives on any of these rules — the layer
+   appears and disappears with the share, it never fades or slides —
+   and the reduced-motion block below makes that explicit.
+   The Share button is hidden on phones by JS (RoomView renders it
+   only off-phone), not by CSS, so the single `@media (max-width:
+   520px)` block in the bundle stays untouched. */
+.share-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.share-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.share-layer-label {
+  position: absolute;
+  top: calc(0.75rem + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  max-width: calc(100vw - 2rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.share-fullscreen-btn {
+  position: absolute;
+  bottom: calc(6.5rem + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* "You are sharing" banner: floating, above the voice bar's row, so
+   it is visible without covering the room or the dock. */
+.sharing-banner {
+  position: fixed;
+  top: calc(0.75rem + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 31;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(18, 13, 36, 0.92);
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  border-radius: 999px;
+  padding: 0.45rem 0.6rem 0.45rem 0.9rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+  max-width: calc(100vw - 2rem);
+}
+/* The dock's Share button, lit while sharing. */
+.voice-btn.sharing {
+  background: rgba(52, 211, 153, 0.25);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.5), 0 0 18px rgba(52, 211, 153, 0.35);
+}
+/* While a share is live, the room chrome stays above the fixed
+   layer (z-index:0) instead of being painted under it. */
+.room-view--sharing .room-header,
+.room-view--sharing .mode-toggle,
+.room-view--sharing .focus-panel,
+.room-view--sharing .campfire-line,
+.room-view--sharing .members-panel {
+  position: relative;
+  z-index: 3;
+}
+/* Desktop: the layer's fullscreen button sits clear of the voice bar
+   at the bottom and the banner at the top — the room is wider than it
+   is tall, so the video letterboxes instead of covering the dock. */
+@media (min-width: 900px) {
+  .share-fullscreen-btn {
+    bottom: calc(7rem + env(safe-area-inset-bottom));
+  }
+}
+/* Reduced motion: no animated transitions on the share layer, the
+   video, or the banner — they appear and disappear instantly. (The
+   global reduced-motion rule in splash.css stills everything else
+   too; this names the share pieces explicitly.) */
+@media (prefers-reduced-motion: reduce) {
+  .share-layer,
+  .share-video,
+  .share-layer-label,
+  .share-fullscreen-btn,
+  .sharing-banner,
+  .voice-btn.sharing {
+    animation: none;
+    transition: none;
+  }
+}

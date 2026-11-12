@@ -118,6 +118,13 @@ export const ICON_PATHS = {
     { el: 'line', x1: 2, y1: 8, x2: 4.5, y2: 8 },
     { el: 'line', x1: 2, y1: 12, x2: 4.5, y2: 12 }
   ],
+  // Screen sharing (v0.8.0): a monitor outline — the Share button in
+  // the voice dock. Feather 'monitor': screen rect + stand.
+  screen: [
+    { el: 'rect', x: 2, y: 3, width: 20, height: 14, rx: 2 },
+    { el: 'line', x1: 8, y1: 21, x2: 16, y2: 21 },
+    { el: 'line', x1: 12, y1: 17, x2: 12, y2: 21 }
+  ],
   globe: [
     { el: 'circle', cx: 12, cy: 12, r: 10 },
     { el: 'line', x1: 2, y1: 12, x2: 22, y2: 12 },
