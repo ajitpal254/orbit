@@ -72,3 +72,180 @@
 .chat-input input { margin: 0; flex: 1; }
 .chat-input .btn { padding: 0.7rem 1rem; }
 
+
+/* --- Media sharing (v0.8.0) --- */
+
+/* Attach (paperclip/image) button in the chat + DM composers. */
+.chat-attach {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 0.5rem;
+  color: var(--muted);
+  border-radius: 10px;
+}
+.chat-attach:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
+.chat-attach:disabled { opacity: 0.45; }
+
+/* Drag-over highlight on the chat sheet / DM thread. */
+.chat-drag-over {
+  outline: 2px dashed var(--accent, #8b5cf6);
+  outline-offset: -2px;
+}
+
+/* Upload-in-progress row under the composer: thumbnail + name +
+   progress bar. */
+.chat-upload {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.8rem 0.7rem;
+  border-top: 1px solid var(--border);
+}
+.chat-upload img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex: 0 0 auto;
+}
+.chat-upload-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.chat-upload-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-upload-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.chat-upload-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent-grad);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+.chat-upload-error { padding: 0 0.8rem 0.4rem; }
+
+/* Inline image in a message: max 320px wide, tap to open the lightbox. */
+.chat-media-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  align-self: flex-start;
+  max-width: 100%;
+  border-radius: 12px;
+}
+.chat-msg.mine .chat-media-btn { align-self: flex-end; }
+.chat-media-img {
+  display: block;
+  max-width: 320px;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Link preview card below a message's text. */
+.link-preview {
+  display: flex;
+  gap: 0.6rem;
+  align-items: stretch;
+  max-width: 320px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  text-decoration: none;
+}
+.chat-msg.mine .link-preview { align-self: flex-end; }
+.link-preview-img {
+  width: 84px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.05);
+}
+.link-preview-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.55rem 0.65rem 0.55rem 0;
+}
+.link-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.link-preview-favicon { width: 14px; height: 14px; flex: 0 0 auto; border-radius: 3px; }
+.link-preview-desc {
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.link-preview-host { font-size: 0.7rem; color: var(--muted); }
+
+/* Full-screen image lightbox. No entrance animation, so
+   prefers-reduced-motion needs nothing special here. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.9);
+  padding: 1rem;
+  cursor: zoom-out;
+}
+.lightbox img {
+  max-width: min(92vw, 1100px);
+  max-height: 88vh;
+  width: auto;
+  height: auto;
+  border-radius: 12px;
+  cursor: default;
+  object-fit: contain;
+}
+.lightbox-close {
+  position: fixed;
+  top: calc(0.9rem + env(safe-area-inset-top));
+  right: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  z-index: 101;
+}
+
+/* Phones: the base rules above are already phone-safe — images and
+   link cards cap at 320px but stretch to width:100%, so they fill
+   the bubble on a narrow sheet without ever overflowing it. No extra
+   phone-only block here: the one 520px media query lives in
+   members.css by convention (mobile.test.mjs enforces exactly one). */

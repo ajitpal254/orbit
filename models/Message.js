@@ -10,7 +10,21 @@ const messageSchema = new mongoose.Schema({
   // Fading chat: plain (unencrypted) expiry timestamp, set server-side
   // on write to createdAt + 24h. Legacy messages have no expireAt and
   // stay visible (grandfathered, not backfilled).
-  expireAt: { type: Date }
+  expireAt: { type: Date },
+  // Optional image attachment (media sharing, v0.8.0). The URL is
+  // always our own /api/media/<fileId> GridFS endpoint — never a
+  // remote URL (see lib/media.validateMediaField). The file's own
+  // expiry is re-stamped to this message's expireAt when the message
+  // is created, so the image fades exactly when the message does.
+  // Plain metadata only (URL, size, filename for alt text): no
+  // content is encrypted here, and nothing sensitive is stored.
+  media: {
+    url: { type: String, maxlength: [500, 'Media URL too long'] },
+    type: { type: String, enum: ['image'] },
+    width: { type: Number, min: 1, max: 20000 },
+    height: { type: Number, min: 1, max: 20000 },
+    name: { type: String, maxlength: [200, 'Filename too long'] }
+  }
 }, { timestamps: true });
 
 // Fast history fetch: latest messages per room, newest first.

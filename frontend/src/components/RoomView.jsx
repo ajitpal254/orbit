@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock, setRoomMode, updateProfile } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock, setRoomMode, updateProfile, uploadImage } from '../api';
 import { buildInviteLinkUrl } from '../deepLink';
+import { validateImageFile, readImageDimensions } from '../media';
+import ChatMessage from './ChatMessage';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { normalizeMood, moodLabel, MOOD_META } from '../mood';
@@ -52,6 +54,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [unread, setUnread] = useState(0);
+  // Media sharing (v0.8.0): a picked image waits in the composer as a
+  // thumbnail + progress bar; the message is sent only after the
+  // upload completes, with the returned URL in the payload. Dragging a
+  // file onto the chat sheet or pasting one into the input picks it
+  // the same way as the paperclip button.
+  const [pendingImage, setPendingImage] = useState(null); // { file, previewUrl, width, height, progress, uploading }
+  const [uploadError, setUploadError] = useState('');
+  const [sending, setSending] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
   // Private rooms: members + inviting friends in.
   const [showInvite, setShowInvite] = useState(false);
   // M1: on phones the members panel is collapsed by default (see the
@@ -839,12 +851,64 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     }
   };
 
-  const sendMessage = (e) => {
+  const pickImage = async (file) => {
+    const check = validateImageFile(file);
+    if (!check.ok) { setUploadError(check.error); return; }
+    setUploadError('');
+    let dims = {};
+    try {
+      dims = await readImageDimensions(file);
+    } catch {
+      setUploadError('That file is not a valid image');
+      return;
+    }
+    setPendingImage((prev) => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return {
+        file, previewUrl: URL.createObjectURL(file),
+        width: dims.width, height: dims.height, progress: 0, uploading: false
+      };
+    });
+  };
+
+  const cancelPendingImage = () => {
+    setPendingImage((prev) => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    setUploadError('');
+  };
+
+  const sendMessage = async (e) => {
     e.preventDefault();
     const text = draft.trim();
-    if (!text) return;
+    if ((!text && !pendingImage) || sending) return;
+    setSending(true);
+    let media;
+    if (pendingImage) {
+      // Upload first — the message carries the returned URL, so a
+      // failed upload never sends a broken image.
+      setPendingImage((p) => p && { ...p, uploading: true });
+      try {
+        media = await uploadImage(pendingImage.file, {
+          width: pendingImage.width,
+          height: pendingImage.height,
+          onProgress: (pct) => setPendingImage((p) => p && { ...p, progress: pct })
+        });
+      } catch (err) {
+        setUploadError(err.message);
+        setPendingImage((p) => p && { ...p, uploading: false });
+        setSending(false);
+        return;
+      }
+      setPendingImage((prev) => {
+        if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+        return null;
+      });
+    }
     setDraft('');
-    getSocket().emit('chat-message', { roomId: room.id, text });
+    setSending(false);
+    getSocket().emit('chat-message', { roomId: room.id, text, media });
   };
 
   // Together mode: start/stop the shared focus timer, and switch the
@@ -1608,7 +1672,17 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       )}
 
       {chatOpen && (
-        <div className="chat-sheet">
+        <div
+          className={`chat-sheet ${dragOver ? 'chat-drag-over' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            const f = e.dataTransfer?.files?.[0];
+            if (f) pickImage(f);
+          }}
+        >
           <div className="chat-head">
             <strong>Chat — {room.name}</strong>
             <button className="btn btn-text" onClick={() => setChatOpen(false)} aria-label="Close chat"><Icon name="x" size={16} /></button>
@@ -1618,25 +1692,60 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               <p className="muted chat-empty">No messages yet. Say hi</p>
             )}
             {messages.map((m) => (
-              <div key={m.id} className={`chat-msg ${m.userId === user.id ? 'mine' : ''}`}>
-                <span className="chat-name">{m.userId === user.id ? 'You' : m.name}</span>
-                <span className="chat-text">{m.text}</span>
-                <span className="chat-time">
-                  {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
+              <ChatMessage
+                key={m.id}
+                name={m.userId === user.id ? 'You' : m.name}
+                mine={m.userId === user.id}
+                text={m.text}
+                media={m.media}
+                createdAt={m.createdAt}
+              />
             ))}
             <div ref={chatEndRef} />
           </div>
           <form className="chat-input" onSubmit={sendMessage}>
             <input
+              type="file"
+              ref={fileInputRef}
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) pickImage(f);
+                e.target.value = '';
+              }}
+            />
+            <button type="button" className="btn btn-text chat-attach" onClick={() => fileInputRef.current?.click()} aria-label="Attach an image" title="Attach an image" disabled={sending}>
+              <Icon name="image" size={18} />
+            </button>
+            <input
               placeholder={`Message ${room.name}…`}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               maxLength={1000}
+              onPaste={(e) => {
+                const f = e.clipboardData?.files?.[0];
+                if (f) pickImage(f);
+              }}
             />
-            <button className="btn btn-primary" type="submit"><Icon name="send" size={15} /> Send</button>
+            <button className="btn btn-primary" type="submit" disabled={sending}><Icon name="send" size={15} /> Send</button>
           </form>
+          {pendingImage && (
+            <div className="chat-upload">
+              <img src={pendingImage.previewUrl} alt={pendingImage.file.name} />
+              <div className="chat-upload-meta">
+                <span className="chat-upload-name">{pendingImage.file.name}</span>
+                <div className="chat-upload-bar" role="progressbar" aria-valuenow={pendingImage.progress} aria-valuemin={0} aria-valuemax={100}>
+                  <span style={{ width: `${pendingImage.progress}%` }} />
+                </div>
+                <span className="muted">{pendingImage.uploading ? `Uploading… ${pendingImage.progress}%` : 'Ready to send'}</span>
+              </div>
+              <button type="button" className="btn btn-text" onClick={cancelPendingImage} aria-label="Remove image" disabled={pendingImage.uploading}>
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          )}
+          {uploadError && <p className="error chat-upload-error">{uploadError}</p>}
           <p className="muted chat-fade-note">Messages disappear after 24 hours.</p>
         </div>
       )}
