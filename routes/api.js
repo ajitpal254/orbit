@@ -49,6 +49,7 @@ const {
 const { emitToUser, emitToRoom, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, clearFocusTimer, kickSocketsFromRoom } = require('../lib/socket');
 const { focusSessions, stopSession, clearSession, canControlFocus } = require('../lib/focusSessions');
 const { buildFriendPresence } = require('../lib/friendPresence');
+const { touchRoomActivity, activeDaysFromTimestamps } = require('../lib/roomActivity');
 const presence = require('../lib/presence');
 const { ROOM_FULL_MESSAGE, isRoomFull } = require('../lib/roomCap');
 
@@ -554,6 +555,10 @@ const roomJson = (room, meId, profiles = new Map()) => {
     mode: room.mode === 'focus' ? 'focus' : 'talk',
     createdBy: String(room.createdBy),
     createdAt: room.createdAt,
+    // Recency for the "Recently quiet" row (v0.9.0): legacy rooms
+    // have no lastActiveAt and fall back to createdAt, so a room
+    // created within the quiet window never reads as quiet.
+    lastActiveAt: room.lastActiveAt || room.createdAt || null,
     // Campfire state (fading rooms): ephemeral rooms carry their
     // server-set deadline; legacy/permanent rooms send null.
     ephemeral: !!room.ephemeral,
@@ -654,6 +659,8 @@ router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
     ...room,
     topic: encrypt(room.topic || ''),
     createdBy: req.user._id,
+    // A room is active the moment it is created.
+    lastActiveAt: new Date(),
     // A private room starts with its creator as the only member, as owner.
     members: room.isPrivate ? [{ user: req.user._id, role: 'owner' }] : []
   });
@@ -1084,6 +1091,9 @@ router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res)
     text: encrypt(text),
     ...(claim.media ? { media: claim.media } : {})
   }));
+  // A message is room activity — stamp lastActiveAt (fire-and-forget;
+  // a failed touch never fails the send). See lib/roomActivity.js.
+  touchRoomActivity(room._id);
   if (claim.fileId) {
     // The file fades with this message from here on. A link failure
     // (lost race) only leaves the provisional upload expiry in place
@@ -1096,6 +1106,28 @@ router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res)
   const io = req.app.get('io');
   if (io) io.to(String(room._id)).emit('chat-message', messageJson(msg));
   res.status(201).json(messageJson(msg));
+}));
+
+// GET /api/me/activity — my own activity this week, for the streak
+// strip (v0.9.0). ONE minimal read-only endpoint: the only persisted
+// per-user timestamps are the chat messages I sent, so the streak is
+// derived from them — distinct UTC days in the last 7 days on which
+// I sent a room message, plus the message count. Voice-only time
+// leaves no persisted record, so a voice-only week reads as quiet
+// here; the strip says "active" rather than "in voice" and the PR
+// notes the gap honestly. Only my own messages are ever read (the
+// userId filter is the caller), and only createdAt leaves the DB —
+// no message text. Capped at 1000 rows: a week of one user's chat
+// is far below that, and the cap keeps a pathological account from
+// loading the whole collection.
+router.get('/me/activity', authMiddleware, asyncHandler(async (req, res) => {
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const messages = await Message.find({ userId: req.user._id, createdAt: { $gte: since } })
+    .select('createdAt').sort({ createdAt: 1 }).limit(1000).lean();
+  res.json({
+    days: activeDaysFromTimestamps(messages.map((m) => m.createdAt), new Date()),
+    messageCount: messages.length
+  });
 }));
 
 // --- ROOM INVITES (INBOX) ---

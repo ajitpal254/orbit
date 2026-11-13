@@ -294,6 +294,37 @@ test('smoke: two users join a room and voice starts', { timeout: 180000 }, async
     }
   });
 
+  await t.test('chat message stamps activity + room recency (v0.9.0 density)', async () => {
+    // Alice sends one chat message through the real UI (REST path —
+    // RoomView posts to /api/rooms/:id/messages); the socket path
+    // stamps the same field, see lib/socket.js chat-message.
+    const today = new Date().toISOString().slice(0, 10);
+    await pageA.getByRole('button', { name: 'Chat', exact: true }).click();
+    await pageA.getByPlaceholder(`Message ${ROOM_NAME}…`).fill('smoke hello');
+    await pageA.getByRole('button', { name: 'Send', exact: true }).click();
+    await pageA.getByText('smoke hello').waitFor({ timeout: 10000 });
+
+    // GET /api/me/activity: today is active, at least one message.
+    const activity = await pageA.evaluate(async () => {
+      const res = await fetch('/api/me/activity');
+      if (!res.ok) throw new Error(`activity ${res.status}`);
+      return res.json();
+    });
+    assert.ok(activity.days.includes(today), `today (${today}) must be in the active days: ${JSON.stringify(activity.days)}`);
+    assert.ok(activity.messageCount >= 1, `expected at least 1 message, got ${activity.messageCount}`);
+
+    // GET /api/rooms: the room carries a fresh lastActiveAt.
+    const rooms = await pageA.evaluate(async () => {
+      const res = await fetch('/api/rooms');
+      if (!res.ok) throw new Error(`rooms ${res.status}`);
+      return res.json();
+    });
+    const room = rooms.find((r) => r.name === ROOM_NAME);
+    assert.ok(room, 'the smoke room must be listed');
+    assert.ok(room.lastActiveAt, 'the room must carry lastActiveAt');
+    assert.ok(Date.now() - new Date(room.lastActiveAt).getTime() < 5 * 60 * 1000, `lastActiveAt must be fresh, got ${room.lastActiveAt}`);
+  });
+
   await t.test('peer connections leave new (voice path starts)', async () => {
     // Each side shows the other in the Connection details popover as
     // "<connectionState> / <iceConnectionState> (<candidate types>)".
