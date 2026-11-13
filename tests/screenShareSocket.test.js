@@ -18,7 +18,7 @@ const { test, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const presence = require('../lib/presence');
 const Room = require('../models/Room');
-const { attachSocket, clearScreenShares } = require('../lib/socket');
+const { attachSocket, clearScreenShares, _setDisconnectGraceMsForTests } = require('../lib/socket');
 
 const VICTIM_ID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
 const ATTACKER_ID = 'bbbbbbbbbbbbbbbbbbbbbbbb';
@@ -47,6 +47,7 @@ afterEach(() => {
   Room.findById = originalFindById;
   presence.clearAll();
   clearScreenShares();
+  _setDisconnectGraceMsForTests(15000);
 });
 
 // Fake socket.io server: captures the connection handler and every
@@ -191,12 +192,19 @@ test('leave-room releases the slot and broadcasts the stop', async () => {
   assert.equal(attacker.emitted.length, 0);
 });
 
-test('disconnect releases the slot and broadcasts the stop', async () => {
+test('disconnect releases the slot and broadcasts the stop — after the grace', async () => {
+  // Disconnect grace (v0.9.0): a dropped socket is not a departure
+  // until the grace elapses, so the share slot stays held inside the
+  // window (a reconnecting sharer keeps it) and releases when the
+  // grace fires. The 15s grace is shortened here via the test seam.
+  _setDisconnectGraceMsForTests(50);
   stubRooms({ room1: publicRoom });
   const { io, victim, attacker } = connectPair();
   seedRoom();
   await start(victim, { roomId: 'room1' });
   victim.handlers.disconnect();
+  assert.equal(roomBroadcasts(io, 'screen-share-stopped').length, 0, 'no release inside the grace');
+  await new Promise((r) => setTimeout(r, 100));
   const stops = roomBroadcasts(io, 'screen-share-stopped');
   assert.equal(stops.length, 1);
   assert.deepEqual(stops[0].payload, { userId: VICTIM_ID, roomId: 'room1' });

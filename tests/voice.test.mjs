@@ -19,7 +19,12 @@ class FakePC {
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
+    this.oniceconnectionstatechange = null;
+    this.restartIceCalls = 0;
+    this.closed = false;
   }
+  restartIce() { this.restartIceCalls += 1; }
+  close() { this.closed = true; }
   addTrack() {}
   async createOffer() { return { type: 'offer', sdp: 'fake-offer' }; }
   async createAnswer() { return { type: 'answer', sdp: 'fake-answer' }; }
@@ -37,7 +42,6 @@ class FakePC {
     this.signalingState = d.type === 'offer' ? 'have-remote-offer' : 'stable';
   }
   async addIceCandidate(c) { this.addedCandidates.push(c); }
-  close() {}
 }
 globalThis.RTCPeerConnection = FakePC;
 globalThis.RTCSessionDescription = class {
@@ -307,4 +311,114 @@ test('join loads account TURN from /api/config into iceServers', async () => {
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+// --- ICE recovery (v0.9.0) ---
+//
+// The engine drives the iceRecovery machine (frontend/src/
+// iceRecovery.js) from pc.oniceconnectionstatechange. Short grace /
+// restart timeouts here (constructor options, same pattern as
+// offerRetryMs) so the tests run in milliseconds, not seconds.
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function makeRecoveryEngine(phases, opts = {}) {
+  return makeEngine('me', {
+    iceGraceMs: 20,
+    iceRestartTimeoutMs: 50,
+    onIceRecovery: (socketId, phase) => phases.push([socketId, phase]),
+    ...opts
+  });
+}
+
+async function peerWithOffer(engine, socketId) {
+  await engine._onRoomState({ occupants: [{ socketId }] });
+  const peer = engine.peers.get(socketId);
+  assert.ok(peer, 'peer must exist after room-state offer');
+  return peer;
+}
+
+function setIce(peer, state) {
+  peer.pc.iceConnectionState = state;
+  peer.pc.oniceconnectionstatechange();
+}
+
+test('ICE disconnected: grace, then restartIce; recovery clears on connected', async () => {
+  const phases = [];
+  const engine = makeRecoveryEngine(phases);
+  const peer = await peerWithOffer(engine, 'peer1');
+  setIce(peer, 'connected');
+  setIce(peer, 'disconnected');
+  assert.equal(peer.pc.restartIceCalls, 0, 'no restart inside the grace');
+  assert.deepEqual(phases, [['peer1', 'recovering']]);
+  await sleep(40);
+  assert.equal(peer.pc.restartIceCalls, 1, 'restartIce fires once the grace elapses');
+  // Still disconnected after the restart: the restart timeout is
+  // armed, but recovery must clear as soon as ICE comes back.
+  setIce(peer, 'connected');
+  assert.deepEqual(phases, [['peer1', 'recovering'], ['peer1', 'recovered']]);
+  assert.equal(peer.pc.restartIceCalls, 1, 'no second restart after recovery');
+  engine.leave();
+});
+
+test('ICE failed: peer recreated once, then dropped on the second failure', async () => {
+  const phases = [];
+  const engine = makeRecoveryEngine(phases);
+  const peer = await peerWithOffer(engine, 'peer1');
+  const offersBefore = engine.socket.emitted.filter(([, p]) => p.type === 'offer').length;
+  setIce(peer, 'failed');
+  await sleep(10);
+  // Old pc closed, fresh pc in its place, fresh offer sent.
+  assert.equal(peer.pc.closed, true, 'the dead pc is closed');
+  const recreated = engine.peers.get('peer1');
+  assert.ok(recreated, 'the peer record survives the recreate');
+  assert.notEqual(recreated.pc, peer.pc, 'a new pc is negotiated');
+  assert.equal(
+    engine.socket.emitted.filter(([, p]) => p.type === 'offer').length,
+    offersBefore + 1,
+    'the recreate re-offers on the same socket id'
+  );
+  assert.deepEqual(phases, [['peer1', 'recovering']], 'the recreate is reported as recovering — the fresh pc has not connected yet');
+  // The fresh pc fails too: now the peer is given up on.
+  setIce(recreated, 'failed');
+  assert.equal(engine.peers.get('peer1'), undefined, 'peer dropped after the second failure');
+  assert.equal(recreated.pc.closed, true);
+  assert.deepEqual(phases, [['peer1', 'recovering'], ['peer1', 'failed']]);
+  engine.leave();
+});
+
+test('ICE restart that never recovers recreates the peer', async () => {
+  const phases = [];
+  const engine = makeRecoveryEngine(phases);
+  const peer = await peerWithOffer(engine, 'peer1');
+  setIce(peer, 'disconnected');
+  await sleep(40);
+  assert.equal(peer.pc.restartIceCalls, 1);
+  assert.deepEqual(phases, [['peer1', 'recovering']]);
+  // Still disconnected past the restart timeout: full reconnect.
+  await sleep(80);
+  assert.equal(peer.pc.closed, true, 'the unrecovered pc is closed');
+  const recreated = engine.peers.get('peer1');
+  assert.ok(recreated);
+  assert.notEqual(recreated.pc, peer.pc);
+  assert.deepEqual(phases, [['peer1', 'recovering']], 'still recovering — the new pc has not connected yet');
+  // The fresh pc connects: recovery clears.
+  setIce(recreated, 'connected');
+  assert.deepEqual(phases, [['peer1', 'recovering'], ['peer1', 'recovered']]);
+  engine.leave();
+});
+
+test('ICE recovery timers die with the peer and on leave', async () => {
+  const phases = [];
+  const engine = makeRecoveryEngine(phases);
+  const peer = await peerWithOffer(engine, 'peer1');
+  setIce(peer, 'disconnected');
+  assert.ok(peer.iceTimer, 'grace timer armed');
+  engine._removePeer('peer1');
+  assert.equal(peer.iceTimer, null, 'removing the peer clears its timer');
+  const peer2 = await peerWithOffer(engine, 'peer2');
+  setIce(peer2, 'disconnected');
+  engine.leave();
+  assert.equal(peer2.iceTimer, null, 'leave clears every peer timer');
+  assert.deepEqual(phases, [['peer1', 'recovering'], ['peer2', 'recovering']]);
 });

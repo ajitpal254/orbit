@@ -75,3 +75,34 @@ test('GET requests skip the check entirely', () => {
   assert.equal(nextCalled, true);
   assert.equal(res.statusCode, null);
 });
+
+test('leave-beacon POST skips the check (sendBeacon sends no custom headers)', () => {
+  // v0.9.0: the pagehide beacon cannot carry x-csrf-token. Its only
+  // effect is self-departure and authMiddleware still runs after it,
+  // so the exemption is narrow. Without the session cookie there is
+  // still no token to check — the exemption is about the header, not
+  // the auth — so both cases pass the middleware.
+  for (const path of ['/rooms/aaaaaaaaaaaaaaaaaaaaaaaa/leave-beacon']) {
+    const req = { method: 'POST', path, headers: {} };
+    const res = fakeRes();
+    let nextCalled = false;
+    csrfMiddleware(req, res, () => { nextCalled = true; });
+    assert.equal(nextCalled, true, path + ' should pass the middleware');
+    assert.equal(res.statusCode, null);
+  }
+});
+
+test('leave-beacon exemption is exact: other room POSTs still need the token', () => {
+  for (const path of [
+    '/rooms/aaaaaaaaaaaaaaaaaaaaaaaa/leave-beacon/extra',
+    '/rooms/aaaaaaaaaaaaaaaaaaaaaaaa/messages',
+    '/rooms/leave-beacon'
+  ]) {
+    const req = { method: 'POST', path, headers: {} };
+    const res = fakeRes();
+    let nextCalled = false;
+    csrfMiddleware(req, res, () => { nextCalled = true; });
+    assert.equal(nextCalled, false, path + ' must NOT be exempt');
+    assert.equal(res.statusCode, 403);
+  }
+});

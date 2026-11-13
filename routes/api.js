@@ -46,7 +46,7 @@ const {
   expiryForKnock, isKnockPending, isKnockRateLimited,
   canKnock, knockBlockReason, canAnswerKnock, knockJson, notExpiredKnockFilter
 } = require('../lib/knock');
-const { emitToUser, emitToRoom, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, clearFocusTimer, kickSocketsFromRoom } = require('../lib/socket');
+const { emitToUser, emitToRoom, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, clearFocusTimer, kickSocketsFromRoom, confirmTabClose } = require('../lib/socket');
 const { focusSessions, stopSession, clearSession, canControlFocus } = require('../lib/focusSessions');
 const { buildFriendPresence } = require('../lib/friendPresence');
 const { touchRoomActivity, activeDaysFromTimestamps } = require('../lib/roomActivity');
@@ -904,6 +904,20 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
     return res.json({ message: 'Left the room — it was deleted as the last member left' });
   }
   res.json({ message: 'Left the room' });
+}));
+
+// POST /api/rooms/:id/leave-beacon — the pagehide beacon (v0.9.0):
+// the tab really closed, so skip the 15s disconnect grace and depart
+// at once. Best-effort and idempotent: sendBeacon gets no reply
+// handling, and a beacon racing the socket's own disconnect (or a
+// duplicate) is a no-op — confirmTabClose returns false when there is
+// nothing to depart. Authenticated via the session cookie (a
+// same-origin sendBeacon carries cookies); the room id comes from the
+// URL. No DB read: a beacon for a deleted room is a no-op either way,
+// and the route must never 500 on a dying tab's best-effort send.
+router.post('/rooms/:id/leave-beacon', authMiddleware, asyncHandler(async (req, res) => {
+  const departed = confirmTabClose(req.user._id, req.params.id);
+  res.json({ ok: true, departed });
 }));
 
 // --- ROLES & MODERATION (private rooms only) ---

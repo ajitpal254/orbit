@@ -17,6 +17,16 @@
   z-index: 30;
   animation: bar-up var(--dur-med) var(--ease-spring) backwards;
 }
+/* Reconnecting (v0.9.0): the transport dropped mid-call and recovery
+   is running. Plain amber text under the voice bar — no animation, so
+   prefers-reduced-motion needs nothing special here. */
+.reconnecting-note {
+  text-align: center;
+  color: var(--amber, #f59e0b);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0.4rem 0 0;
+}
 @keyframes bar-up {
   from { opacity: 0; transform: translateX(-50%) translateY(16px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }

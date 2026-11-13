@@ -81,6 +81,44 @@ test('unknown actions leave the state untouched', () => {
   assert.equal(voiceSessionReducer(active, { type: 'nope' }), active);
 });
 
+test('reconnecting only fires from an active call, and keeps the call state', () => {
+  const active = voiceSessionReducer(initialVoiceSessionState, { type: 'join', joinedAt: 1000 });
+  const muted = voiceSessionReducer(active, { type: 'set-muted', muted: true });
+  const reconnecting = voiceSessionReducer(muted, { type: 'reconnecting' });
+  assert.equal(reconnecting.status, 'reconnecting');
+  assert.equal(reconnecting.joinedAt, 1000, 'the call timer survives — same call, not a new one');
+  assert.equal(reconnecting.muted, true, 'mute state survives the drop');
+  // An idle session never starts reconnecting.
+  assert.equal(voiceSessionReducer(initialVoiceSessionState, { type: 'reconnecting' }), initialVoiceSessionState);
+  // Reconnecting twice is a no-op.
+  assert.equal(voiceSessionReducer(reconnecting, { type: 'reconnecting' }), reconnecting);
+});
+
+test('reconnected only fires from reconnecting, back to active', () => {
+  const active = voiceSessionReducer(initialVoiceSessionState, { type: 'join', joinedAt: 1000 });
+  const reconnecting = voiceSessionReducer(active, { type: 'reconnecting' });
+  const back = voiceSessionReducer(reconnecting, { type: 'reconnected' });
+  assert.equal(back.status, 'active');
+  assert.equal(back.joinedAt, 1000);
+  // A stale reconnected event cannot resurrect an idle or active call.
+  assert.equal(voiceSessionReducer(initialVoiceSessionState, { type: 'reconnected' }), initialVoiceSessionState);
+  assert.equal(voiceSessionReducer(active, { type: 'reconnected' }), active);
+});
+
+test('leave from reconnecting resets the session to idle', () => {
+  const active = voiceSessionReducer(initialVoiceSessionState, { type: 'join', joinedAt: 1000 });
+  const reconnecting = voiceSessionReducer(active, { type: 'reconnecting' });
+  assert.deepEqual(voiceSessionReducer(reconnecting, { type: 'leave' }), initialVoiceSessionState);
+});
+
+test('join from reconnecting starts a fresh active call', () => {
+  const active = voiceSessionReducer(initialVoiceSessionState, { type: 'join', joinedAt: 1000 });
+  const reconnecting = voiceSessionReducer(active, { type: 'reconnecting' });
+  const joined = voiceSessionReducer(reconnecting, { type: 'join', joinedAt: 2000 });
+  assert.equal(joined.status, 'active');
+  assert.equal(joined.joinedAt, 2000);
+});
+
 test('reducer never mutates the previous state', () => {
   const active = voiceSessionReducer(initialVoiceSessionState, { type: 'join', joinedAt: 1000 });
   const snapshot = { ...active };

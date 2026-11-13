@@ -28,6 +28,7 @@
 import { getIceServers, FALLBACK_ICE_SERVERS } from './turnAuth.js';
 import { gainForDistance, distanceBetween, SPATIAL_AUDIO_ENABLED } from './proximity.js';
 import { clampVolume, supportsOutputSelection } from './audioDevices.js';
+import { createIceRecovery, iceRecoveryStep, ICE_DISCONNECTED_GRACE_MS, ICE_RESTART_TIMEOUT_MS } from './iceRecovery.js';
 const SPEAK_THRESHOLD = 0.02; // RMS of time-domain audio samples
 const SPEAK_POLL_MS = 150;
 
@@ -40,7 +41,7 @@ export function isOfferer(mySocketId, otherSocketId) {
 }
 
 export class VoiceEngine {
-  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs, spatialEnabled, onShareTrack, onShareEnded, onLocalShareEnded }) {
+  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs, iceGraceMs, iceRestartTimeoutMs, onIceRecovery, spatialEnabled, onShareTrack, onShareEnded, onLocalShareEnded }) {
     this.socket = socket;
     this.roomId = roomId;
     this.selfId = selfId;
@@ -48,6 +49,19 @@ export class VoiceEngine {
     this.onMicError = onMicError || (() => {});
     this.onConnectionState = onConnectionState || (() => {});
     this.onPlaybackBlocked = onPlaybackBlocked || (() => {});
+    // ICE recovery (v0.9.0): the engine reports a peer's recovery
+    // phases — 'recovering' when a peer's ICE leaves 'stable' for a
+    // grace/restart, 'recovered' when it comes back, 'failed' when
+    // the peer exhausted its recovery budget and was dropped. The UI
+    // decides what that means for the room (it only shows the
+    // room-level "Reconnecting…" when no peer is connected); the
+    // engine never touches session state itself.
+    this.onIceRecovery = onIceRecovery || (() => {});
+    // ICE grace / restart timeout: constructor options (like
+    // offerRetryMs above) so tests can use short values instead of
+    // waiting out the real 2s / 10s.
+    this.iceGraceMs = iceGraceMs ?? ICE_DISCONNECTED_GRACE_MS;
+    this.iceRestartTimeoutMs = iceRestartTimeoutMs ?? ICE_RESTART_TIMEOUT_MS;
     // Screen sharing (v0.8.0): the UI is told about an incoming video
     // track (onShareTrack), a remote share ending (onShareEnded), and
     // my own capture ending under me — e.g. the browser's own "Stop
@@ -60,7 +74,7 @@ export class VoiceEngine {
     // If an offer goes unanswered (peer missed it, was backgrounded, ...),
     // re-offer once after this delay instead of staying silent forever.
     this.offerRetryMs = offerRetryMs ?? 5000;
-    this.peers = new Map(); // socketId -> { pc, audioEl, analyser, data, speaking, pendingCandidates, polite, makingOffer, ignoreOffer, offerRetries, retryTimer, gainNode, elementSource, gain }
+    this.peers = new Map(); // socketId -> { pc, audioEl, analyser, data, speaking, pendingCandidates, polite, makingOffer, ignoreOffer, offerRetries, retryTimer, iceMachine, iceTimer, gainNode, elementSource, gain }
     // Socket ids known to be in the current room (from room-state and
     // user-joined). Defense-in-depth for audit H1: _onSignal ignores
     // anything from a socket id not in this set, so even if the server
@@ -551,6 +565,7 @@ export class VoiceEngine {
     };
     pc.oniceconnectionstatechange = () => {
       this._reportConnection(socketId);
+      this._handleIceState(socketId);
     };
     pc.ontrack = (e) => {
       // Screen sharing (v0.8.0): a video track is a shared screen, not
@@ -611,6 +626,16 @@ export class VoiceEngine {
       ignoreOffer: false,
       offerRetries: 0,
       retryTimer: null,
+      // ICE recovery (v0.9.0): the per-peer state machine (see
+      // iceRecovery.js) + the timer that re-reads the live ICE state
+      // when a grace or a restart timeout elapses. Both die with the
+      // peer in _removePeer, so a dropped peer never fires a stale
+      // recovery step. `recovering` tracks whether the UI has been
+      // told this peer is down — it survives a recreate (see
+      // _recreatePeer) so one episode reports exactly once.
+      iceMachine: createIceRecovery(),
+      iceTimer: null,
+      recovering: false,
       candidateTypes: new Set(),
       // Proximity audio: the GainNode this peer's stream routes
       // through (null until ontrack builds it, or when spatial
@@ -632,6 +657,79 @@ export class VoiceEngine {
       peer.pc.iceConnectionState,
       [...peer.candidateTypes].join('+')
     );
+  }
+
+  // ICE recovery (v0.9.0): drive one peer's recovery machine with its
+  // live ICE state. 'disconnected' is transient — wait out the grace,
+  // then restart ICE; 'failed' (or a restart that never recovers)
+  // earns one full peer reconnect; only a second failure gives up.
+  // The machine only decides (see iceRecovery.js); this method
+  // performs the action and arms the timer that re-reads the live
+  // state when a grace / restart timeout elapses. Recovery phases are
+  // reported to the UI via onIceRecovery — 'recovering' when the peer
+  // goes down and we start fixing it, 'recovered' when its ICE comes
+  // back, 'failed' when the peer was dropped. One 'recovering' covers
+  // a whole episode (grace → restart → recreate): peer.recovering
+  // survives the recreate in _recreatePeer, so the UI is not told
+  // twice and 'recovered' still fires when the fresh pc connects. A
+  // dropped peer's orb already shows disconnected via
+  // onConnectionState; the session itself never ends on one peer's
+  // failure — the call is a room, not a 1:1.
+  _handleIceState(socketId) {
+    const peer = this.peers.get(socketId);
+    if (!peer || !peer.pc) return;
+    const ice = peer.pc.iceConnectionState;
+    const { machine, action } = iceRecoveryStep(peer.iceMachine, ice, Date.now(), {
+      graceMs: this.iceGraceMs,
+      restartTimeoutMs: this.iceRestartTimeoutMs
+    });
+    peer.iceMachine = machine;
+    if (peer.iceTimer) { clearTimeout(peer.iceTimer); peer.iceTimer = null; }
+    if (machine.phase === 'waiting') {
+      peer.iceTimer = setTimeout(() => { peer.iceTimer = null; this._handleIceState(socketId); }, this.iceGraceMs);
+    } else if (machine.phase === 'restarting') {
+      peer.iceTimer = setTimeout(() => { peer.iceTimer = null; this._handleIceState(socketId); }, this.iceRestartTimeoutMs);
+    }
+    const isDown = machine.phase === 'waiting' || machine.phase === 'restarting';
+    if (isDown && !peer.recovering) {
+      peer.recovering = true;
+      this.onIceRecovery(socketId, 'recovering');
+    }
+    if ((ice === 'connected' || ice === 'completed') && peer.recovering) {
+      peer.recovering = false;
+      this.onIceRecovery(socketId, 'recovered');
+    }
+    if (action === 'restart-ice') {
+      try { peer.pc.restartIce(); } catch {}
+    } else if (action === 'recreate-peer') {
+      this._recreatePeer(socketId);
+    } else if (action === 'give-up') {
+      this._removePeer(socketId);
+      this.onIceRecovery(socketId, 'failed');
+    }
+  }
+
+  // A full reconnect for one peer: the old pc is dead (ICE failed, or
+  // a restart never recovered), so drop it and negotiate a fresh one
+  // on the same socket id — the peer's orb, position and mute state
+  // live outside the pc, so nothing else moves. The fresh pc inherits
+  // the exhausted budget (iceMachine.recreated) — this WAS the one
+  // allowed recreate, so its next failure gives up instead of
+  // recreating forever — and the recovering flag, so the UI keeps
+  // showing the peer as down until the fresh pc actually connects.
+  _recreatePeer(socketId) {
+    const old = this.peers.get(socketId);
+    if (!old) return;
+    const wasRecovering = !!old.recovering;
+    this._removePeer(socketId);
+    this._createPeer(socketId);
+    const peer = this.peers.get(socketId);
+    if (peer) {
+      peer.iceMachine.recreated = true;
+      peer.recovering = true;
+      if (!wasRecovering) this.onIceRecovery(socketId, 'recovering');
+    }
+    this._offerTo(socketId);
   }
 
   async _offerTo(socketId) {
@@ -761,6 +859,7 @@ export class VoiceEngine {
     const peer = this.peers.get(socketId);
     if (!peer) return;
     if (peer.retryTimer) clearTimeout(peer.retryTimer);
+    if (peer.iceTimer) { clearTimeout(peer.iceTimer); peer.iceTimer = null; }
     // Their share sender dies with the connection; the UI clears the
     // share layer for this peer (they left, or their share ended).
     this.shareSenders.delete(socketId);
