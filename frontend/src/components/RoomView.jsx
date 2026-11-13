@@ -29,7 +29,7 @@ const knockAge = (iso) => {
   return `${Math.floor(s / 3600)}h ago`;
 };
 
-export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef, onUserChange }) {
+export default function RoomView({ user, room, onLeave, onMinimize, session, dispatchSession, voiceEngineRef, onUserChange }) {
   const { muted, deafened, modMuted, modMutedBy, sharing, screenSharerId, screenSharerName, shareError } = session;
   const [occupants, setOccupants] = useState(() => ({
     self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true, mood: normalizeMood(user.mood) }
@@ -49,6 +49,10 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [connState, setConnState] = useState({});
   const [iceState, setIceState] = useState({});
   const [candTypes, setCandTypes] = useState({});
+  // Ref mirror of connState for the ICE-recovery gate below: the
+  // engine's onIceRecovery callback closes over the effect's mount
+  // render, so it reads the live map from here, not stale state.
+  const connStateRef = useRef({});
   const [playBlocked, setPlayBlocked] = useState(false);
   const [micError, setMicError] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
@@ -248,9 +252,25 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       onMicError: (msg) => setMicError(msg),
       onConnectionState: (socketId, state, ice, candidates) => {
         setConnState((prev) => ({ ...prev, [socketId]: state }));
+        connStateRef.current = { ...connStateRef.current, [socketId]: state };
         if (ice) setIceState((prev) => ({ ...prev, [socketId]: ice }));
         if (candidates !== undefined) {
           setCandTypes((prev) => ({ ...prev, [socketId]: candidates }));
+        }
+      },
+      // ICE recovery (v0.9.0): the engine reports a peer's recovery
+      // phases. A room-level "Reconnecting…" only makes sense when no
+      // peer is currently connected — one peer's blip while others
+      // are live is their problem, not the call's. The reducer guards
+      // both transitions, so a stale event cannot resurrect an ended
+      // call. 'failed' is per-peer: the engine already dropped that
+      // peer and its orb shows disconnected; the call stays up.
+      onIceRecovery: (socketId, phase) => {
+        if (phase === 'recovering') {
+          const anyConnected = Object.values(connStateRef.current).some((s) => s === 'connected');
+          if (!anyConnected) dispatchSession({ type: 'reconnecting' });
+        } else if (phase === 'recovered') {
+          dispatchSession({ type: 'reconnected' });
         }
       },
       onPlaybackBlocked: () => setPlayBlocked(true),
@@ -321,6 +341,13 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         delete next[socketId];
         return next;
       });
+      // Their connection state goes with them: a stale 'connected'
+      // entry would lie to the ICE-recovery gate (it counts live
+      // peers) and to the Connection details popover.
+      setConnState((prev) => { const next = { ...prev }; delete next[socketId]; return next; });
+      setIceState((prev) => { const next = { ...prev }; delete next[socketId]; return next; });
+      setCandTypes((prev) => { const next = { ...prev }; delete next[socketId]; return next; });
+      delete connStateRef.current[socketId];
       // Their orb leaves with them — drop the position override.
       setOrbOverrides((prev) => {
         const next = { ...prev };
@@ -480,12 +507,51 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     socket.on('screen-share-stopped', onShareStopped);
     socket.on('error', onJoinError);
 
+    // Transport recovery (v0.9.0): the signaling socket died
+    // mid-call. Show "Reconnecting…" until it comes back — the peer
+    // connections are P2P and may survive, so nothing is torn down
+    // here. On reconnect, tell the server to cancel the 15s grace
+    // and restore my presence (reconnect-to-room); the server answers
+    // with room-state and the engine re-offers to the occupants. The
+    // reducer guards both transitions, so a disconnect before any
+    // join (or after a leave) is a no-op, and a stale reconnect
+    // cannot resurrect an ended call. The initial connect fires
+    // before this effect runs, so it never trips the reconnect path.
+    const onSocketDisconnect = () => {
+      if (voiceRef.current?.joined) dispatchSession({ type: 'reconnecting' });
+    };
+    const onSocketConnect = () => {
+      if (!voiceRef.current?.joined) return;
+      socket.emit('reconnect-to-room', { roomId: room.id });
+      dispatchSession({ type: 'reconnected' });
+    };
+    socket.on('disconnect', onSocketDisconnect);
+    socket.on('connect', onSocketConnect);
+
+    // Real tab close (v0.9.0): tell the server at once via a beacon,
+    // so the room sees the departure now instead of after the 15s
+    // disconnect grace. Best-effort — if the beacon never lands, the
+    // grace still fires. This is the ONLY unload handler in the voice
+    // path: no beforeunload, no visibilitychange, and nothing here
+    // tears the call down (a tab switch or backgrounding must never
+    // end it).
+    const onPageHide = () => {
+      if (!voiceRef.current?.joined) return;
+      try {
+        navigator.sendBeacon(`/api/rooms/${room.id}/leave-beacon`);
+      } catch {}
+    };
+    window.addEventListener('pagehide', onPageHide);
+
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
     voice.join();
 
     return () => {
       voice.leave();
       if (voiceEngineRef) voiceEngineRef.current = null;
+      socket.off('disconnect', onSocketDisconnect);
+      socket.off('connect', onSocketConnect);
+      window.removeEventListener('pagehide', onPageHide);
       socket.off('room-state', onRoomState);
       socket.off('user-joined', onUserJoined);
       socket.off('user-left', onUserLeft);
@@ -1271,6 +1337,19 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         >
           <Icon name="link" size={16} />
         </button>
+        {/* Minimize (v0.9.0): leave the room VIEW without leaving the
+            call — the view hides, RoomView stays mounted, and the
+            MiniPlayer takes over. The way back is the MiniPlayer.
+            Distinct from the "‹ Rooms" button above, which leaves
+            the call entirely (and builds the postcard). */}
+        <button
+          className="btn btn-text"
+          onClick={onMinimize}
+          title="Minimize — keep the call running"
+          aria-label="Minimize room view, keep call running"
+        >
+          <Icon name="chevron-down" size={16} /> Minimize
+        </button>
       </div>
 
       {/* Campfire state: everyone in the room sees that it fades; the
@@ -1965,6 +2044,15 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           <Icon name="phone" size={26} />
         </button>
       </div>
+      {/* Reconnecting (v0.9.0): the transport dropped mid-call and
+          recovery is running — say so instead of failing silently.
+          Plain text, no animation, so prefers-reduced-motion needs
+          nothing special here. */}
+      {session.status === 'reconnecting' && (
+        <p className="reconnecting-note" role="status" title="Your connection dropped — trying to reconnect. The call resumes on its own when the network is back.">
+          Reconnecting…
+        </p>
+      )}
       {modMuted && (
         <p className="mod-muted-note">
           <Icon name="mic-off" size={12} /> Muted by moderator{modMutedBy ? ` (${modMutedBy})` : ''} — you can still hear everyone, but they can't hear you.

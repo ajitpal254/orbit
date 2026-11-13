@@ -33,6 +33,16 @@ const authMiddleware = async (req, res, next) => {
 // cookie value in the x-csrf-token header.
 const csrfMiddleware = (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  // The leave-beacon (v0.9.0) is the one POST that cannot carry the
+  // double-submit header: navigator.sendBeacon() sends no custom
+  // headers, and it fires on pagehide when there is no chance to
+  // fetch a token. It is exempt because (a) its only effect is to
+  // remove the CALLER from a room they are in — the same as clicking
+  // Leave, idempotent, no data exposed — and (b) the session cookie
+  // is SameSite=Lax, so a cross-site page cannot authenticate the
+  // call at all (authMiddleware still runs and 401s it). Keep this
+  // list to exactly this route.
+  if (req.method === 'POST' && /^\/rooms\/[^/]+\/leave-beacon$/.test(req.path || '')) return next();
   const cookie = parseCookies(req.headers.cookie).csrfToken;
   const header = req.headers['x-csrf-token'];
   // Compare lengths first: timingSafeEqual throws on unequal lengths,

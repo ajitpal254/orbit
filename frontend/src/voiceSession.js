@@ -11,7 +11,7 @@
 // (voice.js) is untouched. Unit-tested in tests/voiceSession.test.mjs.
 
 export const initialVoiceSessionState = {
-  status: 'idle', // 'idle' | 'active'
+  status: 'idle', // 'idle' | 'active' | 'reconnecting'
   joinedAt: null, // ms epoch the current call started (mini-player timer)
   muted: false,
   deafened: false,
@@ -38,6 +38,20 @@ export function voiceSessionReducer(state, action) {
       };
     case 'leave':
       return initialVoiceSessionState;
+    case 'reconnecting':
+      // Only a live call can start reconnecting — an idle session
+      // stays idle (e.g. a socket blip before any join, or a
+      // reconnect attempt after the call already ended). The mute /
+      // deafen state and the call timer survive: this is the same
+      // call, temporarily without a transport.
+      if (state.status !== 'active') return state;
+      return { ...state, status: 'reconnecting' };
+    case 'reconnected':
+      // Only a reconnecting session can come back — anything else is
+      // already where it should be, so a stale event cannot resurrect
+      // an ended call or restart an idle one.
+      if (state.status !== 'reconnecting') return state;
+      return { ...state, status: 'active' };
     case 'set-muted':
       return { ...state, muted: action.muted };
     case 'set-deafened':

@@ -294,6 +294,37 @@ test('smoke: two users join a room and voice starts', { timeout: 180000 }, async
     }
   });
 
+  await t.test('chat message stamps activity + room recency (v0.9.0 density)', async () => {
+    // Alice sends one chat message through the real UI (REST path —
+    // RoomView posts to /api/rooms/:id/messages); the socket path
+    // stamps the same field, see lib/socket.js chat-message.
+    const today = new Date().toISOString().slice(0, 10);
+    await pageA.getByRole('button', { name: 'Chat', exact: true }).click();
+    await pageA.getByPlaceholder(`Message ${ROOM_NAME}…`).fill('smoke hello');
+    await pageA.getByRole('button', { name: 'Send', exact: true }).click();
+    await pageA.getByText('smoke hello').waitFor({ timeout: 10000 });
+
+    // GET /api/me/activity: today is active, at least one message.
+    const activity = await pageA.evaluate(async () => {
+      const res = await fetch('/api/me/activity');
+      if (!res.ok) throw new Error(`activity ${res.status}`);
+      return res.json();
+    });
+    assert.ok(activity.days.includes(today), `today (${today}) must be in the active days: ${JSON.stringify(activity.days)}`);
+    assert.ok(activity.messageCount >= 1, `expected at least 1 message, got ${activity.messageCount}`);
+
+    // GET /api/rooms: the room carries a fresh lastActiveAt.
+    const rooms = await pageA.evaluate(async () => {
+      const res = await fetch('/api/rooms');
+      if (!res.ok) throw new Error(`rooms ${res.status}`);
+      return res.json();
+    });
+    const room = rooms.find((r) => r.name === ROOM_NAME);
+    assert.ok(room, 'the smoke room must be listed');
+    assert.ok(room.lastActiveAt, 'the room must carry lastActiveAt');
+    assert.ok(Date.now() - new Date(room.lastActiveAt).getTime() < 5 * 60 * 1000, `lastActiveAt must be fresh, got ${room.lastActiveAt}`);
+  });
+
   await t.test('peer connections leave new (voice path starts)', async () => {
     // Each side shows the other in the Connection details popover as
     // "<connectionState> / <iceConnectionState> (<candidate types>)".
@@ -340,6 +371,77 @@ test('smoke: two users join a room and voice starts', { timeout: 180000 }, async
     await pageA.getByRole('button', { name: 'Mute', exact: true })
       .waitFor({ timeout: 10000 });
     await pageB.locator('.orb-muted').waitFor({ state: 'detached', timeout: 10000 });
+  });
+
+  await t.test('navigating away mid-call keeps the call alive (v0.9.0)', async () => {
+    // The call is owned by App.jsx, not the room view: leaving the
+    // room view for another section hides it (RoomView stays mounted)
+    // and the mini-player takes over — the session must not end.
+    //
+    // Viewport note: mid-call navigation is only reachable through
+    // visible UI at tablet width (521–899px). On desktop the topbar
+    // bell/avatar are display:none and the icon rail hides in-room;
+    // on phones the bell hides too — so this subtest resizes Alice's
+    // page to 800px, where the topbar bell is visible. (That desktop/
+    // phone gap — no visible way to leave the room view without
+    // leaving the call — is a real product gap, reported separately;
+    // this task's job is that the call survives navigation where it
+    // is reachable.)
+    await pageA.keyboard.press('Escape'); // close the Connection details popover, if open
+    await pageA.setViewportSize({ width: 800, height: 1000 });
+    try {
+      // Bell (topbar) -> notifications: the room hides, the
+      // mini-player takes over the same call.
+      await pageA.getByRole('button', { name: /^Notifications/ }).click();
+      await pageA.locator('.mini-player').waitFor({ timeout: 10000 });
+      // The room view is hidden, not unmounted: the room's voice bar
+      // is gone (the MiniPlayer has its own Mute button, so scope
+      // this to .voice-bar), the mini-player is showing the same call.
+      await pageA.locator('.voice-bar').getByRole('button', { name: 'Mute', exact: true })
+        .waitFor({ state: 'hidden', timeout: 10000 });
+      // Back to the rooms list, then Friends, then Messages — the
+      // mini-player (and the call) must survive every hop.
+      await pageA.getByRole('button', { name: 'Back', exact: true }).click();
+      for (const section of ['Friends', 'Messages']) {
+        await pageA.getByRole('button', { name: section, exact: true }).click();
+        await pageA.locator('.mini-player').waitFor({ state: 'visible', timeout: 10000 });
+      }
+      // Bob still sees Alice in the room the whole time — no
+      // leave/join flicker (the server grace + the kept session).
+      await pageB.getByRole('button', { name: new RegExp(`^${USERS[0].name}`) })
+        .waitFor({ timeout: 10000 });
+      // Tap the mini-player to return: the room view and voice bar
+      // come back, same call (no rejoin).
+      await pageA.locator('.mini-player').click();
+      await pageA.locator('.voice-bar').getByRole('button', { name: 'Mute', exact: true })
+        .waitFor({ timeout: 10000 });
+    } finally {
+      await pageA.setViewportSize({ width: 1280, height: 720 });
+    }
+  });
+
+  await t.test('minimize button hides the room view and keeps the call alive (v0.9.0)', async () => {
+    // The minimize control (RoomView header, all widths) leaves the
+    // room VIEW without leaving the call — it closes the gap the
+    // persistent-call spec flagged: on desktop/phones there was no
+    // visible way to do this at all. At 1280px the bell/rail paths
+    // are hidden, so this is the only in-room exit that keeps the
+    // call. Same assertions as the navigation subtest, driven by
+    // the button instead of the bell.
+    await pageA.keyboard.press('Escape'); // close any open popover
+    await pageA.setViewportSize({ width: 1280, height: 720 });
+    await pageA.getByRole('button', { name: 'Minimize room view, keep call running' }).click();
+    await pageA.locator('.mini-player').waitFor({ timeout: 10000 });
+    await pageA.locator('.voice-bar').getByRole('button', { name: 'Mute', exact: true })
+      .waitFor({ state: 'hidden', timeout: 10000 });
+    // Bob still sees Alice in the room — no leave/join flicker.
+    await pageB.getByRole('button', { name: new RegExp(`^${USERS[0].name}`) })
+      .waitFor({ timeout: 10000 });
+    // Tap the mini-player to return: the room view and voice bar
+    // come back, same call (no rejoin).
+    await pageA.locator('.mini-player').click();
+    await pageA.locator('.voice-bar').getByRole('button', { name: 'Mute', exact: true })
+      .waitFor({ timeout: 10000 });
   });
 
   await t.test('TURN relay: real relay candidate when an account TURN exists', async () => {

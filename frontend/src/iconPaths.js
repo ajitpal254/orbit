@@ -98,6 +98,10 @@ export const ICON_PATHS = {
   'chevron-left': [
     { el: 'polyline', points: '15 18 9 12 15 6' }
   ],
+  // Minimize — RoomView header: leave the room view, keep the call.
+  'chevron-down': [
+    { el: 'polyline', points: '6 9 12 15 18 9' }
+  ],
   // Chain link — invite links (RoomView header) and copy-link controls.
   link: [
     { el: 'path', d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' },
