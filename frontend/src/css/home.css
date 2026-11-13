@@ -43,6 +43,12 @@
    min-width: 900px block. */
 .room-card--new { display: none; }
 
+/* v0.9.0 density (desktop ≥1280px only): the constellation + streak
+   strips and the split rooms sections are hidden below 1280px, so
+   phones and narrow desktop keep the layout exactly as it is today —
+   desktop.css shows them inside the min-width: 1280px block. */
+.constellation-strip, .streak-strip, .rooms-section--split, .recently-quiet-section { display: none; }
+
 /* --- Night-sky home: friends as stars instead of a list. Shown at
    the top of Home on phones, and on desktop in place of the hero when
    nobody is live (hasLiveHero hides it ≥900px, see below). Stars are

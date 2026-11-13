@@ -16,6 +16,14 @@ const roomSchema = new mongoose.Schema({
   // itself lives in memory, lib/focusSessions.js — only the mode is
   // persisted). Legacy rooms have no mode and behave as 'talk'.
   mode: { type: String, enum: ['talk', 'focus'], default: 'talk' },
+  // Recency for the "Recently quiet" row (v0.9.0): the last time
+  // anything happened in the room — a chat message or a voice join
+  // (see lib/roomActivity.touchRoomActivity, called fire-and-forget
+  // from both message paths and socket join-room). Null on legacy
+  // rooms: readers fall back to createdAt, so a room created within
+  // the quiet window never reads as quiet. Never updated on leave —
+  // leaving is not activity.
+  lastActiveAt: { type: Date, default: null, index: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   // Campfires (fading rooms, playbook item 4): a room created with the
   // "Campfire" toggle is deleted 60s after presence empties, unless

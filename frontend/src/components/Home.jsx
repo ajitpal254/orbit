@@ -1,14 +1,17 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { apiJson, getInvites, acceptInvite, declineInvite, getFriendsPresence, joinRoom as joinRoomPreflight } from '../api';
+import { apiJson, getInvites, acceptInvite, declineInvite, getFriendsPresence, getMyActivity, joinRoom as joinRoomPreflight } from '../api';
 import { getSocket } from '../socket';
 import { ACCENTS } from '../accents';
 import { initials } from '../orbLayout';
 import { selectBusiestRoom } from '../desktop';
+import { quietRooms } from '../activityStats';
 import { formatBadgeCount } from '../mobileNav';
 import StoriesRow from './StoriesRow';
 import HeroCard from './HeroCard';
 import NightSky from './NightSky';
 import SidePanel from './SidePanel';
+import ConstellationStrip from './ConstellationStrip';
+import StreakStrip from './StreakStrip';
 import { Icon } from './icons';
 
 // Build version (Vite define from package.json, see vite.config.js).
@@ -49,6 +52,31 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
   // says so instead of flashing empty. `presenceError` is '' on success.
   const [presence, setPresence] = useState(null);
   const [presenceError, setPresenceError] = useState('');
+  // My activity this week (streak strip, v0.9.0): one GET
+  // /api/me/activity, loaded on mount and on socket pushes. A failed
+  // fetch keeps null, so StreakStrip says it could not load instead
+  // of claiming a quiet week.
+  const [activity, setActivity] = useState(null);
+  const [activityLoading, setActivityLoading] = useState(true);
+
+  const loadActivity = useCallback(async () => {
+    try {
+      setActivity(await getMyActivity());
+    } catch {
+      setActivity(null);
+    } finally {
+      setActivityLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadActivity();
+  }, [loadActivity]);
+
+  // Socket pushes (friend request / room invite) bump refreshTick in App.
+  useEffect(() => {
+    if (refreshTick > 0) loadActivity();
+  }, [refreshTick, loadActivity]);
 
   const loadPresence = useCallback(async () => {
     try {
@@ -167,7 +195,18 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
   };
 
   const live = rooms.filter((r) => r.occupantCount > 0);
-  const quiet = rooms.filter((r) => r.occupantCount === 0);
+  // Empty rooms split in two on desktop ≥1280px (v0.9.0 density):
+  // rooms active within the last 7 days stay in the main "Rooms"
+  // list; rooms with no activity in 7 days move to the dimmed
+  // "Recently quiet" row below it. See frontend/src/activityStats.js
+  // — a room with no lastActiveAt falls back to createdAt, so it is
+  // never quiet within its first week. Phones keep the single
+  // un-split list (rooms-section--all), so the ≤900px layout is
+  // pixel-identical; the split sections are display:none below
+  // 1280px and the all-list is display:none at ≥1280px.
+  const emptyRooms = rooms.filter((r) => r.occupantCount === 0);
+  const recentlyQuiet = quietRooms(rooms);
+  const quiet = emptyRooms.filter((r) => !recentlyQuiet.includes(r));
   // The hero room (busiest live room) is also in `live` — the Live-now
   // list hides it on desktop via .room-card--is-hero so it appears
   // once; phones have no hero, so they still list every live room.
@@ -175,7 +214,7 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
   const liveOthers = live.filter((r) => r.id !== heroRoom?.id);
 
   return (
-    <div className="view view-anim home-view">
+    <div className={`view view-anim home-view${heroRoom ? ' home-view--has-hero' : ''}`}>
       {/* M3: friends stories row (phones only) — online friends at the
           top of Home; tap an in-room friend to join their room. Shares
           Home's single presence fetch with the night sky and the side
@@ -211,6 +250,12 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
         {showCreate ? (<><Icon name="x" size={16} /> Cancel</>) : (<><Icon name="plus" size={16} /> New room</>)}
       </button>
       </div>
+
+      {/* Constellation strip (v0.9.0 density, desktop ≥1280px only):
+          friend avatars above the hero, reusing Home's single presence
+          fetch — hidden below 1280px in CSS, so phones keep their
+          stories row and nothing else changes. */}
+      <ConstellationStrip friends={presence} onJoin={tryJoin} onNavigate={onNavigate} />
 
       {/* Night-sky home: top of Home on phones, and on desktop in
           place of the hero when nobody is live (hasLiveHero hides it
@@ -341,6 +386,11 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
         />
       )}
 
+      {/* Streak strip (v0.9.0 density, desktop ≥1280px only): stacked
+          under the hero in the bento's right column — hidden below
+          1280px in CSS. */}
+      <StreakStrip activity={activity} loading={activityLoading} />
+
       {invites.length > 0 && (
         <section>
           <h3 className="section-title"><Icon name="mail" size={15} /> Room invites</h3>
@@ -395,21 +445,55 @@ export default function Home({ user, onJoin, refreshTick, onOpenAbout, onNavigat
             {/* Dashed card lives here only when there is no quiet list
                 to host it; the live section hides on desktop when the
                 hero is the only live room, so no card then either. */}
-            {liveOthers.length > 0 && quiet.length === 0 && (
+            {liveOthers.length > 0 && emptyRooms.length === 0 && (
               <NewRoomCard onOpen={openCreate} index={live.length} />
             )}
           </div>
         </section>
       )}
 
+      {/* Phones (and <1280px): the single un-split rooms list, exactly
+          as before — hidden at ≥1280px, where the split below takes
+          over. Desktop split sections are display:none below 1280px. */}
+      {emptyRooms.length > 0 && (
+        <section className="rooms-section--all">
+          <h3 className="section-title">Rooms</h3>
+          <div className="room-list">
+            {emptyRooms.map((room, i) => (
+              <RoomCard key={room.id} room={room} index={i} onJoin={tryJoin} />
+            ))}
+            <NewRoomCard onOpen={openCreate} index={emptyRooms.length} />
+          </div>
+        </section>
+      )}
+
+      {/* Desktop ≥1280px split: active empty rooms… */}
       {quiet.length > 0 && (
-        <section>
+        <section className="rooms-section--split">
           <h3 className="section-title">Rooms</h3>
           <div className="room-list">
             {quiet.map((room, i) => (
               <RoomCard key={room.id} room={room} index={i} onJoin={tryJoin} />
             ))}
             <NewRoomCard onOpen={openCreate} index={quiet.length} />
+          </div>
+        </section>
+      )}
+
+      {/* Recently quiet (v0.9.0 density): empty rooms with no activity
+          in the last 7 days, dimmed — one tap reopens the room. The
+          dashed "+ New room" card lives here when the main Rooms list
+          is empty, so it is never lost. */}
+      {recentlyQuiet.length > 0 && (
+        <section className="recently-quiet-section">
+          <h3 className="section-title"><Icon name="clock" size={15} /> Recently quiet</h3>
+          <div className="room-list">
+            {recentlyQuiet.map((room, i) => (
+              <RoomCard key={room.id} room={room} index={i} onJoin={tryJoin} isQuiet />
+            ))}
+            {quiet.length === 0 && (
+              <NewRoomCard onOpen={openCreate} index={recentlyQuiet.length} />
+            )}
           </div>
         </section>
       )}
@@ -447,12 +531,12 @@ function NewRoomCard({ onOpen, index }) {
   );
 }
 
-function RoomCard({ room, index, onJoin, isHero }) {
+function RoomCard({ room, index, onJoin, isHero, isQuiet }) {
   const a = room.accent || {};
   const speaking = room.occupants?.some((o) => o.speaking);
   return (
     <button
-      className={`room-card stagger-in${isHero ? ' room-card--is-hero' : ''}`}
+      className={`room-card stagger-in${isHero ? ' room-card--is-hero' : ''}${isQuiet ? ' room-card--quiet' : ''}`}
       onClick={() => onJoin(room)}
       style={{ '--room-from': a.from || '#8b5cf6', '--room-to': a.to || '#d946ef', animationDelay: `${(index || 0) * 50}ms` }}
     >

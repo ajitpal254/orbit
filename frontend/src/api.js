@@ -178,6 +178,10 @@ export const getUserAvatars = (ids) =>
 
 export const getFriendsPresence = () => apiJson('/api/friends/presence');
 
+// --- My activity this week (streak strip, v0.9.0) ---
+
+export const getMyActivity = () => apiJson('/api/me/activity');
+
 // --- Notifications ---
 
 export const getNotifications = (limit = 30, offset = 0) =>
