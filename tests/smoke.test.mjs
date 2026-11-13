@@ -420,6 +420,30 @@ test('smoke: two users join a room and voice starts', { timeout: 180000 }, async
     }
   });
 
+  await t.test('minimize button hides the room view and keeps the call alive (v0.9.0)', async () => {
+    // The minimize control (RoomView header, all widths) leaves the
+    // room VIEW without leaving the call — it closes the gap the
+    // persistent-call spec flagged: on desktop/phones there was no
+    // visible way to do this at all. At 1280px the bell/rail paths
+    // are hidden, so this is the only in-room exit that keeps the
+    // call. Same assertions as the navigation subtest, driven by
+    // the button instead of the bell.
+    await pageA.keyboard.press('Escape'); // close any open popover
+    await pageA.setViewportSize({ width: 1280, height: 720 });
+    await pageA.getByRole('button', { name: 'Minimize room view, keep call running' }).click();
+    await pageA.locator('.mini-player').waitFor({ timeout: 10000 });
+    await pageA.locator('.voice-bar').getByRole('button', { name: 'Mute', exact: true })
+      .waitFor({ state: 'hidden', timeout: 10000 });
+    // Bob still sees Alice in the room — no leave/join flicker.
+    await pageB.getByRole('button', { name: new RegExp(`^${USERS[0].name}`) })
+      .waitFor({ timeout: 10000 });
+    // Tap the mini-player to return: the room view and voice bar
+    // come back, same call (no rejoin).
+    await pageA.locator('.mini-player').click();
+    await pageA.locator('.voice-bar').getByRole('button', { name: 'Mute', exact: true })
+      .waitFor({ timeout: 10000 });
+  });
+
   await t.test('TURN relay: real relay candidate when an account TURN exists', async () => {
     // The peer connection above proves signaling + ICE work over host
     // candidates. It CANNOT prove the TURN relay works — the v0.6.0

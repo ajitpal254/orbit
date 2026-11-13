@@ -620,6 +620,7 @@ export default function App() {
               user={user}
               room={room}
               onLeave={leaveRoom}
+              onMinimize={() => goTo('rooms')}
               session={session}
               dispatchSession={dispatchSession}
               voiceEngineRef={voiceEngineRef}

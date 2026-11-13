@@ -29,7 +29,7 @@ const knockAge = (iso) => {
   return `${Math.floor(s / 3600)}h ago`;
 };
 
-export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef, onUserChange }) {
+export default function RoomView({ user, room, onLeave, onMinimize, session, dispatchSession, voiceEngineRef, onUserChange }) {
   const { muted, deafened, modMuted, modMutedBy, sharing, screenSharerId, screenSharerName, shareError } = session;
   const [occupants, setOccupants] = useState(() => ({
     self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true, mood: normalizeMood(user.mood) }
@@ -1336,6 +1336,19 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           aria-expanded={showLink}
         >
           <Icon name="link" size={16} />
+        </button>
+        {/* Minimize (v0.9.0): leave the room VIEW without leaving the
+            call — the view hides, RoomView stays mounted, and the
+            MiniPlayer takes over. The way back is the MiniPlayer.
+            Distinct from the "‹ Rooms" button above, which leaves
+            the call entirely (and builds the postcard). */}
+        <button
+          className="btn btn-text"
+          onClick={onMinimize}
+          title="Minimize — keep the call running"
+          aria-label="Minimize room view, keep call running"
+        >
+          <Icon name="chevron-down" size={16} /> Minimize
         </button>
       </div>
 
