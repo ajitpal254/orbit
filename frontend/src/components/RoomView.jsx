@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock, setRoomMode, updateProfile } from '../api';
+import { apiJson, getFriends, getUserAvatars, inviteToRoom, leavePrivateRoom, promoteMember, demoteMember, kickMember, transferOwnership, muteMember, keepRoom, createInviteLink, getInviteLink, revokeInviteLink, getRoomKnocks, admitKnock, declineKnock, setRoomMode, updateProfile, uploadImage } from '../api';
 import { buildInviteLinkUrl } from '../deepLink';
+import { validateImageFile, readImageDimensions } from '../media';
+import ChatMessage from './ChatMessage';
 import { getSocket } from '../socket';
 import { VoiceEngine } from '../voice';
 import { normalizeMood, moodLabel, MOOD_META } from '../mood';
@@ -11,6 +13,7 @@ import { remainingMs, focusProgress, formatFocusRemaining, FOCUS_PRESET_MINUTES 
 import { trackEvent } from '../analytics';
 import { orbPositions, initials, orbHue } from '../orbLayout';
 import { clusterHuddles, clampPosition, SPATIAL_AUDIO_ENABLED } from '../proximity';
+import { supportsScreenShare, canStartSharing, SCREEN_SHARE_BUSY_MESSAGE } from '../screenShare';
 import Avatar from './Avatar';
 import CharacterArt from './CharacterAvatar';
 import { avatarCharacterById } from '../avatars';
@@ -27,7 +30,7 @@ const knockAge = (iso) => {
 };
 
 export default function RoomView({ user, room, onLeave, session, dispatchSession, voiceEngineRef, onUserChange }) {
-  const { muted, deafened, modMuted, modMutedBy } = session;
+  const { muted, deafened, modMuted, modMutedBy, sharing, screenSharerId, screenSharerName, shareError } = session;
   const [occupants, setOccupants] = useState(() => ({
     self: { socketId: 'self', userId: user.id, name: user.name, muted: false, isSelf: true, mood: normalizeMood(user.mood) }
   }));
@@ -52,6 +55,16 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [unread, setUnread] = useState(0);
+  // Media sharing (v0.8.0): a picked image waits in the composer as a
+  // thumbnail + progress bar; the message is sent only after the
+  // upload completes, with the returned URL in the payload. Dragging a
+  // file onto the chat sheet or pasting one into the input picks it
+  // the same way as the paperclip button.
+  const [pendingImage, setPendingImage] = useState(null); // { file, previewUrl, width, height, progress, uploading }
+  const [uploadError, setUploadError] = useState('');
+  const [sending, setSending] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
   // Private rooms: members + inviting friends in.
   const [showInvite, setShowInvite] = useState(false);
   // M1: on phones the members panel is collapsed by default (see the
@@ -134,7 +147,56 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   const soundOffRef = useRef(false);
   soundOffRef.current = muted || deafened || modMuted;
   // Audio settings (v0.7.0): the device picker + volume panel.
+  // (Restored: the v0.8.0 screen-share commit dropped this declaration
+  // while keeping its four usages, so any room render threw
+  // `ReferenceError: showAudio is not defined` — caught by the smoke
+  // test's "no uncaught page errors" assertion.)
   const [showAudio, setShowAudio] = useState(false);
+  // Screen sharing (v0.8.0): the incoming remote share ({ socketId,
+  // stream }) for the share layer, and whether this viewport is a
+  // phone — sharing is view-only on phones, so the Share button never
+  // renders there (matchMedia, same pattern as StoriesRow). The
+  // share state itself (who holds the slot, am I sharing) lives in
+  // the App-owned voice session, not here.
+  const [remoteShare, setRemoteShare] = useState(null);
+  const shareVideoRef = useRef(null);
+  const [isPhone, setIsPhone] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 520px)').matches
+  );
+  const sharingRef = useRef(false);
+  sharingRef.current = sharing;
+  const canShare = !isPhone && supportsScreenShare(
+    typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 520px)');
+    const onChange = (e) => setIsPhone(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  // The video element for the incoming share: attach the stream when
+  // a share arrives, detach when it ends. play() is best-effort — the
+  // track carries no audio, so autoplay is not blocked, but a
+  // backgrounded tab may still refuse it.
+  useEffect(() => {
+    const video = shareVideoRef.current;
+    if (!video) return undefined;
+    if (!remoteShare) {
+      video.srcObject = null;
+      return undefined;
+    }
+    video.srcObject = remoteShare.stream;
+    video.play().catch(() => {});
+    return () => { video.srcObject = null; };
+  }, [remoteShare]);
+  const enterShareFullscreen = () => {
+    const video = shareVideoRef.current;
+    if (!video || !video.requestFullscreen) return;
+    video.requestFullscreen().catch(() => {});
+  };
+  const remoteSharerName = remoteShare
+    ? (occupants[remoteShare.socketId]?.name || screenSharerName || 'Someone')
+    : '';
   // "Connection details" popover: the per-peer ICE/debug line lives
   // here instead of always-on under the orbs (see below).
   const [showConnDetails, setShowConnDetails] = useState(false);
@@ -191,14 +253,22 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           setCandTypes((prev) => ({ ...prev, [socketId]: candidates }));
         }
       },
-      onPlaybackBlocked: () => setPlayBlocked(true)
+      onPlaybackBlocked: () => setPlayBlocked(true),
+      // Screen sharing (v0.8.0): a video track on a peer connection is
+      // a shared screen — it goes to the share layer, never the audio
+      // path. The engine reports the track, the track ending, and my
+      // own capture ending under me (browser chrome stop); RoomView
+      // owns the socket claim + stop, so there is one stop sequence.
+      onShareTrack: (socketId, stream) => setRemoteShare({ socketId, stream }),
+      onShareEnded: (socketId) => setRemoteShare((prev) => (prev && prev.socketId === socketId ? null : prev)),
+      onLocalShareEnded: () => { stopSharing(); }
     });
     voiceRef.current = voice;
     // App owns the session and needs the engine so the mini-player can
     // toggle mute while this view is hidden; cleared on teardown below.
     if (voiceEngineRef) voiceEngineRef.current = voice;
 
-    const onRoomState = ({ occupants: others, mutedByModerator, focusSession: fs }) => {
+    const onRoomState = ({ occupants: others, mutedByModerator, focusSession: fs, screenSharer }) => {
       setOccupants((prev) => {
         const next = { ...prev };
         for (const o of others || []) {
@@ -214,6 +284,17 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       // server already dropped); the server is the source of truth.
       setFocusSession(fs || null);
       if (fs) setFocusBusy(false);
+      // A screen share already running arrives the same way — a late
+      // joiner learns who is sharing (the video track itself arrives
+      // with the first offer, which already carries it).
+      if (screenSharer?.userId) {
+        dispatchSession({
+          type: 'share-started',
+          userId: screenSharer.userId,
+          name: screenSharer.name || '',
+          isMine: String(screenSharer.userId) === String(user.id)
+        });
+      }
       // A moderator muted me before I (re)joined — start muted again.
       if (mutedByModerator) applyModeratorMute(true, '');
     };
@@ -234,7 +315,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         return { ...prev, [socketId]: { ...prev[socketId], mood: normalizeMood(mood) } };
       });
     };
-    const onUserLeft = ({ socketId }) => {
+    const onUserLeft = ({ socketId, userId }) => {
       setOccupants((prev) => {
         const next = { ...prev };
         delete next[socketId];
@@ -246,6 +327,11 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
         delete next[socketId];
         return next;
       });
+      // If the leaver was sharing, the slot is gone with them — clear
+      // the share state and the layer (the server also broadcasts
+      // screen-share-stopped on leave, so this is the local half).
+      if (userId) dispatchSession({ type: 'share-stopped', userId });
+      setRemoteShare((prev) => (prev && prev.socketId === socketId ? null : prev));
       setConnState((prev) => {
         const next = { ...prev };
         delete next[socketId];
@@ -298,10 +384,38 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     // join-room, so there are no peers to tear down) and show the
     // friendly full-room card. Other 'error' events (focus, room
     // gone) are not join refusals and are left alone.
-    const onJoinError = ({ code } = {}) => {
-      if (code !== 'room-full') return;
-      voiceRef.current?.leave();
-      setRoomFull(true);
+    // Screen-share claim refused (v0.8.0): the room's one slot was
+    // already held — roll the local capture back (removeTrack +
+    // renegotiate, so no video keeps flowing) and surface the exact
+    // message "Someone is already sharing".
+    const onJoinError = ({ code, error } = {}) => {
+      if (code === 'room-full') {
+        voiceRef.current?.leave();
+        setRoomFull(true);
+        return;
+      }
+      if (code === 'screen-share-busy' || error === SCREEN_SHARE_BUSY_MESSAGE) {
+        if (voiceRef.current?.shareStream) voiceRef.current.stopScreenShare();
+        dispatchSession({ type: 'share-stopped' });
+        dispatchSession({ type: 'share-error', error: SCREEN_SHARE_BUSY_MESSAGE });
+      }
+    };
+    // Screen sharing (v0.8.0): the server broadcasts every claim and
+    // release to the whole room, including the sender — so my own
+    // start lands here as the confirmation, and a peer's start/stop
+    // lands here as the layer + banner update.
+    const onShareStarted = ({ userId: sharerId, roomId: r, name } = {}) => {
+      if (!r || r !== room.id || !sharerId) return;
+      dispatchSession({
+        type: 'share-started',
+        userId: sharerId,
+        name: name || '',
+        isMine: String(sharerId) === String(user.id)
+      });
+    };
+    const onShareStopped = ({ userId: sharerId, roomId: r } = {}) => {
+      if (!r || r !== room.id || !sharerId) return;
+      dispatchSession({ type: 'share-stopped', userId: sharerId });
     };
     // A remote orb moved: the server already validated + clamped the
     // position and checked membership — apply it to the override map
@@ -362,6 +476,8 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     socket.on('focus-stopped', onFocusStopped);
     socket.on('focus-ended', onFocusEnded);
     socket.on('room-mode-changed', onRoomModeChanged);
+    socket.on('screen-share-started', onShareStarted);
+    socket.on('screen-share-stopped', onShareStopped);
     socket.on('error', onJoinError);
 
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
@@ -386,6 +502,8 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       socket.off('focus-stopped', onFocusStopped);
       socket.off('focus-ended', onFocusEnded);
       socket.off('room-mode-changed', onRoomModeChanged);
+      socket.off('screen-share-started', onShareStarted);
+      socket.off('screen-share-stopped', onShareStopped);
       socket.off('error', onJoinError);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -412,6 +530,10 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     setFocusError('');
     setFocusBusy(false);
     chimedForRef.current = null;
+    // A new room has no share (yet): drop the layer and the slot
+    // state — the new room's room-state carries its own sharer.
+    setRemoteShare(null);
+    dispatchSession({ type: 'share-stopped' });
     // Same reset for the postcard sightings: a new room is a new stay.
     seenRef.current = new Map([[String(user.id), {
       id: String(user.id),
@@ -484,6 +606,38 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     dispatchSession({ type: 'set-muted', muted: next });
     playMuteSound(next);
   }, [muted, modMuted, dispatchSession]);
+
+  // Screen sharing (v0.8.0): start captures the screen and adds the
+  // video track to every peer connection, then claims the room's one
+  // slot over the socket. The server broadcast echoes the claim back
+  // (including to me) and sets the session state; a refused claim
+  // arrives as an 'error' event and the handler above rolls the local
+  // track back. Stop removes the track from every peer, renegotiates,
+  // and releases the slot. Leaving the room auto-stops the share: the
+  // engine stops the capture on teardown and the server releases the
+  // slot on leave-room / disconnect, so no explicit stop is needed on
+  // the leave path.
+  const startSharing = useCallback(async () => {
+    if (sharingRef.current) return;
+    dispatchSession({ type: 'share-clear-error' });
+    if (!canStartSharing({ sharerUserId: screenSharerId, selfId: user.id })) {
+      dispatchSession({ type: 'share-error', error: SCREEN_SHARE_BUSY_MESSAGE });
+      return;
+    }
+    const res = await voiceRef.current?.startScreenShare();
+    if (!res?.ok) {
+      dispatchSession({ type: 'share-error', error: res?.error || 'Could not start screen sharing.' });
+      return;
+    }
+    getSocket().emit('screen-share-started', { roomId: room.id });
+  }, [room.id, screenSharerId, user.id, dispatchSession]);
+
+  const stopSharing = useCallback(async () => {
+    if (!sharingRef.current && !voiceRef.current?.shareStream) return;
+    await voiceRef.current?.stopScreenShare();
+    getSocket().emit('screen-share-stopped', { roomId: room.id });
+    dispatchSession({ type: 'share-stopped' });
+  }, [room.id, dispatchSession]);
 
   const toggleDeafen = useCallback(() => {
     const next = !deafened;
@@ -839,12 +993,64 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
     }
   };
 
-  const sendMessage = (e) => {
+  const pickImage = async (file) => {
+    const check = validateImageFile(file);
+    if (!check.ok) { setUploadError(check.error); return; }
+    setUploadError('');
+    let dims = {};
+    try {
+      dims = await readImageDimensions(file);
+    } catch {
+      setUploadError('That file is not a valid image');
+      return;
+    }
+    setPendingImage((prev) => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return {
+        file, previewUrl: URL.createObjectURL(file),
+        width: dims.width, height: dims.height, progress: 0, uploading: false
+      };
+    });
+  };
+
+  const cancelPendingImage = () => {
+    setPendingImage((prev) => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    setUploadError('');
+  };
+
+  const sendMessage = async (e) => {
     e.preventDefault();
     const text = draft.trim();
-    if (!text) return;
+    if ((!text && !pendingImage) || sending) return;
+    setSending(true);
+    let media;
+    if (pendingImage) {
+      // Upload first — the message carries the returned URL, so a
+      // failed upload never sends a broken image.
+      setPendingImage((p) => p && { ...p, uploading: true });
+      try {
+        media = await uploadImage(pendingImage.file, {
+          width: pendingImage.width,
+          height: pendingImage.height,
+          onProgress: (pct) => setPendingImage((p) => p && { ...p, progress: pct })
+        });
+      } catch (err) {
+        setUploadError(err.message);
+        setPendingImage((p) => p && { ...p, uploading: false });
+        setSending(false);
+        return;
+      }
+      setPendingImage((prev) => {
+        if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+        return null;
+      });
+    }
     setDraft('');
-    getSocket().emit('chat-message', { roomId: room.id, text });
+    setSending(false);
+    getSocket().emit('chat-message', { roomId: room.id, text, media });
   };
 
   // Together mode: start/stop the shared focus timer, and switch the
@@ -1043,7 +1249,7 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
   }
 
   return (
-    <div className="room-view" style={{ '--room-from': accent.from, '--room-to': accent.to }}>
+    <div className={`room-view${sharing || remoteShare ? ' room-view--sharing' : ''}`} style={{ '--room-from': accent.from, '--room-to': accent.to }}>
       <div className="room-header">
         <button className="btn btn-text" onClick={handleLeave}><Icon name="chevron-left" size={16} /> Rooms</button>
         <div className="room-title">
@@ -1184,6 +1390,23 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       {focusError && <p className="error">{focusError}</p>}
 
       {micError && <p className="mic-error">{micError}</p>}
+
+      {/* Screen sharing (v0.8.0): the floating "You are sharing"
+          banner with its Stop button, and the refusal error (the
+          room's one slot was already held). The banner has no
+          animation, so prefers-reduced-motion needs nothing extra. */}
+      {sharing && (
+        <div className="sharing-banner" role="status">
+          <Icon name="screen" size={16} /> You are sharing your screen
+          <button className="btn btn-text btn-small" onClick={stopSharing}>Stop sharing</button>
+        </div>
+      )}
+      {shareError && (
+        <p className="mic-error" role="alert">
+          {shareError}{' '}
+          <button className="btn btn-text btn-small" onClick={() => dispatchSession({ type: 'share-clear-error' })}>Dismiss</button>
+        </p>
+      )}
 
       {/* Invite link panel: the room's shareable join link. In flow
           below the header (not absolute), so it can never hide behind
@@ -1386,6 +1609,21 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           className="room-halo"
           style={{ background: `radial-gradient(circle, ${accent.from}33, transparent 65%)` }}
         />
+        {/* Screen share layer (v0.8.0): a fixed z-index:0 element
+            behind the orbs (z-index:2) that renders the incoming
+            <video> for non-sharers — my own screen needs no preview.
+            It sits after the starfield/nebula in the DOM so it paints
+            above the sky, below the orbs. No animation or transition
+            on the layer, ever (see share.css). */}
+        {remoteShare && (
+          <div className="share-layer" role="region" aria-label={`Screen shared by ${remoteSharerName}`}>
+            <video ref={shareVideoRef} className="share-video" autoPlay playsInline />
+            <span className="share-layer-label">{remoteSharerName} is sharing their screen</span>
+            <button type="button" className="share-fullscreen-btn" onClick={enterShareFullscreen}>
+              Tap to view full screen
+            </button>
+          </div>
+        )}
         {/* Huddle bubbles: a soft dashed ring around each cluster of
             close orbs, with a text label naming who is in it. The
             dashed border + label are the non-colour cue — a huddle is
@@ -1608,7 +1846,17 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
       )}
 
       {chatOpen && (
-        <div className="chat-sheet">
+        <div
+          className={`chat-sheet ${dragOver ? 'chat-drag-over' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            const f = e.dataTransfer?.files?.[0];
+            if (f) pickImage(f);
+          }}
+        >
           <div className="chat-head">
             <strong>Chat — {room.name}</strong>
             <button className="btn btn-text" onClick={() => setChatOpen(false)} aria-label="Close chat"><Icon name="x" size={16} /></button>
@@ -1618,25 +1866,60 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
               <p className="muted chat-empty">No messages yet. Say hi</p>
             )}
             {messages.map((m) => (
-              <div key={m.id} className={`chat-msg ${m.userId === user.id ? 'mine' : ''}`}>
-                <span className="chat-name">{m.userId === user.id ? 'You' : m.name}</span>
-                <span className="chat-text">{m.text}</span>
-                <span className="chat-time">
-                  {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
+              <ChatMessage
+                key={m.id}
+                name={m.userId === user.id ? 'You' : m.name}
+                mine={m.userId === user.id}
+                text={m.text}
+                media={m.media}
+                createdAt={m.createdAt}
+              />
             ))}
             <div ref={chatEndRef} />
           </div>
           <form className="chat-input" onSubmit={sendMessage}>
             <input
+              type="file"
+              ref={fileInputRef}
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) pickImage(f);
+                e.target.value = '';
+              }}
+            />
+            <button type="button" className="btn btn-text chat-attach" onClick={() => fileInputRef.current?.click()} aria-label="Attach an image" title="Attach an image" disabled={sending}>
+              <Icon name="image" size={18} />
+            </button>
+            <input
               placeholder={`Message ${room.name}…`}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               maxLength={1000}
+              onPaste={(e) => {
+                const f = e.clipboardData?.files?.[0];
+                if (f) pickImage(f);
+              }}
             />
-            <button className="btn btn-primary" type="submit"><Icon name="send" size={15} /> Send</button>
+            <button className="btn btn-primary" type="submit" disabled={sending}><Icon name="send" size={15} /> Send</button>
           </form>
+          {pendingImage && (
+            <div className="chat-upload">
+              <img src={pendingImage.previewUrl} alt={pendingImage.file.name} />
+              <div className="chat-upload-meta">
+                <span className="chat-upload-name">{pendingImage.file.name}</span>
+                <div className="chat-upload-bar" role="progressbar" aria-valuenow={pendingImage.progress} aria-valuemin={0} aria-valuemax={100}>
+                  <span style={{ width: `${pendingImage.progress}%` }} />
+                </div>
+                <span className="muted">{pendingImage.uploading ? `Uploading… ${pendingImage.progress}%` : 'Ready to send'}</span>
+              </div>
+              <button type="button" className="btn btn-text" onClick={cancelPendingImage} aria-label="Remove image" disabled={pendingImage.uploading}>
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          )}
+          {uploadError && <p className="error chat-upload-error">{uploadError}</p>}
           <p className="muted chat-fade-note">Messages disappear after 24 hours.</p>
         </div>
       )}
@@ -1663,6 +1946,21 @@ export default function RoomView({ user, room, onLeave, session, dispatchSession
           <Icon name="chat" size={26} />
           {unread > 0 && <span className="unread-badge">{unread}</span>}
         </button>
+        {/* Screen sharing (v0.8.0): desktop only — phones are
+            view-only, so canShare is false ≤520px and the button never
+            renders there (JS gate, not CSS, so the single ≤520px media
+            block stays untouched). While sharing it doubles as Stop. */}
+        {canShare && (
+          <button
+            className={`voice-btn voice-btn--share ${sharing ? 'sharing' : ''}`}
+            onClick={sharing ? stopSharing : startSharing}
+            title={sharing ? 'Stop sharing' : 'Share your screen'}
+            aria-label={sharing ? 'Stop sharing' : 'Share your screen'}
+            aria-pressed={sharing}
+          >
+            <Icon name="screen" size={26} />
+          </button>
+        )}
         <button className="voice-btn leave" onClick={handleLeave} title="Leave room" aria-label="Leave room">
           <Icon name="phone" size={26} />
         </button>

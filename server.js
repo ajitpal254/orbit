@@ -10,6 +10,7 @@ const apiRoutes = require('./routes/api');
 const { rateLimitMiddleware, csrfMiddleware } = require('./middleware/auth');
 const { attachSocket, emitRoomsChanged, clearMutedForRoom, clearFocusTimer } = require('./lib/socket');
 const { startCleanupWorker } = require('./lib/fadingRooms');
+const { ensureMediaIndexes } = require('./lib/media');
 const { focusSessions, clearSession } = require('./lib/focusSessions');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
@@ -116,6 +117,14 @@ if (require.main === module) {
         }
       } catch (err) {
         logger.warn({ err }, 'Push-subscription index sync failed — the old endpoint-only index may still block a second account on one device');
+      }
+      // Media uploads fade with their message (lib/media.js): the TTL
+      // index on media.files metadata.expireAt is the storage cleanup
+      // half. Best-effort — a failure is logged, never fatal.
+      try {
+        await ensureMediaIndexes(mongoose.connection.db);
+      } catch (err) {
+        logger.warn({ err }, 'Media TTL index creation failed — uploaded images may linger past their message expiry');
       }
       // Campfire cleanup worker: sweeps due campfires every 15s and
       // deletes them (persisted expiresAt + atomic claim — restart-safe,

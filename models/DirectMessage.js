@@ -15,7 +15,17 @@ const directMessageSchema = new mongoose.Schema({
   // on write to createdAt + 24h. DMs fade exactly like room messages.
   // Legacy DMs have no expireAt and stay visible (grandfathered, not
   // backfilled).
-  expireAt: { type: Date }
+  expireAt: { type: Date },
+  // Optional image attachment (media sharing, v0.8.0) — identical to
+  // Message.media: our own /api/media/<fileId> URL only, expiring
+  // with this DM (see models/Message.js).
+  media: {
+    url: { type: String, maxlength: [500, 'Media URL too long'] },
+    type: { type: String, enum: ['image'] },
+    width: { type: Number, min: 1, max: 20000 },
+    height: { type: Number, min: 1, max: 20000 },
+    name: { type: String, maxlength: [200, 'Filename too long'] }
+  }
 }, { timestamps: true });
 
 // Fast conversation fetch: one friend's thread, newest first.

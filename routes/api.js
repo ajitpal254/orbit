@@ -33,7 +33,14 @@ const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, fin
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { addMember, removeMember, setMemberRole, transferOwnership } = require('../lib/membership');
 const { canDm, buildSummaries } = require('../lib/dms');
-const { notExpiredFilter, withExpiry } = require('../lib/fadingChat');
+const multer = require('multer');
+const LinkPreview = require('../models/LinkPreview');
+const {
+  MAX_FILE_BYTES, isAllowedImageMime, validateUploadFile, validateUploadBuffer,
+  storeUpload, findMediaFile, getBucket, linkMediaToMessage, claimUploadForMessage
+} = require('../lib/media');
+const { normalizeUrl, fetchUnfurl, UNFURL_CACHE_TTL_MS } = require('../lib/unfurl');
+const { notExpiredFilter, withExpiry, isExpired } = require('../lib/fadingChat');
 const { aliveFilter, isVisible, keepRoom } = require('../lib/fadingRooms');
 const {
   expiryForKnock, isKnockPending, isKnockRateLimited,
@@ -1035,6 +1042,11 @@ const messageJson = (m) => {
     userId: String(m.userId),
     name: m.name,
     text,
+    // Media is plain metadata (our own /api/media URL, dimensions,
+    // filename) — never encrypted, never a remote URL.
+    media: m.media && m.media.url
+      ? { url: m.media.url, type: 'image', width: m.media.width, height: m.media.height, name: m.media.name }
+      : undefined,
     createdAt: m.createdAt
   };
 };
@@ -1059,16 +1071,27 @@ router.post('/rooms/:id/messages', authMiddleware, asyncHandler(async (req, res)
   if (!canSeeRoom(room, req.user._id)) {
     return res.status(403).json({ error: 'This room is private' });
   }
-  const { ok, error, text } = validateMessageInput(req.body || {});
+  const { ok, error, text, media } = validateMessageInput(req.body || {});
   if (!ok) return res.status(400).json({ error });
+  const claim = await claimUploadForMessage(media, req.user._id);
+  if (!claim.ok) return res.status(400).json({ error: claim.error });
   const msg = await Message.create(withExpiry({
     roomId: room._id,
     userId: req.user._id,
     name: req.user.name,
     // Stored encrypted; the broadcast below sends the plaintext to room
     // members over their own TLS/WSS connection — that is correct.
-    text: encrypt(text)
+    text: encrypt(text),
+    ...(claim.media ? { media: claim.media } : {})
   }));
+  if (claim.fileId) {
+    // The file fades with this message from here on. A link failure
+    // (lost race) only leaves the provisional upload expiry in place
+    // — ~the same 24h — never a visible error.
+    const linked = await linkMediaToMessage(claim.fileId, { messageId: msg._id, expireAt: msg.expireAt })
+      .catch(() => false);
+    if (!linked) req.log.warn({ messageId: String(msg._id) }, 'Uploaded image could not be linked to its message — it keeps its provisional expiry');
+  }
   // Broadcast live to everyone in the room (socket.io attached on the app).
   const io = req.app.get('io');
   if (io) io.to(String(room._id)).emit('chat-message', messageJson(msg));
@@ -1552,6 +1575,9 @@ const dmJson = (m, senderName) => ({
   recipientId: String(m.recipient),
   senderName: senderName || '',
   text: decryptDmText(m),
+  media: m.media && m.media.url
+    ? { url: m.media.url, type: 'image', width: m.media.width, height: m.media.height, name: m.media.name }
+    : undefined,
   read: !!m.read,
   createdAt: m.createdAt
 });
@@ -1634,15 +1660,23 @@ router.post('/dms/:userId', authMiddleware, friendLimit, asyncHandler(async (req
   if (!canDm(friendRows, req.user._id, other._id)) {
     return res.status(403).json({ error: 'Direct messages are for friends only' });
   }
-  const { ok, error, text } = validateMessageInput(req.body || {});
+  const { ok, error, text, media } = validateMessageInput(req.body || {});
   if (!ok) return res.status(400).json({ error });
+  const claim = await claimUploadForMessage(media, req.user._id);
+  if (!claim.ok) return res.status(400).json({ error: claim.error });
   const msg = await DirectMessage.create(withExpiry({
     sender: req.user._id,
     recipient: other._id,
     // Stored encrypted; the push below sends the plaintext to the
     // recipient over their own TLS/WSS connection — that is correct.
-    text: encrypt(text)
+    text: encrypt(text),
+    ...(claim.media ? { media: claim.media } : {})
   }));
+  if (claim.fileId) {
+    const linked = await linkMediaToMessage(claim.fileId, { messageId: msg._id, expireAt: msg.expireAt })
+      .catch(() => false);
+    if (!linked) req.log.warn({ messageId: String(msg._id) }, 'Uploaded image could not be linked to its DM — it keeps its provisional expiry');
+  }
   const payload = dmJson(msg, req.user.name);
   emitToUser(other._id, 'dm-message', payload);
   // One unread DM notification per sender (deduped) + best-effort push.
@@ -1652,6 +1686,145 @@ router.post('/dms/:userId', authMiddleware, friendLimit, asyncHandler(async (req
   });
   req.log.info({ userId: String(req.user._id), recipientId: String(other._id) }, 'DM sent');
   res.status(201).json(payload);
+}));
+
+// --- MEDIA SHARING (IMAGES + LINK PREVIEWS) ---
+
+// Uploads are images only, 10MB cap, stored in MongoDB GridFS (no new
+// external service). Two validation layers: multer's fileFilter on the
+// declared MIME type, then a magic-byte sniff on the buffer itself.
+// The CSRF middleware already ran (header-based, so multipart is
+// fine); the global /api rate limiter applies, plus the friend-limit
+// bucket so one client cannot flood storage.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (!isAllowedImageMime(file.mimetype)) {
+      cb(new Error('Only images are allowed (JPEG, PNG, GIF, WebP)'));
+    } else {
+      cb(null, true);
+    }
+  }
+});
+
+// Client-measured image dimensions (the browser reads them off the
+// file before upload). Validated as sane ints — they drive display
+// size only, never security — and dropped when absent or bogus.
+const parseDimension = (v) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 20000 ? n : undefined;
+};
+
+router.post('/upload', authMiddleware, friendLimit, (req, res) => {
+  upload.single('file')(req, res, async (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'Image must be 10MB or smaller' });
+      }
+      return res.status(400).json({ error: err.message || 'Upload failed' });
+    }
+    const fileCheck = validateUploadFile(req.file);
+    if (!fileCheck.ok) return res.status(400).json({ error: fileCheck.error });
+    const bufferCheck = validateUploadBuffer(req.file.buffer, req.file.mimetype);
+    if (!bufferCheck.ok) return res.status(400).json({ error: bufferCheck.error });
+    try {
+      const { url } = await storeUpload({
+        buffer: req.file.buffer,
+        mimetype: bufferCheck.mime,
+        originalName: req.file.originalname,
+        uploaderId: req.user._id
+      });
+      res.status(201).json({
+        url,
+        type: 'image',
+        width: parseDimension(req.body?.width),
+        height: parseDimension(req.body?.height),
+        name: String(req.file.originalname || '').slice(0, 200)
+      });
+    } catch (e) {
+      req.log.error({ err: e }, 'Image upload storage failed');
+      res.status(503).json({ error: 'Image upload is unavailable right now — please try again' });
+    }
+  });
+});
+
+// Who may download a stored image: the uploader, or anyone who can
+// see the message it belongs to (room member / DM participant).
+// An unclaimed upload (message not sent yet) is the uploader's only.
+// Expired messages — and files whose own expiry passed — never serve.
+const canSeeMediaFile = async (file, userId) => {
+  if (String(file.metadata?.uploaderId) === String(userId)) return true;
+  const messageId = file.metadata?.messageId;
+  if (!messageId) return false;
+  const roomMsg = await Message.findById(messageId).lean();
+  if (roomMsg) {
+    if (isExpired(roomMsg)) return false;
+    const room = await Room.findById(roomMsg.roomId).lean();
+    return !!room && canSeeRoom(room, userId);
+  }
+  const dm = await DirectMessage.findById(messageId).lean();
+  if (dm) {
+    if (isExpired(dm)) return false;
+    return String(dm.sender) === String(userId) || String(dm.recipient) === String(userId);
+  }
+  return false;
+};
+
+// GET /api/media/:id — stream a stored image. 404 (never 403) for a
+// missing, expired, or not-yours file, so existence is not leaked.
+router.get('/media/:id', authMiddleware, asyncHandler(async (req, res) => {
+  const fileId = req.params.id;
+  if (!mongoose.Types.ObjectId.isValid(fileId)) {
+    return res.status(404).json({ error: 'Image not found' });
+  }
+  const file = await findMediaFile(fileId);
+  if (!file) return res.status(404).json({ error: 'Image not found' });
+  const expireAt = file.metadata?.expireAt ? new Date(file.metadata.expireAt) : null;
+  if (expireAt && expireAt.getTime() <= Date.now()) {
+    return res.status(404).json({ error: 'Image not found' });
+  }
+  if (!await canSeeMediaFile(file, req.user._id)) {
+    return res.status(404).json({ error: 'Image not found' });
+  }
+  const safeName = String(file.metadata?.originalName || 'image').replace(/["\r\n]/g, '').slice(0, 200) || 'image';
+  res.setHeader('Content-Type', file.metadata?.contentType || 'application/octet-stream');
+  res.setHeader('Content-Length', file.length);
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+  const stream = getBucket().openDownloadStream(new mongoose.Types.ObjectId(fileId));
+  stream.on('error', (streamErr) => {
+    req.log.warn({ err: streamErr }, 'Media download stream failed');
+    if (!res.headersSent) res.status(404).json({ error: 'Image not found' });
+    else res.end();
+  });
+  stream.pipe(res);
+}));
+
+// POST /api/unfurl { url } — server-side Open Graph fetch (never from
+// the client, to avoid CORS). Cached in Mongo for 7 days; a failure
+// answers 200 with an all-null preview — the message still sends,
+// just without a card. Never 500s on a bad or unreachable URL.
+router.post('/unfurl', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  const url = normalizeUrl(req.body?.url);
+  if (!url) return res.status(400).json({ error: 'A valid http(s) URL is required' });
+  const cached = await LinkPreview.findOne({ url }).lean();
+  if (cached && Date.now() - new Date(cached.fetchedAt).getTime() < UNFURL_CACHE_TTL_MS) {
+    return res.json({
+      url, title: cached.title, description: cached.description,
+      image: cached.image, favicon: cached.favicon
+    });
+  }
+  const preview = await fetchUnfurl(url);
+  if (!preview) {
+    return res.json({ url, title: null, description: null, image: null, favicon: null });
+  }
+  await LinkPreview.updateOne(
+    { url },
+    { $set: { ...preview, fetchedAt: new Date() } },
+    { upsert: true }
+  ).catch((err) => req.log.warn({ err }, 'Link preview cache write failed'));
+  res.json(preview);
 }));
 
 // --- NOTIFICATIONS (IN-APP CENTER) ---

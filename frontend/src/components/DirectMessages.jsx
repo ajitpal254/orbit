@@ -4,7 +4,9 @@
 // A `dm-message` socket push (handled in App.jsx) bumps refreshTick, so
 // lists and badges update live; opening a thread marks it read.
 import React, { useEffect, useRef, useState } from 'react';
-import { getDms, getDmThread, sendDm } from '../api';
+import { getDms, getDmThread, sendDm, uploadImage } from '../api';
+import { validateImageFile, readImageDimensions } from '../media';
+import ChatMessage from './ChatMessage';
 import Avatar from './Avatar';
 import { Icon } from './icons';
 
@@ -18,6 +20,13 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
+  // Media sharing (v0.8.0) — same flow as room chat: pick (button,
+  // drag-and-drop onto the thread, or paste), thumbnail + progress,
+  // send only after the upload completes.
+  const [pendingImage, setPendingImage] = useState(null); // { file, previewUrl, width, height, progress, uploading }
+  const [uploadError, setUploadError] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
   const endRef = useRef(null);
   const onMessagesReadRef = useRef(onMessagesRead);
   onMessagesReadRef.current = onMessagesRead;
@@ -65,15 +74,64 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
     }
   }, [messages, selected]);
 
+  const pickImage = async (file) => {
+    const check = validateImageFile(file);
+    if (!check.ok) { setUploadError(check.error); return; }
+    setUploadError('');
+    let dims = {};
+    try {
+      dims = await readImageDimensions(file);
+    } catch {
+      setUploadError('That file is not a valid image');
+      return;
+    }
+    setPendingImage((prev) => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return {
+        file, previewUrl: URL.createObjectURL(file),
+        width: dims.width, height: dims.height, progress: 0, uploading: false
+      };
+    });
+  };
+
+  const cancelPendingImage = () => {
+    setPendingImage((prev) => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    setUploadError('');
+  };
+
   const send = async (e) => {
     e.preventDefault();
     const text = draft.trim();
-    if (!text || !selected || sending) return;
+    if ((!text && !pendingImage) || !selected || sending) return;
     setDraft('');
     setError('');
     setSending(true);
+    let media;
+    if (pendingImage) {
+      setPendingImage((p) => p && { ...p, uploading: true });
+      try {
+        media = await uploadImage(pendingImage.file, {
+          width: pendingImage.width,
+          height: pendingImage.height,
+          onProgress: (pct) => setPendingImage((p) => p && { ...p, progress: pct })
+        });
+      } catch (err) {
+        setError(err.message);
+        setPendingImage((p) => p && { ...p, uploading: false });
+        setSending(false);
+        setDraft(text);
+        return;
+      }
+      setPendingImage((prev) => {
+        if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+        return null;
+      });
+    }
     try {
-      const msg = await sendDm(selected.userId, text);
+      const msg = await sendDm(selected.userId, text, media);
       setMessages((prev) => [...prev, msg]);
       await loadList();
     } catch (err) {
@@ -86,7 +144,17 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
 
   if (selected) {
     return (
-      <div className="view view-anim dm-thread">
+      <div
+        className={`view view-anim dm-thread ${dragOver ? 'chat-drag-over' : ''}`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer?.files?.[0];
+          if (f) pickImage(f);
+        }}
+      >
         <div className="dm-thread-head">
           <button className="btn btn-text" onClick={() => setSelected(null)}><Icon name="chevron-left" size={16} /> Messages</button>
           <Avatar user={selected} size="sm" className="person-orb" />
@@ -101,11 +169,14 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
             <p className="muted chat-empty">No messages yet. Say hi</p>
           )}
           {messages.map((m) => (
-            <div key={m.id} className={`chat-msg ${m.senderId === user.id ? 'mine' : ''}`}>
-              <span className="chat-name">{m.senderId === user.id ? 'You' : m.senderName}</span>
-              <span className="chat-text">{m.text}</span>
-              <span className="chat-time">{timeOf(m.createdAt)}</span>
-            </div>
+            <ChatMessage
+              key={m.id}
+              name={m.senderId === user.id ? 'You' : m.senderName}
+              mine={m.senderId === user.id}
+              text={m.text}
+              media={m.media}
+              createdAt={m.createdAt}
+            />
           ))}
           <div ref={endRef} />
         </div>
@@ -113,13 +184,47 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
         {error && <p className="error">{error}</p>}
         <form className="dm-input" onSubmit={send}>
           <input
+            type="file"
+            ref={fileInputRef}
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) pickImage(f);
+              e.target.value = '';
+            }}
+          />
+          <button type="button" className="btn btn-text chat-attach" onClick={() => fileInputRef.current?.click()} aria-label="Attach an image" title="Attach an image" disabled={sending}>
+            <Icon name="image" size={18} />
+          </button>
+          <input
             placeholder={`Message ${selected.name || 'them'}…`}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             maxLength={1000}
+            onPaste={(e) => {
+              const f = e.clipboardData?.files?.[0];
+              if (f) pickImage(f);
+            }}
           />
           <button className="btn btn-primary" type="submit" disabled={sending}><Icon name="send" size={15} /> Send</button>
         </form>
+        {pendingImage && (
+          <div className="chat-upload">
+            <img src={pendingImage.previewUrl} alt={pendingImage.file.name} />
+            <div className="chat-upload-meta">
+              <span className="chat-upload-name">{pendingImage.file.name}</span>
+              <div className="chat-upload-bar" role="progressbar" aria-valuenow={pendingImage.progress} aria-valuemin={0} aria-valuemax={100}>
+                <span style={{ width: `${pendingImage.progress}%` }} />
+              </div>
+              <span className="muted">{pendingImage.uploading ? `Uploading… ${pendingImage.progress}%` : 'Ready to send'}</span>
+            </div>
+            <button type="button" className="btn btn-text" onClick={cancelPendingImage} aria-label="Remove image" disabled={pendingImage.uploading}>
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+        )}
+        {uploadError && <p className="error chat-upload-error">{uploadError}</p>}
         <p className="muted chat-fade-note">Messages disappear after 24 hours.</p>
       </div>
     );
@@ -157,7 +262,7 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
                 <strong>{c.name || 'Unnamed'}</strong>
                 <span className={`dm-preview ${c.unreadCount > 0 ? 'unread' : ''}`}>
                   {c.lastMessage
-                    ? `${c.lastMessage.fromMe ? 'You: ' : ''}${c.lastMessage.text}`
+                    ? `${c.lastMessage.fromMe ? 'You: ' : ''}${c.lastMessage.text || (c.lastMessage.media ? '📷 Photo' : '')}`
                     : 'No messages yet'}
                 </span>
               </span>

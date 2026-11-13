@@ -16,7 +16,15 @@ export const initialVoiceSessionState = {
   muted: false,
   deafened: false,
   modMuted: false, // a moderator muted me — the mute button is disabled
-  modMutedBy: '' // name of the moderator who muted me ('' when not muted)
+  modMutedBy: '', // name of the moderator who muted me ('' when not muted)
+  // Screen sharing (v0.8.0): one sharer per room. `sharing` is me
+  // sharing; screenSharerId/Name is whoever holds the slot (me or a
+  // peer) so the room can show the video layer + banner. shareError
+  // is the last refusal, e.g. "Someone is already sharing".
+  sharing: false,
+  screenSharerId: null,
+  screenSharerName: '',
+  shareError: ''
 };
 
 export function voiceSessionReducer(state, action) {
@@ -44,6 +52,28 @@ export function voiceSessionReducer(state, action) {
         muted: action.muted,
         modMutedBy: action.muted ? (action.by || '') : ''
       };
+    case 'share-started':
+      // Someone (me or a peer) took the room's one share slot. isMine
+      // is passed by the caller — the reducer does not know my id.
+      return {
+        ...state,
+        sharing: !!action.isMine,
+        screenSharerId: action.userId || null,
+        screenSharerName: action.name || '',
+        shareError: ''
+      };
+    case 'share-stopped':
+      // Only the current sharer's stop clears the slot; a stale stop
+      // (or someone else's) must never clear a live share. An
+      // action with no userId (my own stop button) clears always.
+      if (action.userId && state.screenSharerId && String(action.userId) !== String(state.screenSharerId)) {
+        return state;
+      }
+      return { ...state, sharing: false, screenSharerId: null, screenSharerName: '', shareError: '' };
+    case 'share-error':
+      return { ...state, shareError: action.error || 'Could not start screen sharing.' };
+    case 'share-clear-error':
+      return { ...state, shareError: '' };
     default:
       return state;
   }

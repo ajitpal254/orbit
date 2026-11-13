@@ -11,6 +11,7 @@ import './css/auth.css';
 import './css/home.css';
 import './css/room.css';
 import './css/voice.css';
+import './css/share.css';
 import './css/nav.css';
 import './css/friends.css';
 import './css/members.css';
