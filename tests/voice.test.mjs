@@ -322,6 +322,19 @@ test('join loads account TURN from /api/config into iceServers', async () => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Wait for a timer-driven condition instead of sleeping a fixed
+// amount and hoping the timer fired in time: on a loaded CI runner
+// a 20ms grace + 40ms sleep leaves almost no slack (the v0.9.0
+// merge run failed exactly here — restartIceCalls was still 0).
+async function waitFor(cond, message) {
+  const start = Date.now();
+  for (;;) {
+    if (cond()) return;
+    if (Date.now() - start > 2000) assert.fail(`timed out waiting: ${message}`);
+    await sleep(5);
+  }
+}
+
 function makeRecoveryEngine(phases, opts = {}) {
   return makeEngine('me', {
     iceGraceMs: 20,
@@ -351,8 +364,7 @@ test('ICE disconnected: grace, then restartIce; recovery clears on connected', a
   setIce(peer, 'disconnected');
   assert.equal(peer.pc.restartIceCalls, 0, 'no restart inside the grace');
   assert.deepEqual(phases, [['peer1', 'recovering']]);
-  await sleep(40);
-  assert.equal(peer.pc.restartIceCalls, 1, 'restartIce fires once the grace elapses');
+  await waitFor(() => peer.pc.restartIceCalls === 1, 'restartIce fires once the grace elapses');
   // Still disconnected after the restart: the restart timeout is
   // armed, but recovery must clear as soon as ICE comes back.
   setIce(peer, 'connected');
@@ -392,12 +404,10 @@ test('ICE restart that never recovers recreates the peer', async () => {
   const engine = makeRecoveryEngine(phases);
   const peer = await peerWithOffer(engine, 'peer1');
   setIce(peer, 'disconnected');
-  await sleep(40);
-  assert.equal(peer.pc.restartIceCalls, 1);
+  await waitFor(() => peer.pc.restartIceCalls === 1, 'restartIce fires once the grace elapses');
   assert.deepEqual(phases, [['peer1', 'recovering']]);
   // Still disconnected past the restart timeout: full reconnect.
-  await sleep(80);
-  assert.equal(peer.pc.closed, true, 'the unrecovered pc is closed');
+  await waitFor(() => peer.pc.closed === true, 'the unrecovered pc is closed');
   const recreated = engine.peers.get('peer1');
   assert.ok(recreated);
   assert.notEqual(recreated.pc, peer.pc);
