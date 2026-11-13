@@ -7,7 +7,7 @@ import { Icon } from './icons';
 // the room view's own voice bar). Tap anywhere to jump back into the
 // room; the mute button toggles the same session the voice bar controls,
 // so both always agree.
-export default function MiniPlayer({ roomName, joinedAt, muted, modMuted, onToggleMute, onReturn }) {
+export default function MiniPlayer({ roomName, joinedAt, muted, modMuted, reconnecting, onToggleMute, onReturn }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -26,12 +26,14 @@ export default function MiniPlayer({ roomName, joinedAt, muted, modMuted, onTogg
           onReturn();
         }
       }}
-      aria-label={`Back to ${roomName}, in call ${formatCallDuration(elapsed)}`}
+      aria-label={reconnecting ? `Back to ${roomName}, reconnecting` : `Back to ${roomName}, in call ${formatCallDuration(elapsed)}`}
     >
       <span className="mini-player-dot" aria-hidden="true" />
       <span className="mini-player-info">
         <strong>{roomName}</strong>
-        <span className="mini-player-time">{formatCallDuration(elapsed)}</span>
+        {/* Reconnecting (v0.9.0): the call is still the same one —
+            say so instead of a frozen timer. */}
+        <span className="mini-player-time">{reconnecting ? 'Reconnecting…' : formatCallDuration(elapsed)}</span>
       </span>
       <button
         className={`voice-btn mini-player-mute ${muted ? 'off' : ''}`}

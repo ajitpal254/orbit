@@ -672,6 +672,7 @@ export default function App() {
           joinedAt={session.joinedAt}
           muted={session.muted}
           modMuted={session.modMuted}
+          reconnecting={session.status === 'reconnecting'}
           onToggleMute={toggleMute}
           onReturn={returnToRoom}
         />
