@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { apiJson } from '../api';
+import { apiJson, requestPasswordReset } from '../api';
 import { getGoogleClientId, shouldShowGoogleButton, loadGoogleScript, renderGoogleButton } from '../googleSignIn';
 import { Icon } from './icons';
 
@@ -13,6 +13,29 @@ export default function Auth({ onAuth, notice, onRetry }) {
   const [googleClientId, setGoogleClientId] = useState(null);
   const googleBtnRef = useRef(null);
   const googleRenderedRef = useRef(false);
+  // Forgot-password sub-view (v0.9.1): a "Forgot password?" link on
+  // the log-in form opens this; submitting POSTs
+  // /api/auth/forgot-password, which always answers 200 with a
+  // generic message — the UI repeats that message verbatim, never
+  // hinting whether the email has an account.
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotError, setForgotError] = useState('');
+
+  const submitForgot = async (e) => {
+    e.preventDefault();
+    setForgotError('');
+    setForgotBusy(true);
+    try {
+      await requestPasswordReset(email);
+      setForgotSent(true);
+    } catch (err) {
+      setForgotError(err.message || 'Could not send a reset email');
+    } finally {
+      setForgotBusy(false);
+    }
+  };
 
   // Google one-tap: only if the server reports a client ID. Any failure
   // here is non-fatal — the password form below keeps working.
@@ -98,6 +121,34 @@ export default function Auth({ onAuth, notice, onRetry }) {
             <div className="auth-divider"><span>or with email</span></div>
           </>
         )}
+        {showForgot ? (
+          <form onSubmit={submitForgot}>
+            <p className="muted">
+              Enter the email for your account and we will send a
+              password-reset link (valid for 24 hours).
+            </p>
+            <input
+              placeholder="Email" type="email" required
+              value={email} onChange={(e) => setEmail(e.target.value)}
+            />
+            {forgotError && <p className="error">{forgotError}</p>}
+            {forgotSent && (
+              <p className="saved-note">
+                If an account exists for that email, a password-reset link
+                is on its way — check your inbox.
+              </p>
+            )}
+            <button className="btn btn-primary" disabled={forgotBusy || forgotSent}>
+              {forgotBusy ? 'Please wait…' : forgotSent ? 'Reset email sent' : 'Send reset link'}
+            </button>
+            <button
+              type="button" className="btn btn-text btn-small"
+              onClick={() => { setShowForgot(false); setForgotSent(false); setForgotError(''); }}
+            >
+              Back to log in
+            </button>
+          </form>
+        ) : (
         <form onSubmit={submit}>
           {mode === 'register' && (
             <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
@@ -115,7 +166,16 @@ export default function Auth({ onAuth, notice, onRetry }) {
           <button className="btn btn-primary" disabled={busy}>
             {busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Create account'}
           </button>
+          {mode === 'login' && (
+            <button
+              type="button" className="btn btn-text btn-small"
+              onClick={() => { setShowForgot(true); setError(''); }}
+            >
+              Forgot password?
+            </button>
+          )}
         </form>
+        )}
       </div>
     </div>
   );

@@ -6,6 +6,8 @@
 //   #invite-<token>
 // Plus email-verification links (see lib/emailVerification.js):
 //   #verify-email-<token>
+// Plus password-reset links (see lib/passwordReset.js):
+//   #reset-password-<token>
 // Anything else returns null (the app opens normally).
 //
 // Invite and verification links live in the hash (not the path or
@@ -31,6 +33,11 @@ export function parseDeepLinkHash(hash) {
     // Same shape rule as invite links: any non-empty token parses
     // so a bad link explains itself via the verify endpoint's 400.
     return { view: 'rooms', verifyEmailToken: h.slice(13) };
+  }
+  if (h.startsWith('reset-password-') && h.length > 15) {
+    // Same shape rule: any non-empty token parses so a bad link
+    // explains itself via the reset endpoint's 400.
+    return { view: 'rooms', resetPasswordToken: h.slice(15) };
   }
   return null;
 }

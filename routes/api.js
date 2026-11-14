@@ -24,8 +24,13 @@ const { turnUrls } = require('../lib/turnCredentials');
 const { turnHandler } = require('../lib/meteredTurn');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
-const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
+// Namespace import (not destructured): tests stub
+// googleAuth.verifyGoogleCredential with a fake verifier so the
+// Google routes can be exercised without a real Google account.
+const googleAuth = require('../lib/googleAuth');
+const { getGoogleClientId } = googleAuth;
 const { isEmailVerified, sendVerificationEmail, verifyEmailToken } = require('../lib/emailVerification');
+const { sendPasswordResetEmail, resetPasswordWithToken } = require('../lib/passwordReset');
 const logger = require('../lib/logger');
 const { authMiddleware, parseCookies, rateLimitMiddleware, asyncHandler } = require('../middleware/auth');
 const { validateRoomInput, validateMessageInput, accentById } = require('../lib/rooms');
@@ -234,7 +239,7 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
   const { credential } = req.body || {};
   let identity;
   try {
-    identity = await verifyGoogleCredential(credential);
+    identity = await googleAuth.verifyGoogleCredential(credential);
   } catch (err) {
     req.log.info({ err: err.message }, 'Google token verification failed');
     return res.status(401).json({ error: 'Google sign-in failed — please try again' });
@@ -258,7 +263,7 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
   }
   let user;
   try {
-    user = await findOrCreateGoogleUser(identity, {
+    user = await googleAuth.findOrCreateGoogleUser(identity, {
       currentUserId: currentUser ? currentUser._id : null
     });
   } catch (err) {
@@ -269,6 +274,41 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
   }
   req.log.info({ userId: String(user._id), google: true }, 'User signed in with Google');
   await issueSession(req, res, user);
+}));
+
+// POST /api/auth/google/link — link a Google account to MY account,
+// from Settings (v0.9.1). Authenticated: the valid session is the
+// proof of ownership (audit M1). Body: { credential } (the JWT from
+// Google Identity Services, verified exactly like sign-in —
+// signature/issuer/expiry/audience plus the email_verified claim,
+// audit I7). The Google email must match my account's email, and the
+// Google account must not already be linked to someone else; both
+// are 409s. Linking an already-linked account is a no-op success
+// ({ alreadyLinked: true }) so Profile can show the linked state.
+// This route never creates an account and never links into a
+// different account — see lib/googleAuth.js linkGoogleAccount.
+router.post('/auth/google/link', authMiddleware, rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  if (!getGoogleClientId()) {
+    return res.status(503).json({ error: 'Google sign-in is not configured on this server' });
+  }
+  const { credential } = req.body || {};
+  let identity;
+  try {
+    identity = await googleAuth.verifyGoogleCredential(credential);
+  } catch (err) {
+    req.log.info({ err: err.message }, 'Google token verification failed');
+    return res.status(401).json({ error: 'Google sign-in failed — please try again' });
+  }
+  try {
+    const { user, alreadyLinked } = await googleAuth.linkGoogleAccount(req.user, identity);
+    req.log.info({ userId: String(user._id), google: true, alreadyLinked }, 'Google account linked');
+    res.json({ user: profileJson(user), googleLinked: true, alreadyLinked });
+  } catch (err) {
+    if (err.code === 'GOOGLE_LINK_EMAIL_MISMATCH' || err.code === 'GOOGLE_ALREADY_LINKED') {
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
+    throw err;
+  }
 }));
 
 // POST /api/auth/verify-email { token } — consume a verification
@@ -306,6 +346,56 @@ router.post('/auth/resend-verification', authMiddleware, rateLimitMiddleware(5, 
 
 router.get('/auth/me', authMiddleware, asyncHandler(async (req, res) => {
   res.json({ user: profileJson(req.user) });
+}));
+
+// POST /api/auth/forgot-password { email } — start a password reset
+// (v0.9.1). Public, rate-limited (5/15min — each hit can send an
+// email). ALWAYS answers 200 with the same generic message, whether
+// or not an account exists for the email, so the response never
+// reveals account existence. When an account exists, a single-use
+// 24h token is created and a reset link `/#reset-password-<token>`
+// is emailed (background send — mail must never hold up the
+// response; see the PR #16 signup hang). When SMTP is down or
+// unconfigured the mail silently does not go out and the account
+// simply cannot reset by email until SMTP is fixed (live: SMTP on
+// Render is broken as of 2026-11-14 — see lib/passwordReset.js).
+router.post('/auth/forgot-password', rateLimitMiddleware(5, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  const { email } = req.body || {};
+  const generic = { message: 'If an account exists for that email, a password-reset link is on its way — check your inbox.' };
+  if (typeof email === 'string' && isEmail(email)) {
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (user) {
+      // Fire and forget: the token row is created inside the send,
+      // and the route answers before SMTP (healthy or dead) can
+      // delay it. Never log the token.
+      sendPasswordResetEmail(user).catch((err) => {
+        req.log.warn({ userId: String(user._id), err: err && err.message }, 'Password-reset email background send failed');
+      });
+    }
+  }
+  res.json(generic);
+}));
+
+// POST /api/auth/reset-password { token, newPassword } — consume a
+// reset token and set a new password (v0.9.1). Public: the token
+// itself is the credential, so no session is needed — the token
+// travels in the JSON body, never in a URL (the request log records
+// full URLs). The new password must be ≥12 chars, like registration.
+// On success the token is spent (single-use) and ALL of the user's
+// sessions are deleted, so every device signs in again with the new
+// password. A bad/expired/used token or a short password is a 400
+// with the same generic message either way.
+router.post('/auth/reset-password', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  const { token, newPassword } = req.body || {};
+  if (typeof newPassword !== 'string' || newPassword.length < 12) {
+    return res.status(400).json({ error: 'Password must be at least 12 characters' });
+  }
+  const user = await resetPasswordWithToken(token, newPassword);
+  if (!user) {
+    return res.status(400).json({ error: 'That password-reset link is invalid or has expired — request a new one from the log-in screen' });
+  }
+  req.log.info({ userId: String(user._id) }, 'Password reset — all sessions invalidated');
+  res.json({ message: 'Password reset — log in with your new password' });
 }));
 
 // --- PROFILE ---
