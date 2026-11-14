@@ -681,7 +681,7 @@ export default function App() {
           />
         ) : view === 'profile' ? (
           <Suspense fallback={<p className="muted" role="status">Loading…</p>}>
-            <Profile user={user} onSaved={setUser} onOpenAbout={() => goTo('about')} />
+            <Profile user={user} onSaved={setUser} onOpenAbout={() => goTo('about')} onLogout={logout} />
           </Suspense>
         ) : view === 'about' ? (
           <Suspense fallback={<p className="muted" role="status">Loading…</p>}>

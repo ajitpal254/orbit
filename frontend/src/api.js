@@ -74,6 +74,12 @@ const jsonPost = (url, body) =>
   });
 
 // --- Email verification ---
+
+// "Log out of all devices" (audit I3): deletes every session for
+// the account, this one included — the caller then runs its local
+// logout teardown (App.jsx logout).
+export const logoutAllDevices = () => jsonPost('/api/auth/logout-all', {});
+
 export const verifyEmail = (token) =>
   jsonPost('/api/auth/verify-email', { token });
 
@@ -213,6 +219,11 @@ export const markAllNotificationsRead = () =>
 export const getDms = () => apiJson('/api/dms');
 
 export const getDmThread = (userId) => apiJson(`/api/dms/${userId}`);
+
+// Mark their messages to me read (audit L8: the GET thread endpoint
+// is side-effect-free now — the client calls this explicitly when
+// the thread is actually opened).
+export const markDmThreadRead = (userId) => jsonPost(`/api/dms/${userId}/read`);
 
 export const sendDm = (userId, text, media) =>
   jsonPost(`/api/dms/${userId}`, media ? { text, media } : { text });

@@ -6,7 +6,7 @@
 // still enforces the 200KB cap. Choosing a preset clears a photo and
 // uploading a photo clears the preset — one avatar source at a time.
 import React, { useEffect, useRef, useState } from 'react';
-import { updateProfile, apiJson, resendVerificationEmail, linkGoogleAccount } from '../api';
+import { updateProfile, apiJson, linkGoogleAccount, logoutAllDevices, resendVerificationEmail } from '../api';
 import { AVATAR_PRESETS, AVATAR_CHARACTERS } from '../avatars';
 import Avatar from './Avatar';
 import MoodPicker from './MoodPicker';
@@ -49,7 +49,7 @@ const downscalePhoto = (file) =>
     reader.readAsDataURL(file);
   });
 
-export default function Profile({ user, onSaved, onOpenAbout }) {
+export default function Profile({ user, onSaved, onOpenAbout, onLogout }) {
   const [name, setName] = useState(user.name || '');
   const [bio, setBio] = useState(user.bio || '');
   // Mood glow (v0.7.0): the orb colour + pulse friends see in rooms.
@@ -113,6 +113,24 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
       })
       .catch(() => { setLinkError('Could not load Google sign-in'); });
   }, [googleClientId, googleLinked, onSaved]);
+
+  // "Log out of all devices" (audit I3): deletes every session for
+  // the account, this one included — then the app logs out locally.
+  const [logoutAllBusy, setLogoutAllBusy] = useState(false);
+  const [logoutAllError, setLogoutAllError] = useState('');
+
+  const logoutEverywhere = async () => {
+    setLogoutAllError('');
+    setLogoutAllBusy(true);
+    try {
+      await logoutAllDevices();
+    } catch (err) {
+      setLogoutAllError(err.message || 'Could not log out everywhere');
+      setLogoutAllBusy(false);
+      return;
+    }
+    if (onLogout) onLogout();
+  };
 
   const resendVerification = async () => {
     setResendResult('');
@@ -394,6 +412,27 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
             {testResult && <p className="muted">{testResult}</p>}
           </div>
         )}
+      </div>
+
+      <div className="card">
+        <h3 className="section-title">Sessions</h3>
+        <div className="push-row">
+          <div>
+            <strong>Log out of all devices</strong>
+            <p className="muted push-hint">
+              Signs you out everywhere — this device and any other phone or computer signed in as you. Use it if you ever lose a device.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-text btn-small"
+            disabled={logoutAllBusy}
+            onClick={logoutEverywhere}
+          >
+            {logoutAllBusy ? '…' : 'Log out everywhere'}
+          </button>
+        </div>
+        {logoutAllError && <p className="error">{logoutAllError}</p>}
       </div>
 
       <button className="btn btn-text" onClick={onOpenAbout}>

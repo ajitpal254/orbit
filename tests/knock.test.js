@@ -226,8 +226,11 @@ test('wiring: knock routes exist in routes/api.js', () => {
   ]) assert.ok(api.includes(route), `missing route: ${route}`);
   // A faded campfire answers 410 before any knock logic runs.
   assert.ok(api.includes("if (!isVisible(room)) return res.status(410).json({ error: 'This campfire has already faded' })"));
-  // The fading-rooms worker is untouched by this feature.
-  assert.ok(!src('lib/fadingRooms.js').includes('Knock'), 'knock must not touch the fading-rooms worker');
+  // Audit L6: the fading-rooms worker deletes the room's invite
+  // links and knocks too, matching the REST room-delete cascade.
+  const worker = src('lib/fadingRooms.js');
+  assert.ok(worker.includes('InviteLink.deleteMany'), 'worker deletes invite links with the room');
+  assert.ok(worker.includes('Knock.deleteMany'), 'worker deletes knocks with the room');
 });
 
 test('wiring: App listens for knock pushes and renders the locked room', () => {
