@@ -162,12 +162,19 @@ router.post('/auth/register', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHand
     passwordHash: hashPassword(password, salt)
   });
   await user.save();
-  // Best-effort: mail being down or unconfigured never fails
-  // registration — the account simply stays unverified (and the
-  // resend endpoint lets the user retry). Never log the token.
-  const verification = await sendVerificationEmail(user);
-  req.log.info({ userId: String(user._id), verificationEmailSent: verification.sent }, 'User registered');
-  await issueSession(req, res, user, { verificationEmailSent: verification.sent });
+  // The verification email goes out in the background: mail must
+  // never hold up registration. Before this, the route awaited the
+  // SMTP send with no transport timeout — a dead/slow SMTP held
+  // signup for ~2 minutes (measured live 2026-11-14: 121.7s, and
+  // the mail never sent). The account is created either way and
+  // stays unverified until the mail lands; the resend endpoint is
+  // the retry path. Never log the token.
+  sendVerificationEmail(user).then((verification) => {
+    req.log.info({ userId: String(user._id), verificationEmailSent: verification.sent }, 'Verification email attempt finished');
+  }).catch((err) => {
+    req.log.warn({ userId: String(user._id), err: err && err.message }, 'Verification email background send failed');
+  });
+  await issueSession(req, res, user);
 }));
 
 router.post('/auth/login', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {

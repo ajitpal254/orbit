@@ -106,9 +106,16 @@ const beacon = async (roomId, jar = {}) => {
 let alice, aliceJar;
 const ROOM_ID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
 
+// A fresh identity per test: setup() runs before every test but
+// the DB is only dropped once (before()), so reusing one email hit
+// the unique index on the second test (E11000). Only visible with
+// a real Mongo — without one these tests skip.
+let setupCount = 0;
 const setup = async () => {
-  alice = await makeUser('alice-beacon@example.com', 'Alice');
-  aliceJar = await login('alice-beacon@example.com');
+  setupCount += 1;
+  const email = `alice-beacon-${setupCount}@example.com`;
+  alice = await makeUser(email, 'Alice');
+  aliceJar = await login(email);
   // Presence only: the beacon route never reads the Room doc (a
   // beacon for a deleted room is a no-op, never a 500).
   presence.clearAll();

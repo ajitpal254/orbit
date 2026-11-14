@@ -17,7 +17,7 @@ const EmailVerificationToken = require('../models/EmailVerificationToken');
 const { hashPassword, newSalt } = require('../lib/passwords');
 const {
   EMAIL_VERIFICATION_TTL_MS, isEmailVerified, isSmtpConfigured,
-  createVerificationToken, sendVerificationEmail, verifyEmailToken
+  getTransport, createVerificationToken, sendVerificationEmail, verifyEmailToken
 } = require('../lib/emailVerification');
 const { findOrCreateGoogleUser } = require('../lib/googleAuth');
 
@@ -179,6 +179,32 @@ test('verifyEmailToken is single-use and refuses expired tokens', async (t) => {
   assert.equal(reloaded.emailVerified, false, 'expired verify leaves the account unverified');
 });
 
+test('getTransport fails fast: explicit SMTP timeouts on the transport', () => {
+  const saved = {};
+  for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS']) {
+    saved[k] = process.env[k];
+  }
+  process.env.SMTP_HOST = 'smtp.example.test';
+  process.env.SMTP_PORT = '587';
+  process.env.SMTP_USER = 'orbit@example.test';
+  process.env.SMTP_PASS = 'placeholder-only';
+  try {
+    const transport = getTransport();
+    assert.ok(transport, 'transport builds when SMTP is configured');
+    // Without these, nodemailer waits up to 2 min to connect and
+    // 10 min on a dead socket — the 2026-11-14 signup hang (121.7s
+    // live, mail never sent). 10s is plenty for a healthy relay.
+    assert.equal(transport.options.connectionTimeout, 10_000);
+    assert.equal(transport.options.greetingTimeout, 10_000);
+    assert.equal(transport.options.socketTimeout, 10_000);
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});
+
 test('sendVerificationEmail sends a hash link with a stubbed transport', async (t) => {
   if (skipIfNoMongo(t)) return;
   const saved = {};
@@ -295,7 +321,11 @@ test('HTTP: register creates an unverified account, login still works', async (t
   });
   assert.equal(res.status, 200, JSON.stringify(res.body)); // issueSession answers 200, as before
   assert.equal(res.body.user.emailVerified, false);
-  assert.equal(res.body.verificationEmailSent, false, 'SMTP is unset in tests — no mail, no silent verify');
+  // Registration no longer reports on the mail: the verification
+  // email goes out in the background (a dead SMTP used to hold
+  // signup for ~2 minutes — see the slow-SMTP test below), so the
+  // response carries no verificationEmailSent field at all.
+  assert.equal(res.body.verificationEmailSent, undefined);
   const reloaded = await User.findOne({ email: 'newbie@orbit.test' }).lean();
   assert.equal(reloaded.emailVerified, false);
   // Login stays allowed so the user can reach verify/resend.
@@ -304,6 +334,44 @@ test('HTTP: register creates an unverified account, login still works', async (t
   });
   assert.equal(loginRes.status, 200);
   assert.equal(loginRes.body.user.emailVerified, false);
+});
+
+test('HTTP: register answers fast even when SMTP hangs (dead relay)', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  // 10.255.255.1 is unroutable: the SMTP connect hangs until the
+  // transport timeout. Registration must not wait for it — before
+  // this fix it held signup for ~2 minutes (measured live
+  // 2026-11-14: 121.7s). The background send fails after 10s on
+  // its own; the response must already be back.
+  const saved = {};
+  for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']) {
+    saved[k] = process.env[k];
+  }
+  process.env.SMTP_HOST = '10.255.255.1';
+  process.env.SMTP_PORT = '587';
+  process.env.SMTP_USER = 'orbit@example.test';
+  process.env.SMTP_PASS = 'placeholder-only';
+  delete process.env.SMTP_FROM;
+  const jar = {};
+  await bootstrapCsrf(jar);
+  try {
+    const started = Date.now();
+    const res = await http('POST', '/api/auth/register', {
+      jar,
+      body: { email: 'slowmail@orbit.test', password: 'correct-horse-battery-stable', name: 'Slow Mail' }
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(elapsed < 5000, `register answered in ${elapsed}ms — must not wait for SMTP`);
+    const reloaded = await User.findOne({ email: 'slowmail@orbit.test' }).lean();
+    assert.ok(reloaded, 'account is created even though the mail hangs');
+    assert.equal(reloaded.emailVerified, false);
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
 });
 
 test('HTTP: unverified account is hidden from search and cannot invite or create rooms', async (t) => {
