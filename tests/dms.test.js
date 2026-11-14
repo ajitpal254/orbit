@@ -80,3 +80,41 @@ test('DirectMessage model: required fields + read defaults to false', () => {
   assert.ok(err.errors.recipient);
   assert.ok(err.errors.text);
 });
+
+test('buildSummariesFromLatest (audit I8): per-friend latest + unread, same shape and order as buildSummaries', () => {
+  const { buildSummariesFromLatest } = require('../lib/dms');
+  const friends = [
+    { id: THEM, name: 'Zed', email: 'zed@example.com' },
+    { id: STRANGER, name: 'Amy', email: 'amy@example.com' },
+    { id: 'dddddddddddddddddddddddd', name: 'Bob', email: 'bob@example.com' }
+  ];
+  const latestByFriend = new Map([[THEM, { ...m3, text: 'again' }]]);
+  const unreadByFriend = new Map([[THEM, 2]]);
+  const summaries = buildSummariesFromLatest(friends, latestByFriend, unreadByFriend, ME);
+  assert.deepEqual(summaries.map((s) => s.name), ['Zed', 'Amy', 'Bob']);
+  assert.equal(summaries[0].unreadCount, 2);
+  assert.equal(summaries[0].lastMessage.text, 'again');
+  assert.equal(summaries[0].lastMessage.fromMe, false);
+  assert.equal(summaries[1].lastMessage, null);
+  assert.equal(summaries[1].unreadCount, 0);
+  // And it agrees with the old whole-list builder on the same data.
+  const whole = buildSummaries(friends, [m1, m2, m3], ME);
+  assert.deepEqual(summaries, whole);
+});
+
+test('buildSummariesFromLatest: an expired last message degrades to null, not a stale preview', () => {
+  const { buildSummariesFromLatest } = require('../lib/dms');
+  const expired = {
+    sender: THEM, recipient: ME, text: 'old',
+    read: false, createdAt: new Date('2026-11-10T00:00:00Z'),
+    expireAt: new Date('2026-11-10T01:00:00Z')
+  };
+  const now = new Date('2026-11-11T00:00:00Z');
+  const summaries = buildSummariesFromLatest(
+    [{ id: THEM, name: 'Zed', email: 'zed@example.com' }],
+    new Map([[THEM, expired]]),
+    new Map([[THEM, 0]]),
+    ME, now
+  );
+  assert.equal(summaries[0].lastMessage, null);
+});

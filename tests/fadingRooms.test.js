@@ -257,7 +257,20 @@ const stubModels = ({ due = [], closed = [], claim = { _id: 'r1', name: 'Late Ni
       return { deletedCount: 0 };
     }
   };
-  return { RoomStub, MessageStub, InviteStub, calls };
+  // Audit L6: the worker deletes the room's invite links + knocks too.
+  const LinkStub = {
+    deleteMany: async (filter) => {
+      calls.push(['InviteLink.deleteMany', filter]);
+      return { deletedCount: 1 };
+    }
+  };
+  const KnockStub = {
+    deleteMany: async (filter) => {
+      calls.push(['Knock.deleteMany', filter]);
+      return { deletedCount: 1 };
+    }
+  };
+  return { RoomStub, MessageStub, InviteStub, LinkStub, KnockStub, calls };
 };
 
 test('runCleanup: claims a due campfire atomically, deletes room + chat + invites, notifies once', async () => {
@@ -385,4 +398,29 @@ test('startCleanupWorker runs once immediately, repeats on the interval, and sto
   const afterStop = finds;
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(finds, afterStop, 'no sweeps after stop()');
+});
+
+test('runCleanup (audit L6): a faded campfire takes its invite links and knocks with it', async () => {
+  const dueRoom = { _id: 'r1', name: 'Late Night', ephemeral: true, expiresAt: at(-1000) };
+  const { RoomStub, MessageStub, InviteStub, LinkStub, KnockStub, calls } = stubModels({
+    due: [dueRoom], closed: [dueRoom]
+  });
+  const res = await runCleanup({
+    Room: RoomStub, Message: MessageStub, RoomInvite: InviteStub,
+    InviteLink: LinkStub, Knock: KnockStub
+  }, { now: T });
+  assert.deepEqual(res, { claimed: 1, deleted: 1 });
+  assert.ok(calls.some(([op, f]) => op === 'InviteLink.deleteMany' && String(f.room) === 'r1'));
+  assert.ok(calls.some(([op, f]) => op === 'Knock.deleteMany' && String(f.room) === 'r1'));
+});
+
+test('runCleanup tolerates callers without InviteLink/Knock deps (older stubs)', async () => {
+  const dueRoom = { _id: 'r1', name: 'Late Night', ephemeral: true, expiresAt: at(-1000) };
+  const { RoomStub, MessageStub, InviteStub } = stubModels({
+    due: [dueRoom], closed: [dueRoom]
+  });
+  const res = await runCleanup({
+    Room: RoomStub, Message: MessageStub, RoomInvite: InviteStub
+  }, { now: T });
+  assert.deepEqual(res, { claimed: 1, deleted: 1 });
 });
