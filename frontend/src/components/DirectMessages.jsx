@@ -4,7 +4,7 @@
 // A `dm-message` socket push (handled in App.jsx) bumps refreshTick, so
 // lists and badges update live; opening a thread marks it read.
 import React, { useEffect, useRef, useState } from 'react';
-import { getDms, getDmThread, sendDm, uploadImage } from '../api';
+import { getDms, getDmThread, markDmThreadRead, sendDm, uploadImage } from '../api';
 import { validateImageFile, readImageDimensions } from '../media';
 import ChatMessage from './ChatMessage';
 import Avatar from './Avatar';
@@ -50,8 +50,11 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
   }, [dmUser, clearDmUser]);
 
   // Thread load: on select and whenever a DM arrives (refreshTick).
-  // After loading, if any of their messages to me were unread, tell App
-  // to refresh — the next fetch then finds them read, so this never loops.
+  // Marking read is an explicit POST (audit L8) — the GET thread
+  // endpoint is side-effect-free now. After loading, if any of
+  // their messages to me were unread, mark the thread read and tell
+  // App to refresh — the next fetch then finds them read, so this
+  // never loops.
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
@@ -60,7 +63,9 @@ export default function DirectMessages({ user, refreshTick, dmUser, clearDmUser,
         if (cancelled) return;
         setMessages(data || []);
         if ((data || []).some((m) => m.senderId !== user.id && !m.read)) {
-          onMessagesReadRef.current();
+          markDmThreadRead(selected.userId)
+            .then(() => { if (!cancelled) onMessagesReadRef.current(); })
+            .catch(() => {});
         }
       })
       .catch(() => {});
