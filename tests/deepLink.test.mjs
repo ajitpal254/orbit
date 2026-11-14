@@ -64,6 +64,27 @@ test('parseDeepLinkHash maps email-verification links to a verify token', () => 
   );
 });
 
+// Password-reset links (v0.9.1): same hash shape as verification
+// links — the token stays out of server logs and is POSTed in the
+// JSON body by the reset form.
+test('parseDeepLinkHash maps password-reset links to a reset token', () => {
+  const token = 'c'.repeat(64);
+  assert.deepEqual(
+    parseDeepLinkHash(`#reset-password-${token}`),
+    { view: 'rooms', resetPasswordToken: token }
+  );
+  assert.deepEqual(
+    parseDeepLinkHash(`reset-password-${token}`),
+    { view: 'rooms', resetPasswordToken: token }
+  );
+  // A malformed token still parses — the reset endpoint answers 400
+  // and the form shows its friendly error instead of ignoring the link.
+  assert.deepEqual(
+    parseDeepLinkHash('#reset-password-not-a-real-token'),
+    { view: 'rooms', resetPasswordToken: 'not-a-real-token' }
+  );
+});
+
 test('parseDeepLinkHash rejects anything it does not know', () => {
   assert.equal(parseDeepLinkHash(''), null);
   assert.equal(parseDeepLinkHash('#'), null);
@@ -75,6 +96,8 @@ test('parseDeepLinkHash rejects anything it does not know', () => {
   assert.equal(parseDeepLinkHash('#invite'), null);
   assert.equal(parseDeepLinkHash('#verify-email-'), null);
   assert.equal(parseDeepLinkHash('#verify-email'), null);
+  assert.equal(parseDeepLinkHash('#reset-password-'), null);
+  assert.equal(parseDeepLinkHash('#reset-password'), null);
   assert.equal(parseDeepLinkHash(null), null);
   assert.equal(parseDeepLinkHash(undefined), null);
 });
