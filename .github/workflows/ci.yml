@@ -27,11 +27,18 @@ jobs:
             package-lock.json
             frontend/package-lock.json
 
-      - name: Install Playwright browsers
-        run: npx playwright install chromium
-
       - name: Install root dependencies
         run: npm ci
+
+      # NOTE: this MUST run after `npm ci`. Before it, `npx playwright`
+      # resolves to the LATEST Playwright from the registry, whose
+      # browser build (chromium-1255 on 2026-11-13) is not the one the
+      # pinned playwright@1.65.0 in package.json expects
+      # (chromium-1254) — the smoke test then cannot launch Chromium.
+      # After npm ci, npx uses the pinned local version and installs
+      # exactly its browsers. (Bit us on the v0.9.0 merge run.)
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
 
       - name: Run tests
         run: node --test tests/*.test.js tests/*.test.mjs
