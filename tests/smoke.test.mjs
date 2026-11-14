@@ -33,6 +33,10 @@
 //     'new' — i.e. checks start. This is the state the v0.6.0 incident
 //     never reached in the broken direction (no relay candidate ever
 //     gathered); a signaling or gathering regression fails here.
+//   - The two-user product flows, end to end through the real UI
+//     (v0.9.1): friend request → accept, DM send, invite link →
+//     join, knock → admit on a private room, and the room postcard
+//     on leave (both sides).
 //   - Mic mute round-trips over the socket (orb mic-off badge).
 //   - When an account TURN is configured (/api/turn serves a
 //     credential), a real relay candidate is gathered through it —
@@ -233,7 +237,7 @@ async function signUp(user) {
   return page;
 }
 
-test('smoke: two users join a room and voice starts', { timeout: 180000 }, async (t) => {
+test('smoke: two users join a room and voice starts', { timeout: 240000 }, async (t) => {
   t.diagnostic(`UDP available in this environment: ${udpAvailable}`);
   await t.test('server serves health + built frontend', async () => {
     const health = await (await fetch(`${baseUrl}/api/health`)).json();
@@ -264,9 +268,55 @@ test('smoke: two users join a room and voice starts', { timeout: 180000 }, async
     }
   });
 
+  await t.test('friend request → accept through the Friends UI', async () => {
+    // Alice finds Bob by email and sends the request.
+    await pageA.getByRole('button', { name: 'Friends' }).click();
+    await pageA.getByPlaceholder('Search by name or email…').fill(USERS[1].email);
+    await pageA.getByRole('button', { name: 'Add', exact: true }).waitFor({ timeout: 10000 });
+    await pageA.getByRole('button', { name: 'Add', exact: true }).click();
+    await pageA.getByText('Requested').first().waitFor({ timeout: 10000 });
+
+    // Bob sees the request and accepts it.
+    await pageB.getByRole('button', { name: 'Friends' }).click();
+    await pageB.getByText('Requests for you').waitFor({ timeout: 10000 });
+    await pageB.getByRole('button', { name: 'Accept', exact: true }).click();
+    await pageB.getByText(USERS[0].name).waitFor({ timeout: 10000 });
+
+    // Alice's list refreshes to show Bob as a friend (remount the view).
+    await pageA.getByRole('button', { name: 'Rooms' }).click();
+    await pageA.getByRole('button', { name: 'Friends' }).click();
+    await pageA.getByText(USERS[1].name).waitFor({ timeout: 10000 });
+  });
+
+  await t.test('DM send through the Messages UI', async () => {
+    // Alice opens a DM from Bob's row on the Friends tab.
+    await pageA.getByRole('button', { name: 'Message', exact: true }).click();
+    await pageA.getByPlaceholder(`Message ${USERS[1].name}…`).fill('smoke dm hello');
+    await pageA.getByRole('button', { name: 'Send', exact: true }).click();
+    await pageA.getByText('smoke dm hello').waitFor({ timeout: 10000 });
+
+    // Bob opens the thread from his Messages list and sees it.
+    await pageB.getByRole('button', { name: 'Messages' }).click();
+    await pageB.getByRole('button', { name: new RegExp(USERS[0].name) }).click();
+    await pageB.getByText('smoke dm hello').waitFor({ timeout: 10000 });
+
+    // Back to the rooms list on both sides for the room flows.
+    for (const page of [pageA, pageB]) {
+      await page.getByRole('button', { name: 'Rooms' }).click();
+      await page.getByRole('button', { name: 'New room' }).waitFor({ timeout: 10000 });
+    }
+  });
+
   await t.test('Alice creates a room, Bob joins it', async () => {
     await pageA.getByRole('button', { name: 'New room' }).click();
     await pageA.getByPlaceholder(/Room name/).fill(ROOM_NAME);
+    // Campfire is ON by default in the create form, and campfires by
+    // design never produce a postcard (buildPostcard returns null for
+    // ephemeral rooms) — the leave → postcard subtests below need a
+    // permanent room, so uncheck it here.
+    const campfire = pageA.getByRole('checkbox', { name: /Campfire/ });
+    await campfire.click();
+    assert.equal(await campfire.isChecked(), false, 'campfire must be off so the room is permanent');
     await pageA.getByRole('button', { name: 'Create & drop in' }).click();
     // Room view: mic affordance present, alone hint shown.
     await pageA.getByRole('button', { name: 'Mute', exact: true })
@@ -371,6 +421,66 @@ test('smoke: two users join a room and voice starts', { timeout: 180000 }, async
     await pageA.getByRole('button', { name: 'Mute', exact: true })
       .waitFor({ timeout: 10000 });
     await pageB.locator('.orb-muted').waitFor({ state: 'detached', timeout: 10000 });
+  });
+
+  await t.test('invite link → join through the real link', async () => {
+    // Alice opens the invite-link panel and reads the shareable URL.
+    await pageA.getByRole('button', { name: 'Copy invite link' }).click();
+    const linkUrl = await waitFor(async () => {
+      // NOTE: getByLabel('Invite link') is unusable here — it
+      // substring-matches the header's 'Copy invite link' button and
+      // the panel's 'Close invite link' button too (3 matches, strict
+      // mode throws). The input is the only textbox with that name.
+      const value = await pageA.getByRole('textbox', { name: 'Invite link', exact: true }).inputValue().catch(() => '');
+      return value || false;
+    }, { timeout: 15000, label: 'invite link URL to appear' });
+    assert.match(linkUrl, /#invite-/, `invite link must carry a token hash, got ${linkUrl}`);
+
+    // Bob leaves, dismisses his postcard, then follows the link: the
+    // app redeems the token from the hash and drops him back in.
+    // Leave via the voice-bar button (aria-label), NOT the role query:
+    // a private room ALSO has a members-panel 'Leave room' text button
+    // (membership leave, with a confirm dialog), and the role query
+    // matches both — strict-mode violation. The voice-bar button is
+    // the call-leave path that builds the postcard.
+    await pageB.locator('button[aria-label="Leave room"]').click();
+    const bobCard = pageB.getByRole('dialog', { name: `Recap of ${ROOM_NAME}` });
+    await bobCard.waitFor({ timeout: 10000 });
+    assert.match(await bobCard.textContent(), new RegExp(USERS[0].name),
+      "Bob's postcard must name Alice, who he was in the room with");
+    await pageB.getByRole('button', { name: 'Dismiss postcard' }).click();
+    await bobCard.waitFor({ state: 'detached', timeout: 5000 });
+
+    await pageB.goto(linkUrl);
+    // The join POST shares the server's per-IP rate-limit budget
+    // (120/min, rolling) with every poll both pages make — Home
+    // refreshes presence every 5s — so on a fast run it can
+    // legitimately 429. That is the limiter doing its job, not a
+    // broken link: retry the link, waiting out the rolling window,
+    // and only fail on a non-429 outcome or after the retries.
+    let joined = false;
+    let lastOutcome = '';
+    for (let attempt = 0; attempt < 4 && !joined; attempt++) {
+      if (attempt > 0) {
+        await pageB.getByRole('button', { name: 'Dismiss' }).click().catch(() => {});
+        await pageB.waitForTimeout(20000);
+        await pageB.goto(linkUrl);
+      }
+      const outcome = await waitFor(async () => {
+        if (await pageB.getByRole('button', { name: 'Mute', exact: true }).isVisible().catch(() => false)) return 'joined';
+        const alert = pageB.locator('.invite-error');
+        if (await alert.isVisible().catch(() => false)) return `error: ${(await alert.textContent())?.trim()}`;
+        return false;
+      }, { timeout: 30000, label: 'Bob rejoining via the invite link' });
+      lastOutcome = outcome;
+      if (outcome === 'joined') joined = true;
+      else if (!outcome.includes('Too many requests')) break;
+      else t.diagnostic(`invite join attempt ${attempt + 1} rate-limited, retrying after a wait`);
+    }
+    assert.equal(lastOutcome, 'joined', `invite-link join failed — ${lastOutcome}`);
+    // Alice sees Bob's orb again — no rejoin from her side.
+    await pageA.getByRole('button', { name: new RegExp(`^${USERS[1].name}`) })
+      .waitFor({ timeout: 10000 });
   });
 
   await t.test('navigating away mid-call keeps the call alive (v0.9.0)', async () => {
@@ -478,6 +588,85 @@ test('smoke: two users join a room and voice starts', { timeout: 180000 }, async
     assert.ok(relay.length > 0,
       `expected a relay candidate from /api/turn credentials, got none — the TURN relay is not allocating (this is the v0.6.0 failure mode)`);
     t.diagnostic(`TURN: relay candidate gathered: ${relay[0]}`);
+  });
+
+  await t.test('leaving shows the room postcard (Alice leaves the Smoke Room)', async () => {
+    await pageA.locator('button[aria-label="Leave room"]').click();
+    const card = pageA.getByRole('dialog', { name: `Recap of ${ROOM_NAME}` });
+    await card.waitFor({ timeout: 10000 });
+    assert.match(await card.textContent(), new RegExp(USERS[1].name),
+      "Alice's postcard must name Bob, who she was in the room with");
+    await pageA.getByRole('button', { name: 'Dismiss postcard' }).click();
+    await card.waitFor({ state: 'detached', timeout: 5000 });
+    await pageA.getByRole('button', { name: 'New room' }).waitFor({ timeout: 10000 });
+  });
+
+  const PRIVATE_ROOM_NAME = 'Smoke Private Room';
+  await t.test('knock → admit on a private room', async () => {
+    // Alice creates a private room; only members can see it, so Bob
+    // reaches it through the room deep link and gets the locked screen.
+    await pageA.getByRole('button', { name: 'New room' }).click();
+    await pageA.getByPlaceholder(/Room name/).fill(PRIVATE_ROOM_NAME);
+    await pageA.getByRole('button', { name: 'Private', exact: true }).click();
+    // Same campfire default as the Smoke Room: uncheck it so the
+    // room is permanent and Bob's leave shows a postcard.
+    const campfire = pageA.getByRole('checkbox', { name: /Campfire/ });
+    await campfire.click();
+    assert.equal(await campfire.isChecked(), false, 'campfire must be off so the room is permanent');
+    await pageA.getByRole('button', { name: 'Create & drop in' }).click();
+    await pageA.getByRole('button', { name: 'Mute', exact: true })
+      .waitFor({ timeout: 30000 });
+
+    const privateRoomId = await pageA.evaluate(async (name) => {
+      const res = await fetch('/api/rooms');
+      if (!res.ok) throw new Error(`rooms ${res.status}`);
+      const rooms = await res.json();
+      const room = rooms.find((r) => r.name === name);
+      if (!room) throw new Error(`private room ${name} not listed`);
+      return room.id;
+    }, PRIVATE_ROOM_NAME);
+
+    // Bob leaves the Smoke Room first so his stay there ends cleanly,
+    // then opens the private room's deep link.
+    await pageB.locator('button[aria-label="Leave room"]').click();
+    const smokeCard = pageB.getByRole('dialog', { name: `Recap of ${ROOM_NAME}` });
+    await smokeCard.waitFor({ timeout: 10000 });
+    await pageB.getByRole('button', { name: 'Dismiss postcard' }).click();
+    await smokeCard.waitFor({ state: 'detached', timeout: 5000 });
+
+    await pageB.goto(`${baseUrl}/#room-${privateRoomId}`);
+    await pageB.getByRole('button', { name: 'Knock to join' })
+      .waitFor({ timeout: 15000 });
+    await pageB.getByRole('button', { name: 'Knock to join' }).click();
+    await pageB.getByText('You knocked').waitFor({ timeout: 10000 });
+
+    // Alice answers from the members panel; Bob joins live.
+    await pageA.getByRole('button', { name: 'Admit', exact: true })
+      .waitFor({ timeout: 15000 });
+    await pageA.getByRole('button', { name: 'Admit', exact: true }).click();
+    // If the admit itself fails (rate limit, server error) the panel
+    // shows the error and Bob never joins — surface that text instead
+    // of timing out silently on Bob's Mute button below.
+    await pageA.waitForTimeout(3000);
+    const knockError = await pageA.evaluate(() => {
+      const el = document.querySelector('.knocks-section .error, .members-panel .error');
+      return el ? el.textContent : '';
+    });
+    assert.equal(knockError, '', `admitting the knock must not error, got: ${knockError}`);
+    await pageB.getByRole('button', { name: 'Mute', exact: true })
+      .waitFor({ timeout: 30000 });
+    await pageA.getByRole('button', { name: new RegExp(`^${USERS[1].name}`) })
+      .waitFor({ timeout: 10000 });
+  });
+
+  await t.test('postcard on leave, other side (Bob leaves the private room)', async () => {
+    await pageB.locator('button[aria-label="Leave room"]').click();
+    const card = pageB.getByRole('dialog', { name: `Recap of ${PRIVATE_ROOM_NAME}` });
+    await card.waitFor({ timeout: 10000 });
+    assert.match(await card.textContent(), new RegExp(USERS[0].name),
+      "Bob's postcard must name Alice, who he was in the room with");
+    await pageB.getByRole('button', { name: 'Dismiss postcard' }).click();
+    await card.waitFor({ state: 'detached', timeout: 5000 });
   });
 
   await t.test('no uncaught page errors on either side', async () => {
