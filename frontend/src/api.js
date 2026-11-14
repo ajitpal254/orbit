@@ -80,6 +80,21 @@ export const verifyEmail = (token) =>
 export const resendVerificationEmail = () =>
   jsonPost('/api/auth/resend-verification', {});
 
+// --- Google account linking (v0.9.1) ---
+// Link a Google account to the signed-in account, from Profile.
+// The session is the proof of ownership (audit M1).
+export const linkGoogleAccount = (credential) =>
+  jsonPost('/api/auth/google/link', { credential });
+
+// --- Forgot password (v0.9.1) ---
+// Always answers 200 with a generic message, whether or not the
+// email has an account — the response never reveals existence.
+export const requestPasswordReset = (email) =>
+  jsonPost('/api/auth/forgot-password', { email });
+
+export const resetPassword = (token, newPassword) =>
+  jsonPost('/api/auth/reset-password', { token, newPassword });
+
 // --- Friends ---
 
 export const searchUsers = (q) =>

@@ -11,6 +11,7 @@ import { onUpdateAvailable, applyUpdate } from './pwa';
 import { initAnalytics, getGaMeasurementId, trackPageView, trackEvent } from './analytics';
 import { parseDeepLinkHash } from './deepLink';
 import Auth from './components/Auth';
+import ResetPassword from './components/ResetPassword';
 import Home from './components/Home';
 import RoomView from './components/RoomView';
 import Friends from './components/Friends';
@@ -89,6 +90,14 @@ export default function App() {
   // Email-verification result from a #verify-email- link: shown in
   // the same banner spot as invite-link errors.
   const [verifyNotice, setVerifyNotice] = useState('');
+  // Password-reset token from a #reset-password- link (v0.9.1):
+  // while set and logged out, the reset form replaces the Auth
+  // screen. The token itself is the credential, so this is captured
+  // regardless of login state — but only shown while logged out;
+  // a logged-in user who opens a reset link is left in the app
+  // (they can log out and re-open the link, or use "Forgot
+  // password?" after logging out).
+  const [resetPasswordToken, setResetPasswordToken] = useState(null);
   // Time-of-day background (v0.7.0): the ambient palette follows
   // the viewer's local time — dawn / day / dusk / night (see
   // daypart.js + daypart.css). Re-checked every 5 minutes, so a
@@ -362,12 +371,34 @@ export default function App() {
   // version was already waiting before this mounted.
   useEffect(() => onUpdateAvailable(() => setUpdateAvailable(true)), []);
 
+  // Password-reset links (v0.9.1) must be captured while LOGGED OUT
+  // too — the user forgot their password, so there is no session yet.
+  // This effect runs regardless of login state (unlike the deep-link
+  // effect below, which needs a user for room/DM/invite targets): on
+  // mount and on hashchange it reads #reset-password-<token>, consumes
+  // the hash, and stores the token; the !user render branch below
+  // shows the reset form instead of Auth while it is set.
+  useEffect(() => {
+    const handleHash = () => {
+      const target = parseDeepLinkHash(window.location.hash || '');
+      if (!target || !target.resetPasswordToken) return;
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      setResetPasswordToken(target.resetPasswordToken);
+    };
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
   // Deep links from push taps: the service worker opens the app at
   // /#friends, /#room-<id>, /#dm-<userId> or /#notifications. Invite
   // links arrive the same way, as /#invite-<token> — shared by a room
   // member, redeemed here via POST /api/invite-links/join { token }.
   // Email-verification links arrive as /#verify-email-<token> and are
-  // redeemed here via POST /api/auth/verify-email.
+  // redeemed here via POST /api/auth/verify-email. Password-reset
+  // links arrive as /#reset-password-<token> (v0.9.1) and are
+  // captured into resetPasswordToken — the reset form renders while
+  // logged out (see the effect above the Auth return).
   // Read the hash once the user is known (room/DM/invite targets need
   // auth + a fetch), and on hashchange for taps while a tab is already
   // open (the SW navigates that tab in place instead of opening a new
@@ -381,6 +412,12 @@ export default function App() {
       if (!target) return;
       // Consume the hash so a reload doesn't re-navigate.
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      if (target.resetPasswordToken) {
+        // Captured for the logged-out reset form; a logged-in user
+        // stays in the app (see the resetPasswordToken state note).
+        if (!cancelled) setResetPasswordToken(target.resetPasswordToken);
+        return;
+      }
       if (target.inviteToken) {
         try {
           const room = await joinViaInviteLink(target.inviteToken);
@@ -503,7 +540,11 @@ export default function App() {
   if (!user) {
     return (
       <>
-        <Auth onAuth={setUser} notice={bootError} onRetry={bootError ? retryBoot : undefined} />
+        {resetPasswordToken ? (
+          <ResetPassword token={resetPasswordToken} onDone={() => setResetPasswordToken(null)} />
+        ) : (
+          <Auth onAuth={setUser} notice={bootError} onRetry={bootError ? retryBoot : undefined} />
+        )}
         {updateAvailable && (
           <UpdateToast onUpdate={() => applyUpdate()} onDismiss={() => setUpdateAvailable(false)} />
         )}
