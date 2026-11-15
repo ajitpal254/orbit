@@ -101,6 +101,15 @@ export const requestPasswordReset = (email) =>
 export const resetPassword = (token, newPassword) =>
   jsonPost('/api/auth/reset-password', { token, newPassword });
 
+// --- Music (v0.10.0) ---
+
+// Resolve a YouTube URL to a playable audio URL. The server extracts
+// it (the client never touches YouTube directly); 502 means the
+// extraction failed right now — the panel says so and radio/MP3
+// keeps working. 400 INVALID_URL means the link itself is bad.
+export const resolveYouTube = (url, roomId) =>
+  jsonPost('/api/music/youtube', { url, roomId });
+
 // --- Friends ---
 
 export const searchUsers = (q) =>

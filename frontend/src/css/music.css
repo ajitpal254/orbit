@@ -1,0 +1,209 @@
+/* Music panel (v0.10.0): the sheet mirrors .chat-sheet (same fixed
+   placement above the voice bar, same surface) so it is reachable on
+   mobile and desktop without moving the existing layout. The panel is
+   a sibling of the chat sheet — only one is open at a time in
+   practice, and both sit above the voice bar, never behind it. */
+.music-sheet {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(5.4rem + env(safe-area-inset-bottom));
+  width: min(600px, calc(100vw - 1.6rem));
+  max-height: 62vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  backdrop-filter: blur(20px);
+  padding: 0.9rem 1rem;
+  z-index: 30;
+}
+
+.music-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.music-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.music-now {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.6rem;
+}
+
+.music-now-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.music-now-title {
+  font-size: 1.05rem;
+}
+
+.music-source-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+.music-dj-line {
+  width: 100%;
+}
+
+.music-live {
+  font-size: 0.8rem;
+  color: var(--accent);
+}
+
+.music-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.music-hint {
+  margin: 0;
+}
+
+.music-volume {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.music-volume-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.music-volume-label input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.music-queue {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.music-queue li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.music-queue--playing {
+  border-color: var(--accent);
+}
+
+.music-queue-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.music-add input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.music-note {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+/* Idle auto-disconnect: the warning counts down in place; the
+   disconnect notice stays until dismissed or music restarts. Both
+   are plain text — no animation, so prefers-reduced-motion needs
+   nothing extra here. */
+.music-idle-warning {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.music-idle-notice {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* Music Bot member row: a music-note glyph on the accent gradient
+   where a member's avatar would be — the same row shape as the
+   members list, so it slots in without shifting anything. */
+.music-bot-avatar {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-grad);
+  color: #fff;
+}
+
+/* Voice-dock Music button: a small dot while something is playing,
+   so the room knows music is live without opening the panel. */
+.voice-btn.music-active {
+  position: relative;
+}
+
+.music-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-grad);
+}
+
+/* The DJ's playback element: hidden, but it must stay in the DOM —
+   RoomView stays mounted when the call is minimized, so the music
+   keeps playing across navigation. */
+.dj-audio {
+  display: none;
+}
