@@ -1,0 +1,17 @@
+# Build context for the Orbit Docker image. The container only needs
+# the production server + the committed built frontend; everything
+# else stays out (notably the local .env, which holds dev secrets
+# and must never be copied into an image).
+node_modules
+.git
+.github
+frontend
+electron
+tests
+dist
+.env
+.env.*
+Dockerfile
+.dockerignore
+README.md
+*.log
