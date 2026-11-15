@@ -153,7 +153,10 @@ before(async () => {
       MONGODB_URI: mongoUri,
       // A real (random, throwaway) key so the server does not fall back
       // to its ephemeral-key warning path.
-      DATA_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64')
+      DATA_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64'),
+      // The music fixture is a local HTTP server (127.0.0.1), so the
+      // audio proxy's SSRF guard needs its test-only escape hatch.
+      ALLOW_PRIVATE_STREAM_HOSTS: '1'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });

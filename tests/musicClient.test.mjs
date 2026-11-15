@@ -16,6 +16,7 @@ import {
   formatDuration,
   formatIdleCountdown,
   idleWarningText,
+  playbackUrlFor,
   IDLE_DISCONNECT_MESSAGE
 } from '../frontend/src/music.js';
 import { readCssBundle } from './cssBundle.js';
@@ -118,9 +119,27 @@ test('RoomView listens for music-state / music-error / idle events and cleans th
   }
 });
 
+test('playbackUrlFor: the DJ element loads the same-origin proxy, never the raw URL', () => {
+  // captureStream() throws a SecurityError for cross-origin media,
+  // and radio / YouTube stream URLs are always cross-origin — the
+  // proxy is what makes captureStream work at all.
+  assert.equal(
+    playbackUrlFor('https://rr2---sn-p5qlsnd6.googlevideo.com/videoplayback?expire=1&sig=abc'),
+    '/api/music/stream?u=https%3A%2F%2Frr2---sn-p5qlsnd6.googlevideo.com%2Fvideoplayback%3Fexpire%3D1%26sig%3Dabc'
+  );
+  assert.equal(playbackUrlFor({ url: 'https://example.com/stream.mp3' }), '/api/music/stream?u=https%3A%2F%2Fexample.com%2Fstream.mp3');
+  assert.equal(playbackUrlFor(''), '');
+  assert.equal(playbackUrlFor(null), '');
+});
+
 test('RoomView drives DJ playback from music-state via captureStream, never createMediaElementSource', () => {
   assert.ok(roomView.includes('captureStream'), 'DJ playback must use captureStream()');
   assert.ok(!roomView.includes('createMediaElementSource'), 'Web Audio createMediaElementSource would silence cross-origin streams');
+  assert.ok(roomView.includes('playbackUrlFor'), 'the DJ element must load the same-origin proxy, never the raw track URL');
+  assert.ok(roomView.includes('el.src = playbackUrl'), 'the playback effect must set the proxy URL on the element');
+  assert.ok(roomView.includes('Couldn’t share this track’s audio'), 'a captureStream throw must degrade to a panel error, not an unhandled rejection');
+  assert.ok(roomView.includes('getAudioTracks().length > 0'), 'the DJ must wait until captureStream() yields a live audio track — capturing right after play() can return a trackless stream');
+  assert.ok(roomView.includes('!started.ok'), 'a refused startMusic must surface its error instead of caching a dead stream');
   assert.ok(roomView.includes("emit('music-skip'"), "the DJ element's ended event must advance the queue");
   assert.ok(roomView.includes('djAudioRef'), 'the DJ <audio> element must live in RoomView (stays mounted on minimize)');
 });

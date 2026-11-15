@@ -19,7 +19,7 @@ import CharacterArt from './CharacterAvatar';
 import { avatarCharacterById } from '../avatars';
 import { Icon, SignalBars } from './icons';
 import MusicPanel from './MusicPanel';
-import { IDLE_DISCONNECT_MESSAGE } from '../music';
+import { IDLE_DISCONNECT_MESSAGE, playbackUrlFor } from '../music';
 
 // Short relative age for a knock row ("just now", "5m ago", "3h ago") —
 // a knock expires after 24h, so the owner can see at a glance how
@@ -745,14 +745,15 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
 
   // DJ playback (v0.10.0): the DJ's browser owns playback. The
   // server's music-state drives this effect — when I am the DJ and a
-  // track is playing, load its URL into the hidden <audio> element,
-  // play it, and hand captureStream() to the voice engine, which
-  // streams the audio track into the mesh as a second audio track
-  // (mic + music coexist). Anything else — not DJ any more, no track,
-  // paused — stops the element and the stream. captureStream (not
-  // the Web Audio element-source path) is what makes this work for
-  // cross-origin streams: resolved YouTube audio URLs carry no CORS
-  // headers, and the element-source path would silence them.
+  // track is playing, load it into the hidden <audio> element, play
+  // it, and hand captureStream() to the voice engine, which streams
+  // the audio track into the mesh as a second audio track (mic +
+  // music coexist). Anything else — not DJ any more, no track,
+  // paused — stops the element and the stream. The element loads the
+  // SAME-ORIGIN proxy (playbackUrlFor), never the raw track URL:
+  // captureStream() throws a SecurityError for cross-origin media,
+  // and radio / YouTube stream URLs are always cross-origin — the
+  // proxy is what makes captureStream work at all.
   // Playback starts from the DJ's Play click (the panel primes the
   // element inside that gesture for autoplay); a play() rejection
   // here shows in the panel instead of crashing.
@@ -775,19 +776,22 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
       return undefined;
     }
     const track = musicState.nowPlaying;
+    // Same-origin proxy (see playbackUrlFor): the raw track URL is
+    // cross-origin and captureStream() throws a SecurityError on it.
+    const playbackUrl = playbackUrlFor(track.url);
     let cancelled = false;
     (async () => {
       // A new track: drop the old stream first, so the old audio
       // stops flowing to the room before the new one starts.
-      if (djUrlRef.current !== track.url) {
+      if (djUrlRef.current !== playbackUrl) {
         if (djStreamRef.current) {
           djStreamRef.current = null;
           djTrackIdRef.current = null;
           await voice?.stopMusic().catch(() => {});
         }
         if (cancelled) return;
-        el.src = track.url;
-        djUrlRef.current = track.url;
+        el.src = playbackUrl;
+        djUrlRef.current = playbackUrl;
       }
       if (el.paused) {
         try {
@@ -805,10 +809,50 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
           setDjPlaybackError('This browser cannot share audio from the music player.');
           return;
         }
-        const stream = el.captureStream();
+        // captureStream throws (SecurityError) for cross-origin
+        // media; the proxy makes this same-origin, but never let a
+        // throw here escape as an unhandled rejection — show it in
+        // the panel instead.
+        // Race (proven in the smoke test): play() resolves when
+        // playback is *initiated*, but captureStream() called right
+        // after can return a TRACKLESS stream — the media pipeline
+        // has not produced its first audio frame yet, and a trackless
+        // stream never gains a track. So poll until the captured
+        // stream actually has an audio track (5s cap), and never
+        // cache a trackless stream: djStreamRef is only set once a
+        // live track exists. Discarded candidates have no tracks, so
+        // they hold no resources.
+        let stream = null;
+        const captureDeadline = Date.now() + 5000;
+        while (!cancelled && !stream) {
+          try {
+            const candidate = el.captureStream();
+            if (candidate.getAudioTracks().length > 0) stream = candidate;
+          } catch {
+            if (!cancelled) setDjPlaybackError('Couldn’t share this track’s audio — try another one.');
+            return;
+          }
+          if (!stream) {
+            if (Date.now() >= captureDeadline) break;
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        }
+        if (cancelled) return;
+        if (!stream) {
+          setDjPlaybackError('Couldn’t share this track’s audio — try another one.');
+          return;
+        }
         djStreamRef.current = stream;
         djTrackIdRef.current = track.id;
-        await voice?.startMusic(stream);
+        const started = await voice?.startMusic(stream);
+        if (started && !started.ok) {
+          // Never cache a stream the engine refused: a later
+          // music-state change retries from scratch instead of
+          // sitting on a dead stream forever.
+          djStreamRef.current = null;
+          djTrackIdRef.current = null;
+          if (!cancelled) setDjPlaybackError(started.error || 'Couldn’t share this track’s audio — try another one.');
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -945,7 +989,10 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
   const playMusic = useCallback(() => {
     setMusicError('');
     const st = musicStateRef.current;
-    const nextUrl = st?.nowPlaying?.url || st?.queue?.[0]?.url;
+    const nextTrackUrl = st?.nowPlaying?.url || st?.queue?.[0]?.url;
+    // Same-origin proxy (see playbackUrlFor): the raw track URL is
+    // cross-origin and captureStream() would throw on it.
+    const nextUrl = nextTrackUrl ? playbackUrlFor(nextTrackUrl) : '';
     const el = djAudioRef.current;
     if (nextUrl && el) {
       if (djUrlRef.current !== nextUrl) {

@@ -110,6 +110,18 @@ export function validateTrack(track) {
   return { ok: true };
 }
 
+// The DJ element's src for a track: the SAME-ORIGIN audio proxy
+// (/api/music/stream), never the raw track URL. captureStream()
+// throws a SecurityError for cross-origin media, and radio /
+// YouTube stream URLs are always cross-origin — the proxy is what
+// makes captureStream work at all. The queue still stores the raw
+// URL; only playback goes through the proxy.
+export function playbackUrlFor(track) {
+  const url = typeof track === 'string' ? track : track?.url;
+  if (typeof url !== 'string' || !url) return '';
+  return `/api/music/stream?u=${encodeURIComponent(url)}`;
+}
+
 // "3:24" for a 204s track; "—" when the duration is unknown (a live
 // radio stream has none).
 export function formatDuration(seconds) {

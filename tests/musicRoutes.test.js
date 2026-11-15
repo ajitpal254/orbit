@@ -1,5 +1,6 @@
-// Tests for POST /api/music/youtube (v0.10.0): resolve a YouTube
-// link to a direct audio stream URL.
+// Tests for POST /api/music/youtube and GET /api/music/stream
+// (v0.10.0): resolve a YouTube link to a direct audio stream URL,
+// and proxy an audio URL same-origin for the DJ's <audio> element.
 //
 // DB + HTTP tests (need MongoDB): when no MongoDB is reachable they
 // skip instead of failing — same pattern as
@@ -18,6 +19,8 @@ const User = require('../models/User');
 const Room = require('../models/Room');
 const { hashPassword, newSalt } = require('../lib/passwords');
 const youtube = require('../lib/youtube');
+const musicStream = require('../lib/musicStream');
+const { StreamUnavailableError } = musicStream;
 
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/orbit-test-music-routes';
 let mongoAvailable = false;
@@ -236,4 +239,113 @@ test('the rate limit trips after the cap (10 per 15 min per IP)', async (t) => {
     }
     assert.equal(saw429, true, 'the rate limit never tripped');
   });
+});
+
+// --- GET /api/music/stream (the same-origin audio proxy) -------------------
+// The route imports lib/musicStream as a namespace, so the tests
+// stub validateStreamUrl / fetchUpstream and restore them — no test
+// ever does a real DNS lookup or a real upstream fetch.
+
+const stream = async (jar, url) => {
+  const res = await fetch(base + '/api/music/stream?u=' + encodeURIComponent(url || ''), {
+    headers: jar ? { Cookie: cookieHeader(jar) } : {}
+  });
+  return res;
+};
+
+// Stub both namespace functions for one test, restoring afterwards.
+const withStubbedStream = async (validateImpl, fetchImpl, fn) => {
+  const origValidate = musicStream.validateStreamUrl;
+  const origFetch = musicStream.fetchUpstream;
+  musicStream.validateStreamUrl = validateImpl;
+  musicStream.fetchUpstream = fetchImpl;
+  try {
+    await fn();
+  } finally {
+    musicStream.validateStreamUrl = origValidate;
+    musicStream.fetchUpstream = origFetch;
+  }
+};
+
+const streamOk = async (url) => ({ ok: true, url });
+const fakeAudio = (body = 'fake-audio-bytes', status = 200, headers = {}) =>
+  new Response(body, { status, headers: { 'content-type': 'audio/mpeg', ...headers } });
+
+test('streaming without a session is 401', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  const res = await stream(null, 'https://example.com/stream.mp3');
+  assert.equal(res.status, 401);
+});
+
+test('streaming with no u is 400 INVALID_URL', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  const res = await stream(aliceJar, '');
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error, 'INVALID_URL');
+});
+
+test('streaming a non-http(s) URL is 400 INVALID_URL (no DNS, no fetch)', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  // The real validator rejects these before any lookup, so no stub:
+  // a blocked-host response here would mean the guard ran too late.
+  const res = await stream(aliceJar, 'ftp://example.com/stream.mp3');
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error, 'INVALID_URL');
+});
+
+test('streaming a blocked host is 403 BLOCKED_HOST', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  await withStubbedStream(
+    async () => ({ ok: false, error: 'BLOCKED_HOST' }),
+    async () => fakeAudio(),
+    async () => {
+      const res = await stream(aliceJar, 'http://127.0.0.1:4000/tone.wav');
+      assert.equal(res.status, 403);
+      assert.equal((await res.json()).error, 'BLOCKED_HOST');
+    }
+  );
+});
+
+test('streaming proxies the upstream bytes + content-type', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  await withStubbedStream(streamOk, async () => fakeAudio(), async () => {
+    const res = await stream(aliceJar, 'https://example.com/stream.mp3');
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'audio/mpeg');
+    assert.equal(await res.text(), 'fake-audio-bytes');
+  });
+});
+
+test('streaming forwards Range and passes through a 206 + content-range', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  let seenRange = null;
+  await withStubbedStream(
+    streamOk,
+    async (url, opts) => {
+      seenRange = opts.range;
+      return fakeAudio('bytes', 206, { 'content-range': 'bytes 0-4/100', 'accept-ranges': 'bytes' });
+    },
+    async () => {
+      const res = await fetch(base + '/api/music/stream?u=' + encodeURIComponent('https://example.com/stream.mp3'), {
+        headers: { Cookie: cookieHeader(aliceJar), range: 'bytes=0-4' }
+      });
+      assert.equal(res.status, 206);
+      assert.equal(res.headers.get('content-range'), 'bytes 0-4/100');
+      assert.equal(await res.text(), 'bytes');
+    }
+  );
+  assert.equal(seenRange, 'bytes=0-4');
+});
+
+test('an upstream failure is 502 STREAM_UNAVAILABLE, never a 500', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  await withStubbedStream(
+    streamOk,
+    async () => { throw new StreamUnavailableError('fetch-failed'); },
+    async () => {
+      const res = await stream(aliceJar, 'https://example.com/stream.mp3');
+      assert.equal(res.status, 502);
+      assert.equal((await res.json()).error, 'STREAM_UNAVAILABLE');
+    }
+  );
 });

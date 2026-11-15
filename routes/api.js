@@ -3,6 +3,7 @@
 // (populated by socket.io) and is attached to room listings.
 const express = require('express');
 const crypto = require('crypto');
+const { Readable } = require('node:stream');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Session = require('../models/Session');
@@ -51,6 +52,11 @@ const { normalizeUrl, fetchUnfurl, UNFURL_CACHE_TTL_MS } = require('../lib/unfur
 // googleAuth above).
 const youtube = require('../lib/youtube');
 const { isYouTubeUrl } = youtube;
+// Namespace import (not destructured): tests stub
+// musicStream.validateStreamUrl / fetchUpstream with fake upstreams
+// so the route can be exercised without the network (same pattern as
+// youtube above).
+const musicStream = require('../lib/musicStream');
 const { notExpiredFilter, withExpiry, isExpired } = require('../lib/fadingChat');
 const { aliveFilter, isVisible, keepRoom } = require('../lib/fadingRooms');
 const {
@@ -76,6 +82,10 @@ const friendLimit = rateLimitMiddleware(30, 15 * 60 * 1000);
 // 15 minutes per IP — same window as the auth routes. Note this is
 // per-IP like every other rateLimitMiddleware use, not per-user.
 const musicYoutubeLimit = rateLimitMiddleware(10, 15 * 60 * 1000);
+
+// The audio proxy is hit once per track per DJ (plus seeks), so it
+// gets a generous cap: 60 per 15 minutes per IP.
+const musicStreamLimit = rateLimitMiddleware(60, 15 * 60 * 1000);
 
 const isObjectId = (v) => mongoose.Types.ObjectId.isValid(v);
 // Public user shape for lists (friends, search, DMs, invites): name +
@@ -2114,6 +2124,72 @@ router.post('/music/youtube', authMiddleware, musicYoutubeLimit, asyncHandler(as
     // room here for support, never the URL or the stream URL.
     req.log.warn({ err: err?.code || 'extraction-failed', roomId: String(room._id) }, 'YouTube resolution failed');
     res.status(502).json({ error: 'YOUTUBE_UNAVAILABLE' });
+  }
+}));
+
+// GET /api/music/stream?u=<url> — same-origin audio proxy for the
+// DJ's <audio> element (lib/musicStream.js). captureStream() throws
+// a SecurityError for cross-origin media, so the DJ never loads a
+// track URL directly: the element loads this route (same-origin) and
+// the server fetches the bytes upstream. The upstream URL is never
+// logged (a resolved YouTube URL carries a signature); requestLog
+// logs only the matched route pattern, never the query string.
+//   - 400 INVALID_URL: missing / unparseable / non-http(s) u.
+//   - 403 BLOCKED_HOST: localhost / private / loopback host (SSRF guard).
+//   - 502 STREAM_UNAVAILABLE: upstream fetch failed / timed out /
+//     non-2xx — the panel shows a playback error, radio keeps working.
+//   - 200/206: the upstream bytes, streamed (never buffered); Range
+//     is forwarded and content headers pass through.
+router.get('/music/stream', authMiddleware, musicStreamLimit, asyncHandler(async (req, res) => {
+  const rawUrl = req.query?.u;
+  if (typeof rawUrl !== 'string' || !rawUrl) return res.status(400).json({ error: 'INVALID_URL' });
+  const checked = await musicStream.validateStreamUrl(rawUrl);
+  if (!checked.ok) {
+    return res.status(checked.error === 'BLOCKED_HOST' ? 403 : 400).json({ error: checked.error });
+  }
+  // Timeout to first byte only: a live radio stream legitimately
+  // never ends, so the timer is cleared once headers arrive.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), musicStream.MUSIC_STREAM_TIMEOUT_MS);
+  // Client disconnect aborts the upstream fetch (guarded: 'close'
+  // also fires after a normal finish, when aborting is harmless
+  // but must not run — finished is set by then).
+  let finished = false;
+  res.on('finish', () => { finished = true; });
+  res.on('close', () => { if (!finished) controller.abort(); });
+  let upstream;
+  try {
+    upstream = await musicStream.fetchUpstream(checked.url, {
+      range: req.headers.range,
+      signal: controller.signal
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    // Log the host only — never the URL (a YouTube stream URL is signed).
+    let host = '';
+    try { host = new URL(checked.url).hostname; } catch {}
+    req.log.warn({ host, reason: err?.reason || err?.code || 'fetch-failed' }, 'Music stream fetch failed');
+    return res.status(502).json({ error: 'STREAM_UNAVAILABLE' });
+  }
+  clearTimeout(timer);
+  res.status(upstream.status);
+  for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+    const v = upstream.headers?.get?.(h);
+    if (v) res.setHeader(h, v);
+  }
+  if (!upstream.body) return res.end();
+  try {
+    await new Promise((resolve, reject) => {
+      const stream = Readable.fromWeb(upstream.body);
+      stream.on('error', reject);
+      res.on('error', reject);
+      res.on('finish', resolve);
+      stream.pipe(res);
+    });
+  } catch {
+    // Client went away mid-stream (or the upstream died): nothing to
+    // answer — the request is already over from the caller's side.
+    try { res.end(); } catch {}
   }
 }));
 
