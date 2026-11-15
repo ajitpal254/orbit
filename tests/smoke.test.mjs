@@ -392,8 +392,21 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
         const cur = (await popover.textContent()) || '';
         // A row for the peer exists once the engine reports it; the
         // states start at "— / —" until the first report lands.
-        const m = cur.match(/(\S+) \/ (\S+) \(([^)]*)\)/);
-        if (!m || m[1] === '—' || m[1] === 'new') return false;
+        // Match REAL state words, not \S+: the row renders the peer
+        // name and the state in adjacent <span>s, so textContent
+        // glues them ("Smokenew / new (host+srflx)") and \S+ captured
+        // "Smokenew" — neither '—' nor 'new' — so the wait returned
+        // on the first poll before the connection had moved at all
+        // (CI failed the connected assertion 87ms in). Enumerating
+        // the RTC state vocabulary makes m[1] the true state.
+        const m = cur.match(/(new|connecting|connected|disconnected|failed|closed) \/ (new|checking|connected|completed|disconnected|failed|closed) \(([^)]*)\)/);
+        if (!m || m[1] === 'new') return false;
+        // With UDP, wait for the real thing — connected / connected —
+        // not just "not new": the assertion below reads this same
+        // text, and catching 'checking' on the first poll would fail
+        // it before the connection finishes. Without UDP, leaving
+        // 'new' (checks started) is the honest ceiling.
+        if (udpAvailable && !(m[1] === 'connected' && m[2] === 'connected')) return false;
         return cur;
       }, { timeout: 30000, label: `${peerName} peer connection leaving new` });
       t.diagnostic(`peer state seen by ${peerName === USERS[1].name ? 'Alice' : 'Bob'}: ${text.trim()}`);
