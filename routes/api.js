@@ -45,13 +45,19 @@ const {
   storeUpload, findMediaFile, getBucket, linkMediaToMessage, claimUploadForMessage
 } = require('../lib/media');
 const { normalizeUrl, fetchUnfurl, UNFURL_CACHE_TTL_MS } = require('../lib/unfurl');
+// Namespace import (not destructured): tests stub
+// youtube.resolveYouTubeAudio with a fake resolver so the route can
+// be exercised without the real yt-dlp binary (same pattern as
+// googleAuth above).
+const youtube = require('../lib/youtube');
+const { isYouTubeUrl } = youtube;
 const { notExpiredFilter, withExpiry, isExpired } = require('../lib/fadingChat');
 const { aliveFilter, isVisible, keepRoom } = require('../lib/fadingRooms');
 const {
   expiryForKnock, isKnockPending, isKnockRateLimited,
   canKnock, knockBlockReason, canAnswerKnock, knockJson, notExpiredKnockFilter
 } = require('../lib/knock');
-const { emitToUser, emitToRoom, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, clearFocusTimer, kickSocketsFromRoom, confirmTabClose } = require('../lib/socket');
+const { emitToUser, emitToRoom, emitRoomsChanged, onlineUserIds, isMutedInRoom, setMutedInRoom, clearMutedForRoom, clearFocusTimer, clearMusicForRoom, kickSocketsFromRoom, confirmTabClose } = require('../lib/socket');
 const { focusSessions, stopSession, clearSession, canControlFocus } = require('../lib/focusSessions');
 const { buildFriendPresence } = require('../lib/friendPresence');
 const { touchRoomActivity, activeDaysFromTimestamps } = require('../lib/roomActivity');
@@ -64,6 +70,12 @@ const router = express.Router();
 // 15-minute window as the auth routes, with a slightly higher cap than
 // login (search fires while typing, debounced on the client).
 const friendLimit = rateLimitMiddleware(30, 15 * 60 * 1000);
+
+// YouTube resolution is a server-side extraction per request
+// (yt-dlp spawns a process), so it gets its own tight cap: 10 per
+// 15 minutes per IP — same window as the auth routes. Note this is
+// per-IP like every other rateLimitMiddleware use, not per-user.
+const musicYoutubeLimit = rateLimitMiddleware(10, 15 * 60 * 1000);
 
 const isObjectId = (v) => mongoose.Types.ObjectId.isValid(v);
 // Public user shape for lists (friends, search, DMs, invites): name +
@@ -899,6 +911,8 @@ router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
   await InviteLink.deleteMany({ room: room._id });
   await Knock.deleteMany({ room: room._id });
   clearMutedForRoom(room._id);
+  // A deleted room takes its DJ slot, queue and idle timer with it.
+  clearMusicForRoom(room._id);
   // A deleted room takes its focus session (and expiry timer) with it.
   clearSession(focusSessions, room._id);
   clearFocusTimer(room._id);
@@ -1024,6 +1038,7 @@ router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) =>
     await InviteLink.deleteMany({ room: room._id });
     await Knock.deleteMany({ room: room._id });
     clearMutedForRoom(room._id);
+    clearMusicForRoom(room._id);
     return res.json({ message: 'Left the room — it was deleted as the last member left' });
   }
   res.json({ message: 'Left the room' });
@@ -2065,6 +2080,41 @@ router.post('/unfurl', authMiddleware, friendLimit, asyncHandler(async (req, res
     { upsert: true }
   ).catch((err) => req.log.warn({ err }, 'Link preview cache write failed'));
   res.json(preview);
+}));
+
+// --- MUSIC BOT: YOUTUBE RESOLUTION (v0.10.0) ---
+
+// POST /api/music/youtube { url, roomId } — resolve a YouTube link
+// to a direct audio stream URL (lib/youtube.js, yt-dlp) so the DJ's
+// browser can play it. The client calls this first and queues only
+// the resolved googlevideo URL — a raw youtube.com URL never
+// reaches the queue. Radio / direct-MP3 playback never touches
+// this endpoint.
+//   - 400 INVALID_URL: not a YouTube URL.
+//   - 403: roomId is not a valid ObjectId, the room does not exist,
+//     or the caller cannot see it (private rooms stay members-only).
+//   - 502 YOUTUBE_UNAVAILABLE: yt-dlp missing / failed / timed out /
+//     blocked / no stream URL — the route never 500s on an
+//     extraction failure. The resolved URL is signed and short-lived;
+//     it is never logged.
+router.post('/music/youtube', authMiddleware, musicYoutubeLimit, asyncHandler(async (req, res) => {
+  const { url, roomId } = req.body || {};
+  if (!isYouTubeUrl(url)) return res.status(400).json({ error: 'INVALID_URL' });
+  if (!isObjectId(roomId)) return res.status(403).json({ error: 'Room not found' });
+  const room = await Room.findById(roomId).lean();
+  if (!room || !canSeeRoom(room, req.user._id)) {
+    return res.status(403).json({ error: 'Room not found' });
+  }
+  try {
+    const resolved = await youtube.resolveYouTubeAudio(url);
+    res.json(resolved);
+  } catch (err) {
+    // Every extraction failure is a 502, never a 500 — and never a
+    // crash. The resolver already logged a coarse reason; log the
+    // room here for support, never the URL or the stream URL.
+    req.log.warn({ err: err?.code || 'extraction-failed', roomId: String(room._id) }, 'YouTube resolution failed');
+    res.status(502).json({ error: 'YOUTUBE_UNAVAILABLE' });
+  }
 }));
 
 // --- NOTIFICATIONS (IN-APP CENTER) ---
