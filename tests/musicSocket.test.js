@@ -283,6 +283,35 @@ test('play/pause are DJ-only', async () => {
   assert.equal(lastState(io).playing, true);
 });
 
+test('play with a queued track and no nowPlaying starts the first track', async () => {
+  stubRooms({ room1: privateRoomBothMembers });
+  const { io, victim } = connectPair();
+  seedRoom();
+  await claim(victim);
+  await queueAdd(victim, RADIO);
+  assert.equal(lastState(io).nowPlaying, null, 'queue-add alone starts nothing');
+  assert.equal(lastState(io).playing, false);
+  await play(victim);
+  assert.equal(lastState(io).nowPlaying.title, 'Lo-fi Radio', 'play advances the first queued track');
+  assert.equal(lastState(io).playing, true);
+  assert.deepEqual(lastState(io).queue, [], 'the started track leaves the queue');
+  // Pause then play resumes the same track instead of advancing.
+  await pause(victim);
+  await play(victim);
+  assert.equal(lastState(io).nowPlaying.title, 'Lo-fi Radio');
+  assert.equal(lastState(io).playing, true);
+});
+
+test('play with an empty queue and no nowPlaying leaves playback off', async () => {
+  stubRooms({ room1: privateRoomBothMembers });
+  const { io, victim } = connectPair();
+  seedRoom();
+  await claim(victim);
+  await play(victim);
+  assert.equal(lastState(io).nowPlaying, null);
+  assert.equal(lastState(io).playing, false, 'no track, no phantom playing state');
+});
+
 test('stop is owner/mod-only and clears queue + nowPlaying + DJ', async () => {
   stubRooms({ room1: privateRoomBothMembers });
   const { io, victim, attacker } = connectPair();

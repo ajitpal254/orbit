@@ -57,6 +57,7 @@
 //     PWA install, no push delivery. Those still need a phone.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createServer as createNetServer } from 'node:net';
 import dgram from 'node:dgram';
@@ -681,8 +682,11 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
   // A tiny generated WAV (10s, 440Hz sine, 8kHz mono) as a data: URL
   // — a playable radio track the test server never has to serve, and
   // never a real YouTube URL. Long enough that the DJ's element does
-  // not hit 'ended' (and auto-skip) mid-assertion.
-  function makeWavDataUrl(seconds = 10) {
+  // not hit 'ended' (and auto-skip) mid-assertion. Returned as a
+  // Buffer: the server only queues http(s) URLs, so the subtest
+  // serves these bytes over a tiny local HTTP server instead of a
+  // data: URL (which validateTrack rejects).
+  function makeWavBuffer(seconds = 10) {
     const sampleRate = 8000;
     const n = sampleRate * seconds;
     const data = Buffer.alloc(44 + n * 2);
@@ -703,7 +707,7 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
       const s = Math.round(12000 * Math.sin((2 * Math.PI * 440 * i) / sampleRate));
       data.writeInt16LE(s, 44 + i * 2);
     }
-    return `data:audio/wav;base64,${data.toString('base64')}`;
+    return data;
   }
 
   await t.test('music bot: DJ claims, queues a radio track, both sides see now-playing (v0.10.0)', async (st) => {
@@ -743,15 +747,31 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
     }
 
     // Alice takes the DJ seat; the claim broadcasts to the room.
+    // Scope to the Music panel: the same "DJ: <name>" line also
+    // renders in the Music Bot members-list row, and an unscoped
+    // getByText hits both (Playwright strict-mode violation).
     await pageA.getByRole('button', { name: 'Take over as DJ' }).click();
     for (const page of [pageA, pageB]) {
-      await page.getByText(`DJ: ${USERS[0].name}`).waitFor({ timeout: 10000 });
+      await page.getByRole('region', { name: 'Music' }).getByText(`DJ: ${USERS[0].name}`).waitFor({ timeout: 10000 });
     }
 
     // Alice queues the generated tone as a radio track, then plays.
     // The queue-add and the play both broadcast music-state; the DJ
     // client reacts by loading the URL and streaming it into the mesh.
-    await pageA.getByLabel('Track URL').fill(makeWavDataUrl());
+    // Serve the generated tone over a tiny local HTTP server: the
+    // queue only accepts http(s) URLs, and this is a real radio-style
+    // stream URL with no external dependency.
+    const wav = makeWavBuffer();
+    const fixture = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': wav.length });
+      res.end(wav);
+    });
+    // TEMP: always close the fixture even if an assertion below fails,
+    // or the listening server keeps the test process alive forever.
+    st.after(() => { try { fixture.close(); } catch {} });
+    await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
+    const fixtureUrl = `http://127.0.0.1:${fixture.address().port}/tone.wav`;
+    await pageA.getByLabel('Track URL').fill(fixtureUrl);
     await pageA.getByLabel('Track title').fill('Smoke Tone');
     await pageA.getByRole('button', { name: 'Add track' }).click();
     await pageA.getByText('Smoke Tone').first().waitFor({ timeout: 10000 });
@@ -780,6 +800,7 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
     // before the leave/postcard subtest.
     await pageA.getByRole('button', { name: 'Stop music' }).click();
     await pageA.getByText('No DJ').waitFor({ timeout: 10000 });
+    fixture.close();
   });
 
   await t.test('postcard on leave, other side (Bob leaves the private room)', async () => {

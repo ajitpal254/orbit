@@ -30,5 +30,5 @@
     "start": "node server.js",
     "test": "node --test tests/*.test.js tests/*.test.mjs"
   },
-  "version": "0.9.1"
+  "version": "0.10.0"
 }
