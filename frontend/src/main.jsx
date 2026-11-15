@@ -16,6 +16,7 @@ import './css/nav.css';
 import './css/friends.css';
 import './css/members.css';
 import './css/chat.css';
+import './css/music.css';
 import './css/splash.css';
 import './css/motion.css';
 import './css/profile.css';
