@@ -8,7 +8,7 @@ const path = require('path');
 const { Server } = require('socket.io');
 const apiRoutes = require('./routes/api');
 const { rateLimitMiddleware, csrfMiddleware } = require('./middleware/auth');
-const { attachSocket, emitRoomsChanged, clearMutedForRoom, clearFocusTimer } = require('./lib/socket');
+const { attachSocket, emitRoomsChanged, clearMutedForRoom, clearFocusTimer, clearMusicForRoom } = require('./lib/socket');
 const { startCleanupWorker } = require('./lib/fadingRooms');
 const { ensureMediaIndexes } = require('./lib/media');
 const { focusSessions, clearSession } = require('./lib/focusSessions');
@@ -156,6 +156,7 @@ if (require.main === module) {
         InviteLink,
         Knock,
         clearMutedForRoom,
+        clearMusicForRoom,
         log: (fields, msg) => (fields && fields.err ? logger.error(fields, msg) : logger.info(fields, msg)),
         onClosed: async (room) => {
           const id = String(room._id);
