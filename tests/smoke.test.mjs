@@ -431,9 +431,13 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
       // substring-matches the header's 'Copy invite link' button and
       // the panel's 'Close invite link' button too (3 matches, strict
       // mode throws). The input is the only textbox with that name.
-      const value = await pageA.getByRole('textbox', { name: 'Invite link', exact: true }).inputValue().catch(() => '');
+      // inputValue gets a SHORT timeout: without it a single poll
+      // blocks Playwright's default 30s while the panel is still
+      // rendering, which blows the waitFor deadline from inside the
+      // poll (seen in CI: the 15s wait reported its timeout at 30s).
+      const value = await pageA.getByRole('textbox', { name: 'Invite link', exact: true }).inputValue({ timeout: 1000 }).catch(() => '');
       return value || false;
-    }, { timeout: 15000, label: 'invite link URL to appear' });
+    }, { timeout: 60000, label: 'invite link URL to appear' });
     assert.match(linkUrl, /#invite-/, `invite link must carry a token hash, got ${linkUrl}`);
 
     // Bob leaves, dismisses his postcard, then follows the link: the
@@ -445,7 +449,7 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
     // the call-leave path that builds the postcard.
     await pageB.locator('button[aria-label="Leave room"]').click();
     const bobCard = pageB.getByRole('dialog', { name: `Recap of ${ROOM_NAME}` });
-    await bobCard.waitFor({ timeout: 10000 });
+    await bobCard.waitFor({ timeout: 30000 });
     assert.match(await bobCard.textContent(), new RegExp(USERS[0].name),
       "Bob's postcard must name Alice, who he was in the room with");
     await pageB.getByRole('button', { name: 'Dismiss postcard' }).click();
@@ -471,7 +475,7 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
         const alert = pageB.locator('.invite-error');
         if (await alert.isVisible().catch(() => false)) return `error: ${(await alert.textContent())?.trim()}`;
         return false;
-      }, { timeout: 30000, label: 'Bob rejoining via the invite link' });
+      }, { timeout: 60000, label: 'Bob rejoining via the invite link' });
       lastOutcome = outcome;
       if (outcome === 'joined') joined = true;
       else if (!outcome.includes('Too many requests')) break;
@@ -614,8 +618,10 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
     await campfire.click();
     assert.equal(await campfire.isChecked(), false, 'campfire must be off so the room is permanent');
     await pageA.getByRole('button', { name: 'Create & drop in' }).click();
+    // 60s, not 30s: under the full suite's parallel load, joining a
+    // room can take well over 30s (CI failed here at exactly 30s).
     await pageA.getByRole('button', { name: 'Mute', exact: true })
-      .waitFor({ timeout: 30000 });
+      .waitFor({ timeout: 60000 });
 
     const privateRoomId = await pageA.evaluate(async (name) => {
       const res = await fetch('/api/rooms');
@@ -630,19 +636,19 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
     // then opens the private room's deep link.
     await pageB.locator('button[aria-label="Leave room"]').click();
     const smokeCard = pageB.getByRole('dialog', { name: `Recap of ${ROOM_NAME}` });
-    await smokeCard.waitFor({ timeout: 10000 });
+    await smokeCard.waitFor({ timeout: 30000 });
     await pageB.getByRole('button', { name: 'Dismiss postcard' }).click();
     await smokeCard.waitFor({ state: 'detached', timeout: 5000 });
 
     await pageB.goto(`${baseUrl}/#room-${privateRoomId}`);
     await pageB.getByRole('button', { name: 'Knock to join' })
-      .waitFor({ timeout: 15000 });
+      .waitFor({ timeout: 30000 });
     await pageB.getByRole('button', { name: 'Knock to join' }).click();
-    await pageB.getByText('You knocked').waitFor({ timeout: 10000 });
+    await pageB.getByText('You knocked').waitFor({ timeout: 30000 });
 
     // Alice answers from the members panel; Bob joins live.
     await pageA.getByRole('button', { name: 'Admit', exact: true })
-      .waitFor({ timeout: 15000 });
+      .waitFor({ timeout: 30000 });
     await pageA.getByRole('button', { name: 'Admit', exact: true }).click();
     // If the admit itself fails (rate limit, server error) the panel
     // shows the error and Bob never joins — surface that text instead
@@ -654,15 +660,15 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
     });
     assert.equal(knockError, '', `admitting the knock must not error, got: ${knockError}`);
     await pageB.getByRole('button', { name: 'Mute', exact: true })
-      .waitFor({ timeout: 30000 });
+      .waitFor({ timeout: 60000 });
     await pageA.getByRole('button', { name: new RegExp(`^${USERS[1].name}`) })
-      .waitFor({ timeout: 10000 });
+      .waitFor({ timeout: 30000 });
   });
 
   await t.test('postcard on leave, other side (Bob leaves the private room)', async () => {
     await pageB.locator('button[aria-label="Leave room"]').click();
     const card = pageB.getByRole('dialog', { name: `Recap of ${PRIVATE_ROOM_NAME}` });
-    await card.waitFor({ timeout: 10000 });
+    await card.waitFor({ timeout: 30000 });
     assert.match(await card.textContent(), new RegExp(USERS[0].name),
       "Bob's postcard must name Alice, who he was in the room with");
     await pageB.getByRole('button', { name: 'Dismiss postcard' }).click();
