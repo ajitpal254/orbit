@@ -13,10 +13,10 @@
 //   mongod (or set MONGODB_URI) to exercise them.
 //
 // SMTP is NOT needed for these tests: the email send is exercised
-// with a fake transport, and the HTTP forgot-password test runs with
-// SMTP unconfigured (the background send then no-ops, exactly as on
-// Render while the Brevo creds are broken — the token row is still
-// created, the route still answers 200).
+// with a fake transport (or a stubbed fetch for the Brevo API
+// branch, mirroring PR #18), and the HTTP forgot-password test runs
+// with SMTP unconfigured (the background send then no-ops — the
+// token row is still created, the route still answers 200).
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
@@ -217,9 +217,12 @@ test('sendPasswordResetEmail sends a #reset-password- link the token redeems', a
   const createTransport = () => fakeTransport;
   // SMTP env must look configured for getTransport to build one;
   // the fake createTransport means no real server is ever contacted.
+  // BREVO_API_KEY must be unset or the send would route to the API
+  // branch instead of the stubbed transport.
   const saved = {};
-  for (const k of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
+  for (const k of ['BREVO_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
     saved[k] = process.env[k];
+    delete process.env[k];
   }
   process.env.SMTP_HOST = 'smtp.example.com';
   process.env.SMTP_USER = 'orbit@example.com';
@@ -247,8 +250,9 @@ test('sendPasswordResetEmail reports send-failed instead of throwing', async (t)
   if (skipIfNoMongo(t)) return;
   const user = await makePasswordUser();
   const saved = {};
-  for (const k of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) {
+  for (const k of ['BREVO_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) {
     saved[k] = process.env[k];
+    delete process.env[k];
   }
   process.env.SMTP_HOST = 'smtp.example.com';
   process.env.SMTP_USER = 'orbit@example.com';
@@ -272,13 +276,74 @@ test('sendPasswordResetEmail reports smtp-not-configured when SMTP is unset', as
   if (skipIfNoMongo(t)) return;
   const user = await makePasswordUser();
   const saved = {};
-  for (const k of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) {
+  for (const k of ['BREVO_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) {
     saved[k] = process.env[k];
     delete process.env[k];
   }
   try {
     const result = await sendPasswordResetEmail(user);
     assert.deepEqual(result, { sent: false, reason: 'smtp-not-configured' });
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+// --- Lib: Brevo API branch (mirrors PR #18 / emailVerification) ---
+
+test('Brevo API mode: sendPasswordResetEmail uses the API when BREVO_API_KEY is set, SMTP unset', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  const user = await makePasswordUser();
+  const saved = {};
+  for (const k of ['BREVO_API_KEY', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  process.env.BREVO_API_KEY = 'xkeysib-test-key';
+  process.env.SMTP_FROM = 'Orbit <orbit@example.test>';
+  process.env.APP_URL = 'https://orbit.example.test';
+  let seen = null;
+  const fetchImpl = async (url, opts) => {
+    seen = { url, opts };
+    return { ok: true, status: 201, json: async () => ({ messageId: 'api-1' }) };
+  };
+  try {
+    const result = await sendPasswordResetEmail(user, { fetchImpl });
+    assert.deepEqual(result, { sent: true });
+    assert.ok(seen, 'mail was handed to the Brevo API');
+    assert.equal(seen.url, 'https://api.brevo.com/v3/smtp/email');
+    assert.equal(seen.opts.headers['api-key'], 'xkeysib-test-key');
+    const body = JSON.parse(seen.opts.body);
+    assert.equal(body.sender.email, 'orbit@example.test');
+    assert.deepEqual(body.to, [{ email: user.email }]);
+    assert.match(body.textContent, /#reset-password-[0-9a-f]{64}/, 'link carries the token in a hash');
+    const token = body.textContent.match(/#reset-password-([0-9a-f]{64})/)[1];
+    assert.ok(await resetPasswordWithToken(token, 'brand-new-password-99'));
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test('Brevo API mode: an API rejection reports brevo-api-rejected instead of throwing', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  const user = await makePasswordUser();
+  const saved = {};
+  for (const k of ['BREVO_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  process.env.BREVO_API_KEY = 'xkeysib-test-key';
+  const fetchImpl = async () => ({
+    ok: false, status: 400, json: async () => ({ message: 'bad sender' })
+  });
+  try {
+    const result = await sendPasswordResetEmail(user, { fetchImpl });
+    assert.deepEqual(result, { sent: false, reason: 'brevo-api-rejected' });
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];
