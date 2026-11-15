@@ -41,7 +41,7 @@ export function isOfferer(mySocketId, otherSocketId) {
 }
 
 export class VoiceEngine {
-  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs, iceGraceMs, iceRestartTimeoutMs, onIceRecovery, spatialEnabled, onShareTrack, onShareEnded, onLocalShareEnded }) {
+  constructor({ socket, roomId, selfId, onSpeaking, onMicError, onConnectionState, onPlaybackBlocked, offerRetryMs, iceGraceMs, iceRestartTimeoutMs, onIceRecovery, spatialEnabled, onShareTrack, onShareEnded, onLocalShareEnded, onMusicTrack, onMusicEnded }) {
     this.socket = socket;
     this.roomId = roomId;
     this.selfId = selfId;
@@ -71,6 +71,16 @@ export class VoiceEngine {
     this.onShareTrack = onShareTrack || (() => {});
     this.onShareEnded = onShareEnded || (() => {});
     this.onLocalShareEnded = onLocalShareEnded || (() => {});
+    // Music bot (v0.10.0): the DJ's browser plays the track and
+    // streams it into the mesh as a second audio track (see
+    // startMusic below). Listeners hear it room-wide at full volume
+    // — no speaking detection, no proximity gain — through their own
+    // <audio> element (onMusicTrack), torn down when the track ends
+    // (onMusicEnded). The engine never emits the socket music events
+    // itself; RoomView owns the DJ claim / queue / transport, so the
+    // state machine stays in one place.
+    this.onMusicTrack = onMusicTrack || (() => {});
+    this.onMusicEnded = onMusicEnded || (() => {});
     // If an offer goes unanswered (peer missed it, was backgrounded, ...),
     // re-offer once after this delay instead of staying silent forever.
     this.offerRetryMs = offerRetryMs ?? 5000;
@@ -117,6 +127,16 @@ export class VoiceEngine {
     this.shareStream = null;
     this.shareSenders = new Map(); // socketId -> RTCRtpSender
     this._onShareTrackEnded = this._onShareTrackEnded.bind(this);
+    // Music bot (v0.10.0): the DJ's captured playback stream (audio
+    // only — HTMLMediaElement.captureStream() on the hidden <audio>
+    // element RoomView owns) and, per peer, the RTCRtpSender
+    // carrying that audio track. The mic track lives on localStream
+    // and is never removed, replaced, or re-added in this path — mic
+    // and music coexist as two audio senders on one connection.
+    this.musicStream = null;
+    this.musicSenders = new Map(); // socketId -> RTCRtpSender
+    this.musicVolume = 1; // listener-side music volume (0..1)
+    this.musicMuted = false; // listener-side music mute
     this.iceServers = null; // loaded in join() before any peer is created
     this._lastLevels = {};
     this._onSignal = this._onSignal.bind(this);
@@ -184,6 +204,9 @@ export class VoiceEngine {
     // 'screen-share-stopped'). No renegotiation — the peer connections
     // are closing below anyway.
     this._stopShareTracks();
+    // Leaving stops my music the same way (the server also releases
+    // the DJ slot on leave-room, so the room hears the DJ go).
+    this._stopMusicTracks();
     for (const [id] of this.peers) this._removePeer(id);
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => t.stop());
@@ -207,6 +230,9 @@ export class VoiceEngine {
     this.deafened = deafened;
     for (const peer of this.peers.values()) {
       if (peer.audioEl) peer.audioEl.muted = deafened;
+      // Deafen silences the music too — it is still a room sound,
+      // and "hear nothing" must mean nothing.
+      if (peer.musicEl) peer.musicEl.muted = deafened;
     }
   }
 
@@ -295,6 +321,19 @@ export class VoiceEngine {
     this.onLocalShareEnded();
   }
 
+  // A remote music track ended (the DJ stopped, or their sender went
+  // away): tear the music element down and tell the UI, so the panel
+  // stops claiming the music is live. Idempotent — a second 'ended'
+  // (or a peer removal right after) finds no element and stays quiet.
+  _onMusicTrackEnded(socketId) {
+    const peer = this.peers.get(socketId);
+    if (!peer || !peer.musicEl) return;
+    peer.musicEl.srcObject = null;
+    peer.musicEl.remove();
+    peer.musicEl = null;
+    this.onMusicEnded(socketId);
+  }
+
   // Add the live share track to one peer connection (existing peer, or
   // a peer created after sharing started). The sender is remembered
   // per peer so stopScreenShare can removeTrack exactly that sender.
@@ -320,6 +359,114 @@ export class VoiceEngine {
       try { t.removeEventListener('ended', this._onShareTrackEnded); } catch {}
       t.stop();
     });
+  }
+
+  // --- music bot (v0.10.0) ---
+  //
+  // The DJ's browser owns playback: RoomView plays the current track
+  // in a hidden <audio> element and hands this method the stream from
+  // captureStream(). The audio track is added to every existing
+  // RTCPeerConnection (a renegotiation per peer — the same _offerTo
+  // the audio path uses) and to any peer created later (_createPeer).
+  // The mic track is never touched: music is a SECOND audio sender
+  // alongside it, so the DJ keeps talking while the music plays.
+  //
+  // The socket DJ claim ('music-dj-claim') is NOT emitted here —
+  // RoomView emits it and rolls the local playback back (stopMusic)
+  // if the server refuses the claim. Returns { ok: true } or
+  // { ok: false, error } — a failed start never leaves a half-added
+  // track behind.
+  async startMusic(mediaStream) {
+    if (this.musicStream) {
+      if (this.musicStream === mediaStream) return { ok: true };
+      await this.stopMusic();
+    }
+    const track = mediaStream?.getAudioTracks?.()[0];
+    if (!track) {
+      return { ok: false, error: 'Music gave no audio track.' };
+    }
+    this.musicStream = mediaStream;
+    for (const [socketId, peer] of this.peers) {
+      this._addMusicTrackToPeer(socketId, peer);
+    }
+    for (const socketId of this.peers.keys()) {
+      await this._offerTo(socketId);
+    }
+    return { ok: true };
+  }
+
+  // Stop the music: removeTrack the audio sender from every peer and
+  // renegotiate (so the remote music track ends and the listeners'
+  // music elements tear down), then stop the captured track.
+  // Idempotent — stopping when no music is live is a no-op.
+  async stopMusic() {
+    if (!this.musicStream) return;
+    const stream = this.musicStream;
+    this.musicStream = null;
+    for (const [socketId, sender] of this.musicSenders) {
+      const peer = this.peers.get(socketId);
+      try {
+        if (peer?.pc && sender) peer.pc.removeTrack(sender);
+      } catch {}
+    }
+    this.musicSenders.clear();
+    stream.getTracks().forEach((t) => {
+      try { t.stop(); } catch {}
+    });
+    for (const socketId of this.peers.keys()) {
+      await this._offerTo(socketId);
+    }
+  }
+
+  // Add the live music track to one peer connection (existing peer, or
+  // a peer created after playback started). The sender is remembered
+  // per peer so stopMusic can removeTrack exactly that sender.
+  _addMusicTrackToPeer(socketId, peer) {
+    if (!this.musicStream || !peer?.pc) return;
+    const track = this.musicStream.getAudioTracks()[0];
+    if (!track) return;
+    try {
+      const sender = peer.pc.addTrack(track, this.musicStream);
+      if (sender) this.musicSenders.set(socketId, sender);
+    } catch {}
+  }
+
+  // Silent track stop for leave(): the senders die with their peer
+  // connections, so no removeTrack / renegotiation — just stop the
+  // captured track so the playback stream releases.
+  _stopMusicTracks() {
+    if (!this.musicStream) return;
+    const stream = this.musicStream;
+    this.musicStream = null;
+    this.musicSenders.clear();
+    stream.getTracks().forEach((t) => {
+      try { t.stop(); } catch {}
+    });
+  }
+
+  // Listener-side music volume (0..1) and mute: room-wide music at
+  // full volume — deliberately NOT multiplied by the master or
+  // per-peer voice volumes and NOT routed through the proximity gain,
+  // so a far orb's music is exactly as loud as a near one's. Mute
+  // zeroes the element volume; deafen (setDeafened) mutes the element
+  // outright, like every voice element.
+  setMusicVolume(v) {
+    this.musicVolume = clampVolume(v);
+    this._applyMusicVolumes();
+  }
+
+  setMusicMuted(muted) {
+    this.musicMuted = Boolean(muted);
+    this._applyMusicVolumes();
+  }
+
+  _applyMusicVolumes() {
+    for (const peer of this.peers.values()) {
+      if (!peer.musicEl) continue;
+      try {
+        peer.musicEl.volume = this.musicMuted ? 0 : clampVolume(this.musicVolume);
+      } catch {}
+    }
   }
 
   // --- audio settings (v0.7.0) ---
@@ -413,12 +560,17 @@ export class VoiceEngine {
     let applied = 0;
     let failed = 0;
     for (const peer of this.peers.values()) {
-      if (!peer.audioEl?.setSinkId) { failed += 1; continue; }
-      try {
-        await peer.audioEl.setSinkId(this.speakerDeviceId);
-        applied += 1;
-      } catch {
-        failed += 1;
+      // The music element is a second output for the same peer, so a
+      // speaker switch applies to it too — otherwise the music would
+      // stay on the old device while the voice moved.
+      for (const el of [peer.audioEl, peer.musicEl]) {
+        if (!el?.setSinkId) { if (el) failed += 1; continue; }
+        try {
+          await el.setSinkId(this.speakerDeviceId);
+          applied += 1;
+        } catch {
+          failed += 1;
+        }
       }
     }
     return { supported: true, applied, failed };
@@ -521,11 +673,13 @@ export class VoiceEngine {
   async retryPlayback() {
     let ok = true;
     for (const peer of this.peers.values()) {
-      if (!peer.audioEl) continue;
-      try {
-        await peer.audioEl.play();
-      } catch {
-        ok = false;
+      for (const el of [peer.audioEl, peer.musicEl]) {
+        if (!el) continue;
+        try {
+          await el.play();
+        } catch {
+          ok = false;
+        }
       }
     }
     return ok;
@@ -549,6 +703,11 @@ export class VoiceEngine {
     // carries the screen — no second renegotiation round needed.
     if (this.shareStream) {
       this._addShareTrackToPeer(socketId, { pc });
+    }
+    // A peer created after music started (late joiner) gets the music
+    // track the same way, so their first offer already carries it.
+    if (this.musicStream) {
+      this._addMusicTrackToPeer(socketId, { pc });
     }
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -582,6 +741,41 @@ export class VoiceEngine {
         } catch {}
         return;
       }
+      // Music bot (v0.10.0): the FIRST audio track from a peer is
+      // their mic; a SECOND audio track from the same peer is the
+      // music track — the mic is always added at join, music only
+      // afterwards, so the ordering is reliable. The music track gets
+      // its own <audio> element: no speaking analyser (it must never
+      // light the orb), no proximity gain (room-wide at full volume),
+      // and its own volume/mute (musicVolume / musicMuted). It reuses
+      // the playback-blocked handling, so a blocked music element
+      // offers the same tap-to-enable-sound path as voice.
+      const peer = this.peers.get(socketId);
+      const audioTrackCount = (peer ? peer.audioTracksSeen || 0 : 0) + 1;
+      if (peer) peer.audioTracksSeen = audioTrackCount;
+      if (audioTrackCount > 1) {
+        const stream = e.streams?.[0] || new MediaStream([e.track]);
+        const musicEl = new Audio();
+        musicEl.autoplay = true;
+        musicEl.playsInline = true;
+        musicEl.muted = this.deafened;
+        musicEl.volume = this.musicMuted ? 0 : clampVolume(this.musicVolume);
+        musicEl.srcObject = stream;
+        musicEl.play().catch(() => {
+          this.onPlaybackBlocked(socketId);
+        });
+        if (peer) {
+          peer.musicEl = musicEl;
+          if (this.speakerDeviceId && musicEl.setSinkId) {
+            musicEl.setSinkId(this.speakerDeviceId).catch(() => {});
+          }
+        }
+        this.onMusicTrack(socketId, stream);
+        try {
+          e.track.addEventListener('ended', () => this._onMusicTrackEnded(socketId));
+        } catch {}
+        return;
+      }
       const stream = e.streams[0];
       const audioEl = new Audio();
       audioEl.autoplay = true;
@@ -593,7 +787,6 @@ export class VoiceEngine {
         // heard. The UI offers a tap-to-enable-sound button for this.
         this.onPlaybackBlocked(socketId);
       });
-      const peer = this.peers.get(socketId);
       if (peer) {
         peer.audioEl = audioEl;
         peer.analyser = this._analyserFor(stream);
@@ -614,6 +807,8 @@ export class VoiceEngine {
     this.peers.set(socketId, {
       pc,
       audioEl: null,
+      musicEl: null, // v0.10.0: the second audio track's element
+      audioTracksSeen: 0, // v0.10.0: first audio = mic, second = music
       analyser: null,
       data: new Uint8Array(256),
       speaking: false,
@@ -864,6 +1059,11 @@ export class VoiceEngine {
     // share layer for this peer (they left, or their share ended).
     this.shareSenders.delete(socketId);
     this.onShareEnded(socketId);
+    // Their music sender dies the same way; the UI clears the live
+    // music flag for this peer (only if music was actually flowing —
+    // a peer that never played music reports nothing).
+    this.musicSenders.delete(socketId);
+    if (peer.musicEl) this._onMusicTrackEnded(socketId);
     try { peer.pc.close(); } catch {}
     // Tear down the proximity gain chain before dropping the element:
     // a live GainNode holding a dead element source leaks the graph.

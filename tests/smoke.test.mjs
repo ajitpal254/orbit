@@ -57,6 +57,7 @@
 //     PWA install, no push delivery. Those still need a phone.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createServer as createNetServer } from 'node:net';
 import dgram from 'node:dgram';
@@ -152,7 +153,10 @@ before(async () => {
       MONGODB_URI: mongoUri,
       // A real (random, throwaway) key so the server does not fall back
       // to its ephemeral-key warning path.
-      DATA_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64')
+      DATA_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64'),
+      // The music fixture is a local HTTP server (127.0.0.1), so the
+      // audio proxy's SSRF guard needs its test-only escape hatch.
+      ALLOW_PRIVATE_STREAM_HOSTS: '1'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -676,6 +680,130 @@ test('smoke: two users join a room and voice starts', { timeout: 240000 }, async
       .waitFor({ timeout: 60000 });
     await pageA.getByRole('button', { name: new RegExp(`^${USERS[1].name}`) })
       .waitFor({ timeout: 30000 });
+  });
+
+  // A tiny generated WAV (10s, 440Hz sine, 8kHz mono) as a data: URL
+  // — a playable radio track the test server never has to serve, and
+  // never a real YouTube URL. Long enough that the DJ's element does
+  // not hit 'ended' (and auto-skip) mid-assertion. Returned as a
+  // Buffer: the server only queues http(s) URLs, so the subtest
+  // serves these bytes over a tiny local HTTP server instead of a
+  // data: URL (which validateTrack rejects).
+  function makeWavBuffer(seconds = 10) {
+    const sampleRate = 8000;
+    const n = sampleRate * seconds;
+    const data = Buffer.alloc(44 + n * 2);
+    data.write('RIFF', 0);
+    data.writeUInt32LE(36 + n * 2, 4);
+    data.write('WAVE', 8);
+    data.write('fmt ', 12);
+    data.writeUInt32LE(16, 16);
+    data.writeUInt16LE(1, 20); // PCM
+    data.writeUInt16LE(1, 22); // mono
+    data.writeUInt32LE(sampleRate, 24);
+    data.writeUInt32LE(sampleRate * 2, 28);
+    data.writeUInt16LE(2, 32);
+    data.writeUInt16LE(16, 34);
+    data.write('data', 36);
+    data.writeUInt32LE(n * 2, 40);
+    for (let i = 0; i < n; i++) {
+      const s = Math.round(12000 * Math.sin((2 * Math.PI * 440 * i) / sampleRate));
+      data.writeInt16LE(s, 44 + i * 2);
+    }
+    return data;
+  }
+
+  await t.test('music bot: DJ claims, queues a radio track, both sides see now-playing (v0.10.0)', async (st) => {
+    // The music routes live in the backend half of v0.10.0. If this
+    // build has no music backend yet, skip instead of failing the
+    // frontend's suite on a missing server half — the probe is a
+    // POST to a route that only exists with the backend (unknown
+    // /api paths answer JSON 404, never the SPA page). With the
+    // backend merged this probe answers 400/403 and the full flow
+    // below runs.
+    const probe = await pageA.evaluate(async () => {
+      // Refresh the CSRF cookie first (like api.js ensureCsrfToken):
+      // the CSRF middleware runs before the /api 404 handler, so a
+      // POST with a stale token would 403 even with no music backend.
+      await fetch('/api/auth/csrf-token', { credentials: 'include' }).catch(() => {});
+      const token = document.cookie.split('; ').find((c) => c.startsWith('csrfToken='))?.split('=')[1] || '';
+      const res = await fetch('/api/music/youtube', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': token },
+        body: JSON.stringify({ url: 'not a url', roomId: 'probe' })
+      });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    });
+    if (probe.status === 404) {
+      t.diagnostic('music backend not present in this build (POST /api/music/youtube -> 404) — DJ/queue/state assertions need the server half; voice-track negotiation is covered by tests/musicVoice.test.mjs');
+      st.skip('music backend not present in this build');
+      return;
+    }
+    t.diagnostic(`music backend probe: POST /api/music/youtube -> ${probe.status} ${JSON.stringify(probe.body)}`);
+
+    // Both sides open the Music panel first — the DJ line and the
+    // now-playing row only render inside it.
+    for (const page of [pageA, pageB]) {
+      await page.getByRole('button', { name: 'Music', exact: true }).click();
+      await page.getByLabel('Track URL').waitFor({ timeout: 10000 });
+    }
+
+    // Alice takes the DJ seat; the claim broadcasts to the room.
+    // Scope to the Music panel: the same "DJ: <name>" line also
+    // renders in the Music Bot members-list row, and an unscoped
+    // getByText hits both (Playwright strict-mode violation).
+    await pageA.getByRole('button', { name: 'Take over as DJ' }).click();
+    for (const page of [pageA, pageB]) {
+      await page.getByRole('region', { name: 'Music' }).getByText(`DJ: ${USERS[0].name}`).waitFor({ timeout: 10000 });
+    }
+
+    // Alice queues the generated tone as a radio track, then plays.
+    // The queue-add and the play both broadcast music-state; the DJ
+    // client reacts by loading the URL and streaming it into the mesh.
+    // Serve the generated tone over a tiny local HTTP server: the
+    // queue only accepts http(s) URLs, and this is a real radio-style
+    // stream URL with no external dependency.
+    const wav = makeWavBuffer();
+    const fixture = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': wav.length });
+      res.end(wav);
+    });
+    // TEMP: always close the fixture even if an assertion below fails,
+    // or the listening server keeps the test process alive forever.
+    st.after(() => { try { fixture.close(); } catch {} });
+    await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
+    const fixtureUrl = `http://127.0.0.1:${fixture.address().port}/tone.wav`;
+    await pageA.getByLabel('Track URL').fill(fixtureUrl);
+    await pageA.getByLabel('Track title').fill('Smoke Tone');
+    await pageA.getByRole('button', { name: 'Add track' }).click();
+    await pageA.getByText('Smoke Tone').first().waitFor({ timeout: 10000 });
+    await pageA.getByRole('button', { name: 'Play music' }).click();
+    for (const page of [pageA, pageB]) {
+      await page.getByText('Now playing').waitFor({ timeout: 10000 });
+      await page.getByText('Smoke Tone').first().waitFor({ timeout: 10000 });
+    }
+
+    // Bob's engine got a second audio track from Alice (the music
+    // track, negotiated by renegotiation after the DJ started
+    // streaming) — the panel's "Live in the room" line is the
+    // user-visible proof of it. Renegotiation is signaling-only, so
+    // it works even where UDP is blocked and the voice connection
+    // itself never reaches 'connected'.
+    await pageB.locator('.music-live').waitFor({ timeout: 30000 });
+    assert.match(await pageB.locator('.music-live').first().textContent(), /Live in the room/);
+
+    // The Music Bot row appears in the members list with the
+    // now-playing title.
+    await pageB.getByText('Music Bot').waitFor({ timeout: 10000 });
+    const botRow = pageB.locator('.member-row--music-bot');
+    assert.match(await botRow.textContent(), /Smoke Tone/);
+
+    // Tidy up: Alice (owner) stops the music, freeing the DJ slot
+    // before the leave/postcard subtest.
+    await pageA.getByRole('button', { name: 'Stop music' }).click();
+    await pageA.getByText('No DJ').waitFor({ timeout: 10000 });
+    fixture.close();
   });
 
   await t.test('postcard on leave, other side (Bob leaves the private room)', async () => {

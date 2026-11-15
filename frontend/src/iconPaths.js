@@ -129,6 +129,34 @@ export const ICON_PATHS = {
     { el: 'line', x1: 8, y1: 21, x2: 16, y2: 21 },
     { el: 'line', x1: 12, y1: 17, x2: 12, y2: 21 }
   ],
+  // Music (v0.10.0): Feather 'music' — note + stem, two note heads.
+  // The Music panel, the voice-dock Music button, and the Music Bot
+  // member row all share this one glyph (no emoji in UI chrome).
+  music: [
+    { el: 'path', d: 'M9 18V5l12-2v13' },
+    { el: 'circle', cx: 6, cy: 18, r: 3 },
+    { el: 'circle', cx: 18, cy: 16, r: 3 }
+  ],
+  // Music transport (v0.10.0): Feather 'play' / 'pause' /
+  // 'skip-forward', for the DJ controls in the Music panel.
+  play: [
+    { el: 'polygon', points: '5 3 19 12 5 21 5 3' }
+  ],
+  pause: [
+    { el: 'rect', x: 6, y: 4, width: 4, height: 16 },
+    { el: 'rect', x: 14, y: 4, width: 4, height: 16 }
+  ],
+  'skip-forward': [
+    { el: 'polygon', points: '5 4 15 12 5 20 5 4' },
+    { el: 'line', x1: 19, y1: 5, x2: 19, y2: 19 }
+  ],
+  // Music muted (v0.10.0): Feather 'volume-x' — the speaker from
+  // 'volume' with the cross, for the mute-music toggle.
+  'volume-x': [
+    { el: 'polygon', points: '11 5 6 9 2 9 2 15 6 15 11 19 11 5' },
+    { el: 'line', x1: 23, y1: 9, x2: 17, y2: 15 },
+    { el: 'line', x1: 17, y1: 9, x2: 23, y2: 15 }
+  ],
   globe: [
     { el: 'circle', cx: 12, cy: 12, r: 10 },
     { el: 'line', x1: 2, y1: 12, x2: 22, y2: 12 },

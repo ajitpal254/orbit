@@ -18,6 +18,8 @@ import Avatar from './Avatar';
 import CharacterArt from './CharacterAvatar';
 import { avatarCharacterById } from '../avatars';
 import { Icon, SignalBars } from './icons';
+import MusicPanel from './MusicPanel';
+import { IDLE_DISCONNECT_MESSAGE, playbackUrlFor } from '../music';
 
 // Short relative age for a knock row ("just now", "5m ago", "3h ago") —
 // a knock expires after 24h, so the owner can see at a glance how
@@ -28,6 +30,12 @@ const knockAge = (iso) => {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
 };
+
+// Music bot (v0.10.0): the empty server state — no DJ, empty queue,
+// nothing playing. The server is the source of truth and broadcasts
+// the full state after every mutation; this is only the before-first-
+// broadcast / between-rooms shape.
+const EMPTY_MUSIC_STATE = { dj: null, queue: [], nowPlaying: null, playing: false };
 
 export default function RoomView({ user, room, onLeave, onMinimize, session, dispatchSession, voiceEngineRef, onUserChange }) {
   const { muted, deafened, modMuted, modMutedBy, sharing, screenSharerId, screenSharerName, shareError } = session;
@@ -204,8 +212,41 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
   // "Connection details" popover: the per-peer ICE/debug line lives
   // here instead of always-on under the orbs (see below).
   const [showConnDetails, setShowConnDetails] = useState(false);
+  // Music bot (v0.10.0): the server's music-state (DJ, queue,
+  // now-playing, playing), the panel's open state, the last server
+  // rejection, the listener-side volume/mute, whether a music track
+  // is actually arriving over the mesh right now, and the DJ-side
+  // playback error (play() rejected, captureStream unavailable).
+  // The idle warning counts down from the server's secondsRemaining;
+  // the idle disconnect notice survives the accompanying music-state
+  // (dj: null) until dismissed or music restarts.
+  const [musicState, setMusicState] = useState(EMPTY_MUSIC_STATE);
+  const [musicOpen, setMusicOpen] = useState(false);
+  const [musicError, setMusicError] = useState('');
+  const [musicVolume, setMusicVolume] = useState(1);
+  const [musicMuted, setMusicMuted] = useState(false);
+  const [musicLive, setMusicLive] = useState(false);
+  const [djPlaybackError, setDjPlaybackError] = useState('');
+  const [idleWarning, setIdleWarning] = useState(null); // { secondsRemaining }
+  const [idleNotice, setIdleNotice] = useState('');
   const tapTimerRef = useRef(null);
   const voiceRef = useRef(null);
+  // Music bot (v0.10.0): the DJ's hidden <audio> element, the
+  // captureStream handed to the voice engine, and what it is
+  // currently streaming — so the playback effect can tell a track
+  // change from a pause/resume and never re-add the same track.
+  // musicStateRef mirrors the state for the socket handlers and the
+  // element's 'ended' listener, which close over the mount render.
+  // djPrimedRef marks a Play click that primed the element inside
+  // the user gesture (autoplay) but has not been confirmed by a
+  // music-state yet — a music-error while it is set rolls the primed
+  // playback back, so the DJ never hears music nobody else hears.
+  const djAudioRef = useRef(null);
+  const djStreamRef = useRef(null);
+  const djTrackIdRef = useRef(null);
+  const djUrlRef = useRef(null);
+  const djPrimedRef = useRef(false);
+  const musicStateRef = useRef(EMPTY_MUSIC_STATE);
   const chatEndRef = useRef(null);
   const chatOpenRef = useRef(false);
   chatOpenRef.current = chatOpen;
@@ -281,7 +322,13 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
       // owns the socket claim + stop, so there is one stop sequence.
       onShareTrack: (socketId, stream) => setRemoteShare({ socketId, stream }),
       onShareEnded: (socketId) => setRemoteShare((prev) => (prev && prev.socketId === socketId ? null : prev)),
-      onLocalShareEnded: () => { stopSharing(); }
+      onLocalShareEnded: () => { stopSharing(); },
+      // Music bot (v0.10.0): a second audio track arrived from a peer
+      // (the DJ's music) or ended. Only the DJ streams music, so one
+      // live flag covers the room — the panel shows "Live in the
+      // room" for listeners while it is set.
+      onMusicTrack: () => setMusicLive(true),
+      onMusicEnded: () => setMusicLive(false)
     });
     voiceRef.current = voice;
     // App owns the session and needs the engine so the mini-player can
@@ -487,6 +534,44 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
       setMode(m);
       if (m !== 'focus') setFocusSession(null);
     };
+    // Music bot (v0.10.0): the server is the source of truth — it
+    // broadcasts the full music-state after every mutation and to a
+    // joiner right after join-room. A rejection arrives as
+    // music-error, to the requester only. The idle warning (60s
+    // before the server stops the music for idleness) and the
+    // disconnect announcement ride alongside: the notice is kept
+    // until dismissed or music restarts, so the music-state with
+    // dj: null that accompanies the disconnect never wipes it out —
+    // only a new DJ (state with dj set) clears it.
+    const onMusicState = (state) => {
+      const next = state || EMPTY_MUSIC_STATE;
+      setMusicState(next);
+      setMusicError('');
+      if (next.dj) {
+        setIdleNotice('');
+        setIdleWarning(null);
+      }
+    };
+    const onMusicError = ({ message } = {}) => {
+      setMusicError(message || 'Music request was refused.');
+      // A rejected Play after priming the element in the click
+      // gesture: roll the local playback back, so the DJ does not
+      // hear music nobody else hears.
+      if (djPrimedRef.current) {
+        djPrimedRef.current = false;
+        djStreamRef.current = null;
+        djTrackIdRef.current = null;
+        if (djAudioRef.current && !djAudioRef.current.paused) djAudioRef.current.pause();
+        voiceRef.current?.stopMusic();
+      }
+    };
+    const onMusicIdleWarning = ({ secondsRemaining } = {}) => {
+      setIdleWarning({ secondsRemaining: Math.max(0, Math.round(secondsRemaining ?? 60)) });
+    };
+    const onMusicIdleDisconnect = ({ message } = {}) => {
+      setIdleNotice(message || IDLE_DISCONNECT_MESSAGE);
+      setIdleWarning(null);
+    };
 
     socket.on('room-state', onRoomState);
     socket.on('user-joined', onUserJoined);
@@ -505,6 +590,10 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
     socket.on('room-mode-changed', onRoomModeChanged);
     socket.on('screen-share-started', onShareStarted);
     socket.on('screen-share-stopped', onShareStopped);
+    socket.on('music-state', onMusicState);
+    socket.on('music-error', onMusicError);
+    socket.on('music-idle-warning', onMusicIdleWarning);
+    socket.on('music-idle-disconnect', onMusicIdleDisconnect);
     socket.on('error', onJoinError);
 
     // Transport recovery (v0.9.0): the signaling socket died
@@ -546,8 +635,26 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
     apiJson(`/api/rooms/${room.id}/messages`).then(setMessages).catch(() => {});
     voice.join();
 
+    // DJ playback: when the element's track ends, the DJ's client
+    // asks the server to advance (music-skip) — the server picks the
+    // next queue item and broadcasts the new state, which the
+    // playback effect below loads. Reads the live state from the ref:
+    // this listener is attached once, at mount.
+    const djEl = djAudioRef.current;
+    const onDjEnded = () => {
+      const st = musicStateRef.current;
+      const amDj = !!st?.dj && String(st.dj.userId) === String(user.id);
+      if (amDj && st?.playing) getSocket().emit('music-skip', { roomId: room.id });
+    };
+    djEl?.addEventListener('ended', onDjEnded);
+
     return () => {
       voice.leave();
+      if (djEl) djEl.removeEventListener('ended', onDjEnded);
+      // The element unmounts with the view, but pause it explicitly:
+      // a minimized RoomView keeps the element (and the music) alive
+      // by design, and only a real leave may silence it.
+      if (djEl && !djEl.paused) djEl.pause();
       if (voiceEngineRef) voiceEngineRef.current = null;
       socket.off('disconnect', onSocketDisconnect);
       socket.off('connect', onSocketConnect);
@@ -570,6 +677,10 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
       socket.off('room-mode-changed', onRoomModeChanged);
       socket.off('screen-share-started', onShareStarted);
       socket.off('screen-share-stopped', onShareStopped);
+      socket.off('music-state', onMusicState);
+      socket.off('music-error', onMusicError);
+      socket.off('music-idle-warning', onMusicIdleWarning);
+      socket.off('music-idle-disconnect', onMusicIdleDisconnect);
       socket.off('error', onJoinError);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -600,6 +711,22 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
     // state — the new room's room-state carries its own sharer.
     setRemoteShare(null);
     dispatchSession({ type: 'share-stopped' });
+    // A new room has no music (yet): drop the state, the panel, the
+    // live flag and any idle notice — the new room's music-state
+    // arrives with its own room-state. Silence the DJ element too:
+    // the old room's track must not keep playing into the new room.
+    setMusicState(EMPTY_MUSIC_STATE);
+    setMusicOpen(false);
+    setMusicError('');
+    setDjPlaybackError('');
+    setMusicLive(false);
+    setIdleWarning(null);
+    setIdleNotice('');
+    if (djAudioRef.current && !djAudioRef.current.paused) djAudioRef.current.pause();
+    djStreamRef.current = null;
+    djTrackIdRef.current = null;
+    djUrlRef.current = null;
+    djPrimedRef.current = false;
     // Same reset for the postcard sightings: a new room is a new stay.
     seenRef.current = new Map([[String(user.id), {
       id: String(user.id),
@@ -609,6 +736,145 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
     }]]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
+
+  // Keep the music-state ref in step for the socket handlers and the
+  // DJ element's 'ended' listener, which close over the mount render.
+  useEffect(() => {
+    musicStateRef.current = musicState;
+  }, [musicState]);
+
+  // DJ playback (v0.10.0): the DJ's browser owns playback. The
+  // server's music-state drives this effect — when I am the DJ and a
+  // track is playing, load it into the hidden <audio> element, play
+  // it, and hand captureStream() to the voice engine, which streams
+  // the audio track into the mesh as a second audio track (mic +
+  // music coexist). Anything else — not DJ any more, no track,
+  // paused — stops the element and the stream. The element loads the
+  // SAME-ORIGIN proxy (playbackUrlFor), never the raw track URL:
+  // captureStream() throws a SecurityError for cross-origin media,
+  // and radio / YouTube stream URLs are always cross-origin — the
+  // proxy is what makes captureStream work at all.
+  // Playback starts from the DJ's Play click (the panel primes the
+  // element inside that gesture for autoplay); a play() rejection
+  // here shows in the panel instead of crashing.
+  useEffect(() => {
+    const el = djAudioRef.current;
+    const voice = voiceRef.current;
+    if (!el) return undefined;
+    const amDj = !!musicState.dj && String(musicState.dj.userId) === String(user.id);
+    const stopLocal = () => {
+      djPrimedRef.current = false;
+      if (djStreamRef.current) {
+        djStreamRef.current = null;
+        djTrackIdRef.current = null;
+        voice?.stopMusic();
+      }
+      if (!el.paused) el.pause();
+    };
+    if (!amDj || !musicState.nowPlaying || !musicState.playing) {
+      stopLocal();
+      return undefined;
+    }
+    const track = musicState.nowPlaying;
+    // Same-origin proxy (see playbackUrlFor): the raw track URL is
+    // cross-origin and captureStream() throws a SecurityError on it.
+    const playbackUrl = playbackUrlFor(track.url);
+    let cancelled = false;
+    (async () => {
+      // A new track: drop the old stream first, so the old audio
+      // stops flowing to the room before the new one starts.
+      if (djUrlRef.current !== playbackUrl) {
+        if (djStreamRef.current) {
+          djStreamRef.current = null;
+          djTrackIdRef.current = null;
+          await voice?.stopMusic().catch(() => {});
+        }
+        if (cancelled) return;
+        el.src = playbackUrl;
+        djUrlRef.current = playbackUrl;
+      }
+      if (el.paused) {
+        try {
+          await el.play();
+        } catch {
+          if (!cancelled) setDjPlaybackError('Couldn’t play this track in your browser — try another one.');
+          return;
+        }
+      }
+      if (cancelled) return;
+      setDjPlaybackError('');
+      djPrimedRef.current = false;
+      if (!djStreamRef.current) {
+        if (typeof el.captureStream !== 'function') {
+          setDjPlaybackError('This browser cannot share audio from the music player.');
+          return;
+        }
+        // captureStream throws (SecurityError) for cross-origin
+        // media; the proxy makes this same-origin, but never let a
+        // throw here escape as an unhandled rejection — show it in
+        // the panel instead.
+        // Race (proven in the smoke test): play() resolves when
+        // playback is *initiated*, but captureStream() called right
+        // after can return a TRACKLESS stream — the media pipeline
+        // has not produced its first audio frame yet, and a trackless
+        // stream never gains a track. So poll until the captured
+        // stream actually has an audio track (5s cap), and never
+        // cache a trackless stream: djStreamRef is only set once a
+        // live track exists. Discarded candidates have no tracks, so
+        // they hold no resources.
+        let stream = null;
+        const captureDeadline = Date.now() + 5000;
+        while (!cancelled && !stream) {
+          try {
+            const candidate = el.captureStream();
+            if (candidate.getAudioTracks().length > 0) stream = candidate;
+          } catch {
+            if (!cancelled) setDjPlaybackError('Couldn’t share this track’s audio — try another one.');
+            return;
+          }
+          if (!stream) {
+            if (Date.now() >= captureDeadline) break;
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        }
+        if (cancelled) return;
+        if (!stream) {
+          setDjPlaybackError('Couldn’t share this track’s audio — try another one.');
+          return;
+        }
+        djStreamRef.current = stream;
+        djTrackIdRef.current = track.id;
+        const started = await voice?.startMusic(stream);
+        if (started && !started.ok) {
+          // Never cache a stream the engine refused: a later
+          // music-state change retries from scratch instead of
+          // sitting on a dead stream forever.
+          djStreamRef.current = null;
+          djTrackIdRef.current = null;
+          if (!cancelled) setDjPlaybackError(started.error || 'Couldn’t share this track’s audio — try another one.');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [musicState, user.id]);
+
+  // Idle warning countdown (v0.10.0): the server sends one warning
+  // with secondsRemaining (60); the panel ticks it down locally once
+  // a second until the server's disconnect arrives (or music
+  // restarts and the state clears the warning). The interval is
+  // keyed on whether a warning is active, not on the count itself,
+  // so it is not recreated every tick.
+  const idleWarningActive = !!idleWarning;
+  useEffect(() => {
+    if (!idleWarningActive) return undefined;
+    const t = setInterval(() => {
+      setIdleWarning((prev) => {
+        if (!prev || prev.secondsRemaining <= 1) return null;
+        return { secondsRemaining: prev.secondsRemaining - 1 };
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [idleWarningActive]);
 
   // Tick the focus countdown once a second while a session runs. The
   // displayed time is derived from the server's startedAt, not from a
@@ -704,6 +970,54 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
     getSocket().emit('screen-share-stopped', { roomId: room.id });
     dispatchSession({ type: 'share-stopped' });
   }, [room.id, dispatchSession]);
+
+  // Music bot (v0.10.0): the socket intents. The server answers with
+  // music-state (or music-error, to the requester only) — nothing
+  // here updates the queue or the transport optimistically. Play
+  // primes the DJ element inside the user gesture (autoplay): the
+  // server's music-state follows right after and the playback effect
+  // takes over the stream; a rejected play is rolled back by the
+  // music-error handler above.
+  const emitMusic = useCallback((event, payload = {}) => {
+    getSocket().emit(event, { roomId: room.id, ...payload });
+  }, [room.id]);
+  const claimDj = useCallback(() => {
+    setMusicError('');
+    emitMusic('music-dj-claim');
+  }, [emitMusic]);
+  const releaseDj = useCallback(() => emitMusic('music-dj-release'), [emitMusic]);
+  const playMusic = useCallback(() => {
+    setMusicError('');
+    const st = musicStateRef.current;
+    const nextTrackUrl = st?.nowPlaying?.url || st?.queue?.[0]?.url;
+    // Same-origin proxy (see playbackUrlFor): the raw track URL is
+    // cross-origin and captureStream() would throw on it.
+    const nextUrl = nextTrackUrl ? playbackUrlFor(nextTrackUrl) : '';
+    const el = djAudioRef.current;
+    if (nextUrl && el) {
+      if (djUrlRef.current !== nextUrl) {
+        el.src = nextUrl;
+        djUrlRef.current = nextUrl;
+      }
+      djPrimedRef.current = true;
+      el.play().catch(() => {});
+    }
+    emitMusic('music-play');
+  }, [emitMusic]);
+  const pauseMusic = useCallback(() => emitMusic('music-pause'), [emitMusic]);
+  const skipMusic = useCallback(() => emitMusic('music-skip'), [emitMusic]);
+  const stopMusicRoom = useCallback(() => emitMusic('music-stop'), [emitMusic]);
+  const queueAddMusic = useCallback((track) => emitMusic('music-queue-add', { track }), [emitMusic]);
+  const queueRemoveMusic = useCallback((trackId) => emitMusic('music-queue-remove', { trackId }), [emitMusic]);
+  const changeMusicVolume = useCallback((v) => {
+    setMusicVolume(v);
+    voiceRef.current?.setMusicVolume(v);
+  }, []);
+  const toggleMusicMuted = useCallback(() => {
+    const next = !musicMuted;
+    setMusicMuted(next);
+    voiceRef.current?.setMusicMuted(next);
+  }, [musicMuted]);
 
   const toggleDeafen = useCallback(() => {
     const next = !deafened;
@@ -858,6 +1172,7 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
       if (key === 'c') { openChat(); return; }
       if (e.key === 'Escape') {
         if (chatOpen) setChatOpen(false);
+        else if (musicOpen) setMusicOpen(false);
         else if (showAudio) setShowAudio(false);
         else if (showInvite) setShowInvite(false);
         else if (showLink) setShowLink(false);
@@ -867,7 +1182,7 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleMute, toggleDeafen, chatOpen, showAudio, showInvite, showLink, showConnDetails, selectedOrb, moveSelf]);
+  }, [toggleMute, toggleDeafen, chatOpen, musicOpen, showAudio, showInvite, showLink, showConnDetails, selectedOrb, moveSelf]);
 
   const openInvite = async () => {
     setShowInvite((v) => !v);
@@ -1157,6 +1472,13 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
   };
 
   const people = Object.values(occupants);
+  // Music bot (v0.10.0): am I the DJ, may I stop the music (owner /
+  // moderator — or the room's creator, the same people who control
+  // the focus timer), and is there any music at all (a DJ, or a
+  // track) — the Music Bot member row and the dock dot key off this.
+  const isDj = !!musicState.dj && String(musicState.dj.userId) === String(user.id);
+  const canStopMusic = isOwner || isModerator || String(room.createdBy) === String(user.id);
+  const musicActive = !!(musicState.dj || musicState.nowPlaying);
   // My mood: the live presence row wins (it just changed in-room);
   // the profile is the fallback for the first render.
   const myMood = normalizeMood(occupants.self?.mood ?? user.mood);
@@ -1316,6 +1638,10 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
 
   return (
     <div className={`room-view${sharing || remoteShare ? ' room-view--sharing' : ''}`} style={{ '--room-from': accent.from, '--room-to': accent.to }}>
+      {/* DJ playback element (v0.10.0): hidden, but it stays in the
+          DOM — RoomView stays mounted when the call is minimized, so
+          the music keeps playing across navigation. */}
+      <audio ref={djAudioRef} className="dj-audio" preload="auto" />
       <div className="room-header">
         <button className="btn btn-text" onClick={handleLeave}><Icon name="chevron-left" size={16} /> Rooms</button>
         <div className="room-title">
@@ -1604,6 +1930,23 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
             })}
             {members.length === 0 && (
               <span className="muted">No members listed.</span>
+            )}
+            {/* Music Bot (v0.10.0): a row in the members list while
+                music is active — a music-note avatar, the name, and
+                the now-playing title (or the DJ's name when nothing
+                is playing yet). Not counted in the Members total. */}
+            {musicActive && (
+              <div className="member-row member-row--music-bot">
+                <span className="music-bot-avatar" aria-hidden="true"><Icon name="music" size={16} /></span>
+                <span className="person-info">
+                  <strong>Music Bot</strong>
+                  <span className="muted person-email">
+                    {musicState.nowPlaying
+                      ? musicState.nowPlaying.title
+                      : (musicState.dj ? `DJ: ${musicState.dj.name}` : 'Standing by')}
+                  </span>
+                </span>
+              </div>
             )}
           </div>
           {canAnswerKnocks && knocks.length > 0 && (
@@ -2003,6 +2346,39 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
         </div>
       )}
 
+      {/* Music bot (v0.10.0): the panel is a sheet like the chat
+          sheet, above the voice bar. The DJ playback element above
+          lives in this view (not in the panel), so the music keeps
+          playing while the panel — or the whole view, on minimize —
+          is hidden. */}
+      {musicOpen && (
+        <MusicPanel
+          roomId={room.id}
+          musicState={musicState}
+          isDj={isDj}
+          canStop={canStopMusic}
+          musicVolume={musicVolume}
+          musicMuted={musicMuted}
+          musicLive={musicLive}
+          idleWarning={idleWarning}
+          idleNotice={idleNotice}
+          onDismissIdleNotice={() => setIdleNotice('')}
+          error={musicError}
+          playbackError={djPlaybackError}
+          onClaim={claimDj}
+          onRelease={releaseDj}
+          onPlay={playMusic}
+          onPause={pauseMusic}
+          onSkip={skipMusic}
+          onStop={stopMusicRoom}
+          onQueueAdd={queueAddMusic}
+          onQueueRemove={queueRemoveMusic}
+          onVolumeChange={changeMusicVolume}
+          onMuteToggle={toggleMusicMuted}
+          onClose={() => setMusicOpen(false)}
+        />
+      )}
+
       <div className="voice-bar">
         <button
           className={`voice-btn ${muted ? 'off' : ''}`}
@@ -2024,6 +2400,20 @@ export default function RoomView({ user, room, onLeave, onMinimize, session, dis
         <button className="voice-btn" onClick={openChat} title="Chat (C)" aria-label="Chat">
           <Icon name="chat" size={26} />
           {unread > 0 && <span className="unread-badge">{unread}</span>}
+        </button>
+        {/* Music bot (v0.10.0): opens the Music panel. The dot marks
+            live music, so the room knows it is playing without
+            opening the panel. */}
+        <button
+          className={`voice-btn ${musicActive ? 'music-active' : ''}`}
+          onClick={() => setMusicOpen((v) => !v)}
+          title={musicState.nowPlaying ? `Music — ${musicState.nowPlaying.title}` : 'Music'}
+          aria-label="Music"
+          aria-expanded={musicOpen}
+          aria-pressed={musicOpen}
+        >
+          <Icon name="music" size={26} />
+          {musicActive && <span className="music-dot" aria-hidden="true" />}
         </button>
         {/* Screen sharing (v0.8.0): desktop only — phones are
             view-only, so canShare is false ≤520px and the button never
