@@ -243,6 +243,43 @@ test('sendVerificationEmail sends a hash link with a stubbed transport', async (
   }
 });
 
+test('Brevo API mode: sendVerificationEmail uses the API when BREVO_API_KEY is set, SMTP unset', async (t) => {
+  if (skipIfNoMongo(t)) return;
+  const saved = {};
+  for (const k of ['BREVO_API_KEY', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  process.env.BREVO_API_KEY = 'xkeysib-test-key';
+  process.env.SMTP_FROM = 'Orbit <orbit@example.test>';
+  process.env.APP_URL = 'https://orbit.example.test';
+  let seen = null;
+  const fetchImpl = async (url, opts) => {
+    seen = { url, opts };
+    return { ok: true, status: 201, json: async () => ({ messageId: 'api-1' }) };
+  };
+  try {
+    const user = await makePasswordUser({ email: 'apimailed@orbit.test', name: 'Api Mailed', emailVerified: false });
+    const result = await sendVerificationEmail(user, { fetchImpl });
+    assert.deepEqual(result, { sent: true });
+    assert.ok(seen, 'mail was handed to the Brevo API');
+    assert.equal(seen.url, 'https://api.brevo.com/v3/smtp/email');
+    assert.equal(seen.opts.headers['api-key'], 'xkeysib-test-key');
+    const body = JSON.parse(seen.opts.body);
+    assert.equal(body.sender.email, 'orbit@example.test');
+    assert.deepEqual(body.to, [{ email: 'apimailed@orbit.test' }]);
+    assert.match(body.textContent, /#verify-email-[0-9a-f]{64}/, 'link carries the token in a hash');
+    const token = body.textContent.match(/#verify-email-([0-9a-f]{64})/)[1];
+    const verified = await verifyEmailToken(token);
+    assert.ok(verified && verified.emailVerified === true);
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});
+
 test('SMTP-unset mode: send fails closed and the account stays unverified', async (t) => {
   if (skipIfNoMongo(t)) return;
   const saved = {};
