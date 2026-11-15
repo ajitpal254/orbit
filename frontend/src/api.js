@@ -74,11 +74,32 @@ const jsonPost = (url, body) =>
   });
 
 // --- Email verification ---
+
+// "Log out of all devices" (audit I3): deletes every session for
+// the account, this one included — the caller then runs its local
+// logout teardown (App.jsx logout).
+export const logoutAllDevices = () => jsonPost('/api/auth/logout-all', {});
+
 export const verifyEmail = (token) =>
   jsonPost('/api/auth/verify-email', { token });
 
 export const resendVerificationEmail = () =>
   jsonPost('/api/auth/resend-verification', {});
+
+// --- Google account linking (v0.9.1) ---
+// Link a Google account to the signed-in account, from Profile.
+// The session is the proof of ownership (audit M1).
+export const linkGoogleAccount = (credential) =>
+  jsonPost('/api/auth/google/link', { credential });
+
+// --- Forgot password (v0.9.1) ---
+// Always answers 200 with a generic message, whether or not the
+// email has an account — the response never reveals existence.
+export const requestPasswordReset = (email) =>
+  jsonPost('/api/auth/forgot-password', { email });
+
+export const resetPassword = (token, newPassword) =>
+  jsonPost('/api/auth/reset-password', { token, newPassword });
 
 // --- Friends ---
 
@@ -198,6 +219,11 @@ export const markAllNotificationsRead = () =>
 export const getDms = () => apiJson('/api/dms');
 
 export const getDmThread = (userId) => apiJson(`/api/dms/${userId}`);
+
+// Mark their messages to me read (audit L8: the GET thread endpoint
+// is side-effect-free now — the client calls this explicitly when
+// the thread is actually opened).
+export const markDmThreadRead = (userId) => jsonPost(`/api/dms/${userId}/read`);
 
 export const sendDm = (userId, text, media) =>
   jsonPost(`/api/dms/${userId}`, media ? { text, media } : { text });

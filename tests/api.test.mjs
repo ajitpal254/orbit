@@ -5,7 +5,7 @@
 // fetches a fresh token and retries once.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { apiJson, getCookie, joinViaInviteLink } from '../frontend/src/api.js';
+import { apiJson, getCookie, joinViaInviteLink, linkGoogleAccount, requestPasswordReset, resetPassword } from '../frontend/src/api.js';
 
 // Fake browser globals: document.cookie storage + a fetch stub playing
 // the server. The token endpoint issues a cookie; POSTs require the
@@ -116,6 +116,33 @@ test('a rate-limited knock 429 carries the pending knock on the error', async ()
       return true;
     }
   );
+});
+
+// Account flows (v0.9.1): the helpers POST the right URL with the
+// right body — the fake server above answers 200 to any CSRF-valid
+// POST, so these pin the wiring, not the server behaviour.
+test('linkGoogleAccount posts the credential to /api/auth/google/link', async () => {
+  reset();
+  await linkGoogleAccount('fake-google-credential');
+  const posts = calls.filter(([url]) => url === '/api/auth/google/link');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0][1].body), { credential: 'fake-google-credential' });
+});
+
+test('requestPasswordReset posts the email to /api/auth/forgot-password', async () => {
+  reset();
+  await requestPasswordReset('a@b.c');
+  const posts = calls.filter(([url]) => url === '/api/auth/forgot-password');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0][1].body), { email: 'a@b.c' });
+});
+
+test('resetPassword posts the token and new password to /api/auth/reset-password', async () => {
+  reset();
+  await resetPassword('tok-123', 'brand-new-password-99');
+  const posts = calls.filter(([url]) => url === '/api/auth/reset-password');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0][1].body), { token: 'tok-123', newPassword: 'brand-new-password-99' });
 });
 
 // Audit M2: the invite token travels in the JSON body, never in the URL.

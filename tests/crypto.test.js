@@ -74,3 +74,54 @@ test('crypto wrong key cannot decrypt (key loss = unreadable data)', () => {
 test('crypto with a valid persistent key is not ephemeral', () => {
   assert.equal(isKeyEphemeral(), false);
 });
+
+// --- Audit L4: fail fast at boot in production, ephemeral fallback only in dev ---
+
+test('crypto (L4): production boot fails fast with no DATA_ENCRYPTION_KEY', () => {
+  const prevKey = process.env.DATA_ENCRYPTION_KEY;
+  const prevEnv = process.env.NODE_ENV;
+  try {
+    delete process.env.DATA_ENCRYPTION_KEY;
+    process.env.NODE_ENV = 'production';
+    _resetKeyCacheForTests();
+    assert.throws(() => require('../lib/crypto').getKey(), /DATA_ENCRYPTION_KEY is not set/);
+  } finally {
+    process.env.DATA_ENCRYPTION_KEY = prevKey;
+    if (prevEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevEnv;
+    _resetKeyCacheForTests();
+  }
+});
+
+test('crypto (L4): production boot fails fast with a malformed key', () => {
+  const prevKey = process.env.DATA_ENCRYPTION_KEY;
+  const prevEnv = process.env.NODE_ENV;
+  try {
+    process.env.DATA_ENCRYPTION_KEY = Buffer.alloc(16, 1).toString('base64'); // 16 bytes, not 32
+    process.env.NODE_ENV = 'production';
+    _resetKeyCacheForTests();
+    assert.throws(() => require('../lib/crypto').getKey(), /does not decode to 32 bytes/);
+  } finally {
+    process.env.DATA_ENCRYPTION_KEY = prevKey;
+    if (prevEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevEnv;
+    _resetKeyCacheForTests();
+  }
+});
+
+test('crypto (L4): non-production keeps the ephemeral fallback (dev + tests still boot)', () => {
+  const prevKey = process.env.DATA_ENCRYPTION_KEY;
+  const prevEnv = process.env.NODE_ENV;
+  try {
+    delete process.env.DATA_ENCRYPTION_KEY;
+    delete process.env.NODE_ENV;
+    _resetKeyCacheForTests();
+    const key = require('../lib/crypto').getKey();
+    assert.equal(key.length, 32);
+    assert.equal(isKeyEphemeral(), true);
+  } finally {
+    process.env.DATA_ENCRYPTION_KEY = prevKey;
+    if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
+    _resetKeyCacheForTests();
+  }
+});

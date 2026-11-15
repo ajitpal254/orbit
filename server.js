@@ -15,10 +15,14 @@ const { focusSessions, clearSession } = require('./lib/focusSessions');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const RoomInvite = require('./models/RoomInvite');
+const InviteLink = require('./models/InviteLink');
+const Knock = require('./models/Knock');
+const Session = require('./models/Session');
 const PushSubscription = require('./models/PushSubscription');
 const logger = require('./lib/logger');
 const { requestId, requestLog, requestPath } = require('./middleware/requestLog');
 const { securityHeaders } = require('./middleware/securityHeaders');
+const { resolveCorsOrigins } = require('./lib/cors');
 // Resolve the message-encryption key at boot so a missing
 // DATA_ENCRYPTION_KEY logs its loud ephemeral-key warning in the startup
 // logs (not silently on the first encrypted message). Same for SMTP:
@@ -44,7 +48,10 @@ app.use(requestId);
 app.use(requestLog);
 
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true,
+  // Audit L1: never reflect an arbitrary origin. An unset
+  // CORS_ORIGIN defaults to the hosted origin + localhost dev
+  // origins (see lib/cors.js) — it does NOT mean "allow all".
+  origin: resolveCorsOrigins({ log: logger }),
   credentials: true,
   exposedHeaders: ['x-request-id']
 };
@@ -118,6 +125,18 @@ if (require.main === module) {
       } catch (err) {
         logger.warn({ err }, 'Push-subscription index sync failed — the old endpoint-only index may still block a second account on one device');
       }
+      // Expired sessions are TTL-deleted at expiresAt (audit L5):
+      // rebuild the index on boot so databases created before the
+      // TTL index existed pick it up (replaces the old plain index).
+      // Best-effort — a failure is logged, never fatal.
+      try {
+        const synced = await Session.syncIndexes();
+        if (synced && synced.length) {
+          logger.info({ synced }, 'Session indexes synced (expired-session TTL)');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Session index sync failed — expired sessions may accumulate until the TTL index is rebuilt');
+      }
       // Media uploads fade with their message (lib/media.js): the TTL
       // index on media.files metadata.expireAt is the storage cleanup
       // half. Best-effort — a failure is logged, never fatal.
@@ -134,6 +153,8 @@ if (require.main === module) {
         Room,
         Message,
         RoomInvite,
+        InviteLink,
+        Knock,
         clearMutedForRoom,
         log: (fields, msg) => (fields && fields.err ? logger.error(fields, msg) : logger.info(fields, msg)),
         onClosed: async (room) => {

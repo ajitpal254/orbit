@@ -78,12 +78,19 @@ test('profileJson shapes the public profile', () => {
     // No mood field: a legacy account reads as the default ('free').
     mood: 'free',
     // No emailVerified field: a pre-verification account counts as verified.
-    emailVerified: true
+    emailVerified: true,
+    // No googleId: a password-only account reads as not linked.
+    googleLinked: false
   });
   // Missing fields degrade to empty defaults, never undefined.
   assert.deepEqual(
     profileJson({ _id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '', email: 'x@y.z' }),
-    { id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '', email: 'x@y.z', bio: '', avatarPreset: null, avatarImage: '', mood: 'free', emailVerified: true }
+    { id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '', email: 'x@y.z', bio: '', avatarPreset: null, avatarImage: '', mood: 'free', emailVerified: true, googleLinked: false }
+  );
+  // A googleId reads as linked.
+  assert.equal(
+    profileJson({ _id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '', email: 'x@y.z', googleId: 'google-123' }).googleLinked,
+    true
   );
   // An explicit false stays false — the client shows the verify prompt.
   assert.equal(

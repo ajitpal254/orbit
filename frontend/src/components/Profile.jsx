@@ -6,12 +6,13 @@
 // still enforces the 200KB cap. Choosing a preset clears a photo and
 // uploading a photo clears the preset — one avatar source at a time.
 import React, { useEffect, useRef, useState } from 'react';
-import { updateProfile, apiJson, resendVerificationEmail } from '../api';
+import { updateProfile, apiJson, linkGoogleAccount, logoutAllDevices, resendVerificationEmail } from '../api';
 import { AVATAR_PRESETS, AVATAR_CHARACTERS } from '../avatars';
 import Avatar from './Avatar';
 import MoodPicker from './MoodPicker';
 import { normalizeMood } from '../mood';
 import { Icon } from './icons';
+import { loadGoogleScript, renderGoogleButton } from '../googleSignIn';
 import { isPushSupported, getPushState, subscribeToPush, unsubscribeFromPush } from '../push';
 
 const MAX_AVATAR_IMAGE_LENGTH = 200 * 1024;
@@ -48,7 +49,7 @@ const downscalePhoto = (file) =>
     reader.readAsDataURL(file);
   });
 
-export default function Profile({ user, onSaved, onOpenAbout }) {
+export default function Profile({ user, onSaved, onOpenAbout, onLogout }) {
   const [name, setName] = useState(user.name || '');
   const [bio, setBio] = useState(user.bio || '');
   // Mood glow (v0.7.0): the orb colour + pulse friends see in rooms.
@@ -78,6 +79,59 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
   const [resendBusy, setResendBusy] = useState(false);
   const [resendResult, setResendResult] = useState('');
 
+  // Google account linking (v0.9.1): the Google button below links
+  // the signed-in account to the Google account whose email matches
+  // it (the session is the proof of ownership, audit M1). The
+  // button only renders when the server reports a client ID and
+  // this account is not linked yet; a linked account shows the
+  // linked state instead.
+  const [googleClientId, setGoogleClientId] = useState(null);
+  const [googleLinked, setGoogleLinked] = useState(Boolean(user.googleLinked));
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkError, setLinkError] = useState('');
+  const googleLinkBtnRef = useRef(null);
+  const googleLinkRenderedRef = useRef(false);
+
+  useEffect(() => {
+    if (!googleClientId || googleLinked || !googleLinkBtnRef.current || googleLinkRenderedRef.current) return;
+    googleLinkRenderedRef.current = true;
+    loadGoogleScript()
+      .then(() => {
+        renderGoogleButton(googleLinkBtnRef.current, googleClientId, async (credential) => {
+          setLinkError('');
+          setLinkBusy(true);
+          try {
+            const data = await linkGoogleAccount(credential);
+            setGoogleLinked(true);
+            if (onSaved) onSaved(data.user);
+          } catch (err) {
+            setLinkError(err.message || 'Could not link your Google account');
+          } finally {
+            setLinkBusy(false);
+          }
+        });
+      })
+      .catch(() => { setLinkError('Could not load Google sign-in'); });
+  }, [googleClientId, googleLinked, onSaved]);
+
+  // "Log out of all devices" (audit I3): deletes every session for
+  // the account, this one included — then the app logs out locally.
+  const [logoutAllBusy, setLogoutAllBusy] = useState(false);
+  const [logoutAllError, setLogoutAllError] = useState('');
+
+  const logoutEverywhere = async () => {
+    setLogoutAllError('');
+    setLogoutAllBusy(true);
+    try {
+      await logoutAllDevices();
+    } catch (err) {
+      setLogoutAllError(err.message || 'Could not log out everywhere');
+      setLogoutAllBusy(false);
+      return;
+    }
+    if (onLogout) onLogout();
+  };
+
   const resendVerification = async () => {
     setResendResult('');
     setResendBusy(true);
@@ -98,6 +152,7 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
         const cfg = await apiJson('/api/config');
         if (cancelled) return;
         setVapidKey(cfg.vapidPublicKey || null);
+        setGoogleClientId(cfg.googleClientId || null);
         if (!cfg.vapidPublicKey) {
           setPushState('unconfigured');
           return;
@@ -213,6 +268,27 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
             {resendBusy ? 'Sending…' : 'Resend verification email'}
           </button>
           {resendResult && <p className="muted">{resendResult}</p>}
+        </div>
+      )}
+
+      {(googleClientId || googleLinked) && (
+        <div className="card">
+          <h3 className="section-title">Google account</h3>
+          {googleLinked ? (
+            <p className="muted">
+              <Icon name="check" size={14} /> Google linked — you can sign in with Google.
+            </p>
+          ) : (
+            <>
+              <p className="muted">
+                Link your Google account to sign in with Google. It must use
+                the same email as this Orbit account ({user.email}).
+              </p>
+              <div ref={googleLinkBtnRef} className="google-btn" />
+              {linkBusy && <p className="muted">Linking…</p>}
+              {linkError && <p className="error">{linkError}</p>}
+            </>
+          )}
         </div>
       )}
 
@@ -336,6 +412,27 @@ export default function Profile({ user, onSaved, onOpenAbout }) {
             {testResult && <p className="muted">{testResult}</p>}
           </div>
         )}
+      </div>
+
+      <div className="card">
+        <h3 className="section-title">Sessions</h3>
+        <div className="push-row">
+          <div>
+            <strong>Log out of all devices</strong>
+            <p className="muted push-hint">
+              Signs you out everywhere — this device and any other phone or computer signed in as you. Use it if you ever lose a device.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-text btn-small"
+            disabled={logoutAllBusy}
+            onClick={logoutEverywhere}
+          >
+            {logoutAllBusy ? '…' : 'Log out everywhere'}
+          </button>
+        </div>
+        {logoutAllError && <p className="error">{logoutAllError}</p>}
       </div>
 
       <button className="btn btn-text" onClick={onOpenAbout}>

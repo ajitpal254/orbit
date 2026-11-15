@@ -24,15 +24,20 @@ const { turnUrls } = require('../lib/turnCredentials');
 const { turnHandler } = require('../lib/meteredTurn');
 const { hashPassword, newSalt, generateToken, hashToken } = require('../lib/passwords');
 const { encrypt, decrypt } = require('../lib/crypto');
-const { getGoogleClientId, verifyGoogleCredential, findOrCreateGoogleUser } = require('../lib/googleAuth');
+// Namespace import (not destructured): tests stub
+// googleAuth.verifyGoogleCredential with a fake verifier so the
+// Google routes can be exercised without a real Google account.
+const googleAuth = require('../lib/googleAuth');
+const { getGoogleClientId } = googleAuth;
 const { isEmailVerified, sendVerificationEmail, verifyEmailToken } = require('../lib/emailVerification');
+const { sendPasswordResetEmail, resetPasswordWithToken } = require('../lib/passwordReset');
 const logger = require('../lib/logger');
 const { authMiddleware, parseCookies, rateLimitMiddleware, asyncHandler } = require('../middleware/auth');
 const { validateRoomInput, validateMessageInput, accentById } = require('../lib/rooms');
 const { areFriends, friendshipStatus, otherUserId, isRoomMember, canSeeRoom, findPendingInvite } = require('../lib/friends');
 const { normalizeMembers, getRole, canPromote, canDemote, canKick, canMute, canTransfer, canLeave } = require('../lib/roles');
 const { addMember, removeMember, setMemberRole, transferOwnership } = require('../lib/membership');
-const { canDm, buildSummaries } = require('../lib/dms');
+const { canDm, buildSummariesFromLatest } = require('../lib/dms');
 const multer = require('multer');
 const LinkPreview = require('../models/LinkPreview');
 const {
@@ -206,6 +211,7 @@ async function issueSession(req, res, user, extra = {}) {
   });
 }
 
+// POST /api/auth/logout — delete only the current session.
 router.post('/auth/logout', asyncHandler(async (req, res) => {
   const token = parseCookies(req.headers.cookie).sessionToken;
   if (token) await Session.deleteOne({ tokenHash: hashToken(token) });
@@ -214,6 +220,21 @@ router.post('/auth/logout', asyncHandler(async (req, res) => {
     'csrfToken=; Path=/; SameSite=Lax; Max-Age=0'
   ]);
   res.json({ message: 'Logged out' });
+}));
+
+// POST /api/auth/logout-all — "log out of all devices" (audit I3):
+// delete EVERY session for my account (this one included), so a
+// leaked session token stops working everywhere at once. The caller
+// clears its own cookies the same way logout does — the response
+// clears them here too, so the current tab lands logged out.
+router.post('/auth/logout-all', authMiddleware, asyncHandler(async (req, res) => {
+  await Session.deleteMany({ userId: req.user._id });
+  res.setHeader('Set-Cookie', [
+    'sessionToken=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+    'csrfToken=; Path=/; SameSite=Lax; Max-Age=0'
+  ]);
+  req.log.info({ userId: String(req.user._id) }, 'Logged out of all devices');
+  res.json({ message: 'Logged out of all devices' });
 }));
 
 // POST /api/auth/google — one-tap sign-in/sign-up with a Google ID token.
@@ -234,7 +255,7 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
   const { credential } = req.body || {};
   let identity;
   try {
-    identity = await verifyGoogleCredential(credential);
+    identity = await googleAuth.verifyGoogleCredential(credential);
   } catch (err) {
     req.log.info({ err: err.message }, 'Google token verification failed');
     return res.status(401).json({ error: 'Google sign-in failed — please try again' });
@@ -258,7 +279,7 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
   }
   let user;
   try {
-    user = await findOrCreateGoogleUser(identity, {
+    user = await googleAuth.findOrCreateGoogleUser(identity, {
       currentUserId: currentUser ? currentUser._id : null
     });
   } catch (err) {
@@ -269,6 +290,41 @@ router.post('/auth/google', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandle
   }
   req.log.info({ userId: String(user._id), google: true }, 'User signed in with Google');
   await issueSession(req, res, user);
+}));
+
+// POST /api/auth/google/link — link a Google account to MY account,
+// from Settings (v0.9.1). Authenticated: the valid session is the
+// proof of ownership (audit M1). Body: { credential } (the JWT from
+// Google Identity Services, verified exactly like sign-in —
+// signature/issuer/expiry/audience plus the email_verified claim,
+// audit I7). The Google email must match my account's email, and the
+// Google account must not already be linked to someone else; both
+// are 409s. Linking an already-linked account is a no-op success
+// ({ alreadyLinked: true }) so Profile can show the linked state.
+// This route never creates an account and never links into a
+// different account — see lib/googleAuth.js linkGoogleAccount.
+router.post('/auth/google/link', authMiddleware, rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  if (!getGoogleClientId()) {
+    return res.status(503).json({ error: 'Google sign-in is not configured on this server' });
+  }
+  const { credential } = req.body || {};
+  let identity;
+  try {
+    identity = await googleAuth.verifyGoogleCredential(credential);
+  } catch (err) {
+    req.log.info({ err: err.message }, 'Google token verification failed');
+    return res.status(401).json({ error: 'Google sign-in failed — please try again' });
+  }
+  try {
+    const { user, alreadyLinked } = await googleAuth.linkGoogleAccount(req.user, identity);
+    req.log.info({ userId: String(user._id), google: true, alreadyLinked }, 'Google account linked');
+    res.json({ user: profileJson(user), googleLinked: true, alreadyLinked });
+  } catch (err) {
+    if (err.code === 'GOOGLE_LINK_EMAIL_MISMATCH' || err.code === 'GOOGLE_ALREADY_LINKED') {
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
+    throw err;
+  }
 }));
 
 // POST /api/auth/verify-email { token } — consume a verification
@@ -306,6 +362,56 @@ router.post('/auth/resend-verification', authMiddleware, rateLimitMiddleware(5, 
 
 router.get('/auth/me', authMiddleware, asyncHandler(async (req, res) => {
   res.json({ user: profileJson(req.user) });
+}));
+
+// POST /api/auth/forgot-password { email } — start a password reset
+// (v0.9.1). Public, rate-limited (5/15min — each hit can send an
+// email). ALWAYS answers 200 with the same generic message, whether
+// or not an account exists for the email, so the response never
+// reveals account existence. When an account exists, a single-use
+// 24h token is created and a reset link `/#reset-password-<token>`
+// is emailed (background send — mail must never hold up the
+// response; see the PR #16 signup hang). When SMTP is down or
+// unconfigured the mail silently does not go out and the account
+// simply cannot reset by email until SMTP is fixed (live: SMTP on
+// Render is broken as of 2026-11-14 — see lib/passwordReset.js).
+router.post('/auth/forgot-password', rateLimitMiddleware(5, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  const { email } = req.body || {};
+  const generic = { message: 'If an account exists for that email, a password-reset link is on its way — check your inbox.' };
+  if (typeof email === 'string' && isEmail(email)) {
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (user) {
+      // Fire and forget: the token row is created inside the send,
+      // and the route answers before SMTP (healthy or dead) can
+      // delay it. Never log the token.
+      sendPasswordResetEmail(user).catch((err) => {
+        req.log.warn({ userId: String(user._id), err: err && err.message }, 'Password-reset email background send failed');
+      });
+    }
+  }
+  res.json(generic);
+}));
+
+// POST /api/auth/reset-password { token, newPassword } — consume a
+// reset token and set a new password (v0.9.1). Public: the token
+// itself is the credential, so no session is needed — the token
+// travels in the JSON body, never in a URL (the request log records
+// full URLs). The new password must be ≥12 chars, like registration.
+// On success the token is spent (single-use) and ALL of the user's
+// sessions are deleted, so every device signs in again with the new
+// password. A bad/expired/used token or a short password is a 400
+// with the same generic message either way.
+router.post('/auth/reset-password', rateLimitMiddleware(10, 15 * 60 * 1000), asyncHandler(async (req, res) => {
+  const { token, newPassword } = req.body || {};
+  if (typeof newPassword !== 'string' || newPassword.length < 12) {
+    return res.status(400).json({ error: 'Password must be at least 12 characters' });
+  }
+  const user = await resetPasswordWithToken(token, newPassword);
+  if (!user) {
+    return res.status(400).json({ error: 'That password-reset link is invalid or has expired — request a new one from the log-in screen' });
+  }
+  req.log.info({ userId: String(user._id) }, 'Password reset — all sessions invalidated');
+  res.json({ message: 'Password reset — log in with your new password' });
 }));
 
 // --- PROFILE ---
@@ -611,8 +717,9 @@ const freshRoomJson = async (roomId, meId) => {
 };
 
 // Load a private room for a role action. Returns { room } or
-// { status, error } — 404 / 400 (not private) / 403 (not a member).
+// { status, error } — 400 (bad id) / 404 / 400 (not private) / 403 (not a member).
 const loadPrivateRoomFor = async (roomId, userId) => {
+  if (!isObjectId(roomId)) return { status: 400, error: 'Invalid room' };
   const room = await Room.findById(roomId).lean();
   if (!room) return { status: 404, error: 'Room not found' };
   if (!room.isPrivate) return { status: 400, error: 'Roles only apply to private rooms' };
@@ -678,6 +785,7 @@ router.post('/rooms', authMiddleware, asyncHandler(async (req, res) => {
 }));
 
 router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   // A faded campfire reads as gone, exactly like a deleted room — the
   // worker may not have swept it yet, but its deadline has passed.
@@ -706,6 +814,7 @@ router.get('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
 // caller cannot see, 409 with the friendly message when 8 people are
 // already inside. No exemption for the owner or moderators.
 router.post('/rooms/:id/join', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) {
@@ -725,6 +834,7 @@ router.post('/rooms/:id/join', authMiddleware, friendLimit, asyncHandler(async (
 // it, the client gets the authoritative 410 instead of a silent
 // success. Keeping an already-permanent room is a no-op success.
 router.post('/rooms/:id/keep', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!isVisible(room)) return res.status(410).json({ error: 'This campfire has already faded' });
@@ -748,6 +858,7 @@ router.post('/rooms/:id/keep', authMiddleware, friendLimit, asyncHandler(async (
 // broadcast as 'room-mode-changed' to the room, and 'rooms-changed'
 // refreshes home lists (room cards carry a Focus badge).
 router.post('/rooms/:id/mode', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room || !isVisible(room)) return res.status(404).json({ error: 'Room not found' });
   if (!canSeeRoom(room, req.user._id)) return res.status(403).json({ error: 'This room is private' });
@@ -776,6 +887,7 @@ router.post('/rooms/:id/mode', authMiddleware, friendLimit, asyncHandler(async (
 }));
 
 router.delete('/rooms/:id', authMiddleware, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (String(room.createdBy) !== String(req.user._id)) {
@@ -808,8 +920,11 @@ const inviteJson = (invite, room, inviter) => ({
 router.post('/rooms/:id/invite', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
   // Unverified accounts cannot send invites (audit M1).
   if (!requireVerifiedEmail(req, res)) return;
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  // Audit L3: no invites into a faded campfire — it reads as gone.
+  if (!isVisible(room)) return res.status(410).json({ error: 'This campfire has already faded' });
   if (!room.isPrivate) return res.status(400).json({ error: 'Only private rooms use invites' });
   if (!isRoomMember(room, req.user._id)) {
     return res.status(403).json({ error: 'Only room members can invite' });
@@ -862,6 +977,7 @@ router.post('/rooms/:id/invite', authMiddleware, friendLimit, asyncHandler(async
 }));
 
 router.post('/rooms/:id/leave', authMiddleware, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!room.isPrivate) return res.status(400).json({ error: 'Public rooms have nothing to leave' });
@@ -1165,6 +1281,7 @@ router.get('/invites', authMiddleware, asyncHandler(async (req, res) => {
 }));
 
 router.post('/invites/:id/accept', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid invite' });
   const invite = await RoomInvite.findById(req.params.id);
   if (!invite) return res.status(404).json({ error: 'Invite not found' });
   if (String(invite.invitee) !== String(req.user._id)) {
@@ -1178,6 +1295,13 @@ router.post('/invites/:id/accept', authMiddleware, friendLimit, asyncHandler(asy
     // The room is gone — drop the stale invite and say so.
     await RoomInvite.deleteOne({ _id: invite._id });
     return res.status(403).json({ error: 'Room no longer exists' });
+  }
+  // Audit L3: a faded campfire reads as gone — nobody is ever
+  // admitted into a deleted room. The stale invite goes with it,
+  // like the room-gone branch above.
+  if (!isVisible(room)) {
+    await RoomInvite.deleteOne({ _id: invite._id });
+    return res.status(410).json({ error: 'This campfire has already faded' });
   }
   // Atomic add (audit M4): new members join as plain members. A
   // matchedCount of 0 just means "already a member" — the re-read
@@ -1194,6 +1318,7 @@ router.post('/invites/:id/accept', authMiddleware, friendLimit, asyncHandler(asy
 }));
 
 router.post('/invites/:id/decline', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid invite' });
   const invite = await RoomInvite.findById(req.params.id);
   if (!invite) return res.status(404).json({ error: 'Invite not found' });
   if (String(invite.invitee) !== String(req.user._id)) {
@@ -1251,6 +1376,7 @@ const decryptLinkToken = (link) => {
 // the existing active one (idempotent, like the pending room-invite
 // flow). Private rooms: members only. Public rooms: any signed-in user.
 router.post('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!canCreateInviteLink(room, req.user._id)) {
@@ -1303,6 +1429,7 @@ router.post('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandler(
 // { link: null } when there is none (or it expired / is unreadable) —
 // 200, not 404, so the UI treats "no link yet" as a normal state.
 router.get('/rooms/:id/invite-link', authMiddleware, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!canCreateInviteLink(room, req.user._id)) {
@@ -1320,6 +1447,7 @@ router.get('/rooms/:id/invite-link', authMiddleware, asyncHandler(async (req, re
 // creator or the room owner; moderators cannot revoke. A revoked link
 // is deleted, so it can never be redeemed again.
 router.delete('/rooms/:id/invite-link', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   const link = await InviteLink.findOne({ room: room._id });
@@ -1361,6 +1489,12 @@ router.post('/invite-links/join', authMiddleware, friendLimit, asyncHandler(asyn
   if (!room) {
     await InviteLink.deleteOne({ _id: link._id });
     return res.status(404).json({ error: 'This invite link is invalid or has been revoked' });
+  }
+  // Audit L3: a faded campfire reads as gone — the link cannot admit
+  // anyone into a room that is about to be deleted (the worker's L6
+  // cascade takes the link with the room).
+  if (!isVisible(room)) {
+    return res.status(410).json({ error: 'This campfire has already faded' });
   }
   // Private rooms admit only accepted friends of the link creator —
   // the same rule as room invites. Members skip the check.
@@ -1420,9 +1554,10 @@ const notifyKnock = async (room, knock, knocker) => {
 };
 
 // Load a private room for a knock action. Returns { room } or
-// { status, error } — 404 / 410 (a faded campfire reads as gone, so
+// { status, error } — 400 (bad id) / 404 / 410 (a faded campfire reads as gone, so
 // nobody is ever admitted into a deleted room) / 400 (not private).
 const loadRoomForKnock = async (roomId) => {
+  if (!isObjectId(roomId)) return { status: 400, error: 'Invalid room' };
   const room = await Room.findById(roomId).lean();
   if (!room) return { status: 404, error: 'Room not found' };
   if (!isVisible(room)) return { status: 410, error: 'This campfire has already faded' };
@@ -1440,9 +1575,12 @@ const knockFriendRows = (knockerId, ownerId) => Friendship.find({
 
 // POST /api/rooms/:id/knock — knock on a private room. A pending knock
 // is returned as-is (no duplicate row, no second notification); a
-// repeat within 30s of the last knock is rate-limited (429). A
-// previously declined knock is reopened instead of violating the
-// unique index — same pattern as invites.
+// repeat within 30s of the last knock event is rate-limited (429) —
+// the window keys on the row's updatedAt (audit L2), so a decline
+// restarts it: the owner has to decline each knock, and the knocker
+// cannot re-knock immediately after being declined. A previously
+// declined knock is reopened instead of violating the unique index
+// — same pattern as invites.
 router.post('/rooms/:id/knock', authMiddleware, friendLimit, asyncHandler(async (req, res) => {
   const { status, error, room } = await loadRoomForKnock(req.params.id);
   if (error) return res.status(status).json({ error });
@@ -1455,13 +1593,22 @@ router.post('/rooms/:id/knock', authMiddleware, friendLimit, asyncHandler(async 
   }
   const existing = await Knock.findOne({ room: room._id, user: req.user._id });
   if (existing && isKnockPending(existing)) {
-    if (isKnockRateLimited(existing.createdAt)) {
+    if (isKnockRateLimited(existing.updatedAt)) {
       return res.status(429).json({
         error: 'You already knocked — give them a moment before knocking again',
         knock: knockJson(existing, room, req.user)
       });
     }
     return res.json(knockJson(existing, room, req.user));
+  }
+  // Not pending (declined, admitted-then-left, or expired): a fresh
+  // knock is still rate-limited on the last knock event, so a
+  // decline → immediate re-knock loop cannot spam the owner.
+  if (existing && isKnockRateLimited(existing.updatedAt)) {
+    return res.status(429).json({
+      error: 'You already knocked — give them a moment before knocking again',
+      knock: knockJson(existing, room, req.user)
+    });
   }
   let knock;
   const reopened = !!existing;
@@ -1503,6 +1650,7 @@ router.get('/rooms/:id/knock', authMiddleware, asyncHandler(async (req, res) => 
 // DELETE /api/rooms/:id/knock — withdraw my pending knock. Only the
 // knocker can withdraw it; the owner/moderators' panels refresh live.
 router.delete('/rooms/:id/knock', authMiddleware, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid room' });
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ error: 'Room not found' });
   const deleted = await Knock.deleteOne({ room: room._id, user: req.user._id, status: 'pending' });
@@ -1646,6 +1794,11 @@ const acceptedFriendRows = (meId, otherId) => Friendship.find({
 // GET /api/dms — one entry per accepted friend: last message (decrypted)
 // + unread count. Sorted by last-message recency; friends with no
 // messages go last, by name.
+//
+// Audit I8: the fetch is capped PER FRIEND (latest message + an
+// unread count per friend), not one global 1,000-row decrypt — a
+// heavy thread can no longer crowd every other friend out of the
+// list, and a list load decrypts at most one message per friend.
 router.get('/dms', authMiddleware, asyncHandler(async (req, res) => {
   const rows = await Friendship.find({
     status: 'accepted',
@@ -1653,22 +1806,40 @@ router.get('/dms', authMiddleware, asyncHandler(async (req, res) => {
   }).lean();
   const friendIds = [...new Set(rows.map((r) => otherUserId(r, req.user._id)))];
   const friends = await User.find({ _id: { $in: friendIds } }).select('name email avatarPreset avatarImage').lean();
-  // All DMs involving me, newest first (capped — the summary only needs
-  // the latest per friend; threads fetch the rest). Fading chat:
-  // expired DMs never surface as a last message or an unread count.
-  const dms = await DirectMessage.find({
-    $and: [
-      { $or: [{ sender: req.user._id }, { recipient: req.user._id }] },
-      notExpiredFilter()
-    ]
-  }).sort({ createdAt: -1 }).limit(1000).lean();
-  const plain = dms.map((m) => ({ ...m, text: decryptDmText(m) }));
-  res.json(buildSummaries(friends.map(userJson), plain, req.user._id));
+  const latestByFriend = new Map();
+  const unreadByFriend = new Map();
+  for (const friend of friends) {
+    const fid = friend._id;
+    // Fading chat: expired DMs never surface as a last message or an
+    // unread count.
+    const pairFilter = {
+      $and: [
+        {
+          $or: [
+            { sender: req.user._id, recipient: fid },
+            { sender: fid, recipient: req.user._id }
+          ]
+        },
+        notExpiredFilter()
+      ]
+    };
+    const [last] = await DirectMessage.find(pairFilter)
+      .sort({ createdAt: -1 }).limit(1).lean();
+    if (last) latestByFriend.set(String(fid), { ...last, text: decryptDmText(last) });
+    unreadByFriend.set(
+      String(fid),
+      await DirectMessage.countDocuments({
+        sender: fid, recipient: req.user._id, read: false, ...notExpiredFilter()
+      })
+    );
+  }
+  res.json(buildSummariesFromLatest(friends.map(userJson), latestByFriend, unreadByFriend, req.user._id));
 }));
 
 // GET /api/dms/:userId — the thread with that friend, latest 50,
-// oldest first. 403 unless an accepted friend. Opening the thread marks
-// their messages to me as read.
+// oldest first. 403 unless an accepted friend. Side-effect-free
+// (audit L8): opening the thread no longer marks messages read —
+// use POST /api/dms/:userId/read for that.
 router.get('/dms/:userId', authMiddleware, asyncHandler(async (req, res) => {
   const { userId } = req.params;
   if (!isObjectId(userId)) return res.status(400).json({ error: 'Invalid user' });
@@ -1678,10 +1849,6 @@ router.get('/dms/:userId', authMiddleware, asyncHandler(async (req, res) => {
   if (!canDm(friendRows, req.user._id, other._id)) {
     return res.status(403).json({ error: 'Direct messages are for friends only' });
   }
-  await DirectMessage.updateMany(
-    { sender: other._id, recipient: req.user._id, read: false, ...notExpiredFilter() },
-    { read: true }
-  );
   // Fading chat: expired messages never reach the thread view.
   const messages = await DirectMessage.find({
     $and: [
@@ -1699,6 +1866,26 @@ router.get('/dms/:userId', authMiddleware, asyncHandler(async (req, res) => {
     [String(other._id), other.name]
   ]);
   res.json(messages.reverse().map((m) => dmJson(m, names.get(String(m.sender)))));
+}));
+
+// POST /api/dms/:userId/read — mark their messages to me read
+// (audit L8: the explicit read action the GET used to smuggle in).
+// The client calls it when the thread is actually opened. Answers
+// with how many messages were marked, so the UI can refresh badges.
+router.post('/dms/:userId/read', authMiddleware, asyncHandler(async (req, res) => {
+  const { userId } = req.params;
+  if (!isObjectId(userId)) return res.status(400).json({ error: 'Invalid user' });
+  const other = await User.findById(userId);
+  if (!other) return res.status(404).json({ error: 'User not found' });
+  const friendRows = await acceptedFriendRows(req.user._id, other._id);
+  if (!canDm(friendRows, req.user._id, other._id)) {
+    return res.status(403).json({ error: 'Direct messages are for friends only' });
+  }
+  const { modifiedCount } = await DirectMessage.updateMany(
+    { sender: other._id, recipient: req.user._id, read: false, ...notExpiredFilter() },
+    { read: true }
+  );
+  res.json({ read: modifiedCount });
 }));
 
 // POST /api/dms/:userId { text } — send a DM. 403 unless an accepted
@@ -1920,6 +2107,7 @@ router.get('/notifications', authMiddleware, asyncHandler(async (req, res) => {
 // POST /api/notifications/:id/read — mark one of MY notifications read.
 // 404 when it is not mine (or does not exist) — no cross-user reads.
 router.post('/notifications/:id/read', authMiddleware, asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid notification' });
   const n = await Notification.findOne({ _id: req.params.id, user: req.user._id });
   if (!n) return res.status(404).json({ error: 'Notification not found' });
   if (!n.read) {

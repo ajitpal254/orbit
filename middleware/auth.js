@@ -55,7 +55,28 @@ const csrfMiddleware = (req, res, next) => {
 };
 
 // Sliding-window in-memory rate limiter (per IP).
-const rateLimitMiddleware = (max = 120, windowMs = 60 * 1000) => {
+//
+// Audit I6: entries for IPs that stop requesting used to stay in the
+// Map forever (slow memory growth). Idle entries are now evicted:
+// whenever the table grows past RATE_LIMIT_EVICT_THRESHOLD, keys
+// whose newest hit is older than the window are dropped. The bound
+// is on live keys, so a burst of distinct one-off IPs cannot grow
+// the table without bound either — the table is pruned as it grows.
+// (Limits still do not aggregate across processes; fine at current
+// scale, revisit if the app ever scales out.)
+const RATE_LIMIT_EVICT_THRESHOLD = 1000;
+
+// Drop every key whose newest recorded hit is at least windowMs old.
+// Pure (takes the Map) so tests can drive it directly.
+const pruneRateLimitEntries = (hits, now, windowMs) => {
+  for (const [key, arr] of hits) {
+    const last = arr && arr.length ? arr[arr.length - 1] : null;
+    if (last == null || now - last >= windowMs) hits.delete(key);
+  }
+  return hits;
+};
+
+const rateLimitMiddleware = (max = 120, windowMs = 60 * 1000, { evictThreshold = RATE_LIMIT_EVICT_THRESHOLD } = {}) => {
   const hits = new Map();
   return (req, res, next) => {
     const now = Date.now();
@@ -63,6 +84,7 @@ const rateLimitMiddleware = (max = 120, windowMs = 60 * 1000) => {
     const arr = (hits.get(key) || []).filter((t) => now - t < windowMs);
     arr.push(now);
     hits.set(key, arr);
+    if (hits.size > evictThreshold) pruneRateLimitEntries(hits, now, windowMs);
     if (arr.length > max) return res.status(429).json({ error: 'Too many requests' });
     next();
   };
@@ -70,4 +92,4 @@ const rateLimitMiddleware = (max = 120, windowMs = 60 * 1000) => {
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-module.exports = { parseCookies, authMiddleware, csrfMiddleware, rateLimitMiddleware, asyncHandler };
+module.exports = { parseCookies, authMiddleware, csrfMiddleware, rateLimitMiddleware, pruneRateLimitEntries, RATE_LIMIT_EVICT_THRESHOLD, asyncHandler };
